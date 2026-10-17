@@ -247,7 +247,6 @@
         if (elements.measurementConvolverMaxBoost) elements.measurementConvolverMaxBoost.value = String(conv.maxBoostDb);
         if (elements.measurementConvolverMaxCut) elements.measurementConvolverMaxCut.value = String(conv.maxCutDb);
         if (elements.measurementConvolverDipGuard) elements.measurementConvolverDipGuard.value = conv.dipGuard;
-        if (elements.measurementConvolverSampleRate) elements.measurementConvolverSampleRate.value = String(measurementState.measurementSampleRate || '48000');
         if (elements.measurementConvolverPhaseMode) elements.measurementConvolverPhaseMode.value = conv.phaseMode;
         if (elements.measurementConvolverIrLength) elements.measurementConvolverIrLength.value = String(conv.irLength);
         const convolverSourceSelection = deps.getMeasurementConvolverSourceSelectionState();

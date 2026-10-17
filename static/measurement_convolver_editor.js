@@ -9,6 +9,8 @@
 
     const ui = root.FXRouteMeasurementUI || {};
     const dsp = root.FXRouteMeasurementDsp || {};
+    // FIR rate for a measurement that records no rate of its own.
+    const MEASUREMENT_CONVOLVER_FALLBACK_SAMPLE_RATE = 48000;
     let deps = {
         getState: () => ({ measurement: {}, dsp: {} }),
         getElements: () => ({}),
@@ -17,11 +19,11 @@
         showToast: () => {},
         renderMeasurementPanel: () => {},
         scheduleMeasurementGraphRender: () => {},
-        saveMeasurementSetupSettings: () => {},
         collectEffectsExtras: () => ({}),
         appendBankBindingFields: () => {},
-        measurementCommitSourceId: () => '',
         requireConcreteFilterBank: () => false,
+        // Why the visible results cannot be taken into a draft ('' when they can).
+        measurementImportBlockedReason: () => '',
         measurementBankSumsBothInputs: () => false,
         fetchEffects: async () => {},
         fetchOutputSystemCatalog: async () => {},
@@ -103,12 +105,6 @@
         return getMeasurementConvolverCurveOptions().find((curve) => curve.key === curveKey) || ui.measurementConvolverCurves.neutral;
     }
 
-    function getMeasurementConvolverCurveDb(curveKey, frequencyHz) {
-        const curve = getMeasurementConvolverCurve(curveKey);
-        const points = curve.points || ui.measurementConvolverCurves.neutral.points;
-        return dsp.getMeasurementConvolverCurveDbFromPoints(points, frequencyHz);
-    }
-
     function getMeasurementConvolverDraftPhaseMode(draft = null) {
         return ui.getMeasurementConvolverDraftPhaseMode(draft);
     }
@@ -161,7 +157,6 @@
         const conv = ensureMeasurementConvolverState();
         const previousPhaseMode = conv.phaseMode;
         const previousIrLength = String(conv.irLength ?? '');
-        const previousSampleRate = String(deps.getState().measurement?.measurementSampleRate ?? '');
         if (field === 'targetCurve') {
             const nextTarget = getMeasurementConvolverCurveOptions().some((curve) => curve.key === value) ? value : conv.targetCurve;
             if (nextTarget !== conv.targetCurve) {
@@ -203,13 +198,6 @@
                 conv.dipGuard = nextDipGuard;
                 clearMeasurementConvolverDraftForSettingsChange('Dip guard changed. Take L/R again.');
             }
-        }
-        if (field === 'sampleRate') {
-            deps.getState().measurement.measurementSampleRate = String(value || '48000');
-            if (String(deps.getState().measurement.measurementSampleRate) !== previousSampleRate) {
-                clearMeasurementConvolverDraftForSettingsChange('Sample rate changed. Take L/R again.');
-            }
-            void deps.saveMeasurementSetupSettings({ measurementSampleRate: Number(deps.getState().measurement.measurementSampleRate) });
         }
         if (field === 'phaseMode') conv.phaseMode = ui.measurementConvolverPhaseModes.includes(String(value)) ? String(value) : conv.phaseMode;
         if (field === 'irLength') conv.irLength = ui.measurementConvolverTapOptions.includes(Number(value)) ? String(value) : conv.irLength;
@@ -325,10 +313,6 @@
         };
     }
 
-    function getMeasurementConvolverSelectedSourceCount() {
-        return getMeasurementConvolverSourceSelectionState().count;
-    }
-
     function getMeasurementConvolverMultiSourceWarning() {
         return ui.getMeasurementConvolverMultiSourceWarning();
     }
@@ -381,9 +365,26 @@
         deps.setTimeout(() => deps.getElements().measurementConvolverFeedback?.classList.remove('is-visible'), 2600);
     }
 
-    function getMeasurementConvolverSampleRate() {
-        const selected = Number(deps.getState().measurement?.measurementSampleRate);
-        return Number.isFinite(selected) && selected > 0 ? selected : 48000;
+    // A FIR is written at the rate its measurement ran at. Entries without an
+    // analysis rate fall back to the rate frozen with their target, then to
+    // the rate of their output context.
+    function getMeasurementConvolverSampleRate(measurement = {}) {
+        const candidates = [
+            getMeasurementAnalysisSampleRate(measurement),
+            measurement?.measurement_target?.sample_rate_hz,
+            measurement?.audio_output_context?.sample_rate_hz,
+        ];
+        const sampleRate = candidates.map(Number).find((value) => Number.isFinite(value) && value > 0);
+        return sampleRate || MEASUREMENT_CONVOLVER_FALLBACK_SAMPLE_RATE;
+    }
+
+    // Frozen target of a taken measurement, as Create names it to the backend,
+    // which rejects a commit into a bank, speaker group or channel shape the
+    // measurement was not taken for. A result without a target is named so it
+    // is rejected; Auto Sub results are taken outside any bank and carry none.
+    function getMeasurementConvolverSourceTargets(measurement) {
+        if (!measurement || root.FXRouteAutoSubTarget?.isAutoSubMeasurement(measurement)) return [];
+        return [measurement.measurement_target || null];
     }
 
     function getMeasurementConvolverTypeOption(type = 'linear_4096') {
@@ -520,13 +521,12 @@
         return ui.getMeasurementDirectArrivalTiming(measurement);
     }
 
-    function writeMeasurementConvolverWav(channels, sampleRate) {
-        return dsp.writeMeasurementConvolverWav(channels, sampleRate);
+    function writeMeasurementConvolverWav(channels, sampleRate, latency = null) {
+        return dsp.writeMeasurementConvolverWav(channels, sampleRate, latency);
     }
 
     function appendMeasurementConvolverExtras(formData) {
         const extras = deps.collectEffectsExtras();
-        formData.append('load_after_create', 'false');
         formData.append('limiter_enabled', extras.limiterEnabled ? 'true' : 'false');
         formData.append('headroom_enabled', extras.headroomEnabled ? 'true' : 'false');
         formData.append('headroom_gain_db', String(extras.headroomGainDb));
@@ -540,9 +540,12 @@
 
     async function createMeasurementConvolverPreset(mode, analyses, sharedAutoGainDb, itemName, options = {}) {
         if (!deps.requireConcreteFilterBank()) throw new Error('Select a filter bank for import or measurement.');
-        const sampleRate = Number(options.sampleRate) || getMeasurementConvolverSampleRate();
+        const sampleRate = Number(options.sampleRate) || MEASUREMENT_CONVOLVER_FALLBACK_SAMPLE_RATE;
         const length = Number(options.irLength) || getMeasurementConvolverFirLength();
         const phaseMode = ui.measurementConvolverPhaseModes.includes(options.phaseMode) ? options.phaseMode : ensureMeasurementConvolverState().phaseMode;
+        const algorithmicFrames = ['linear', 'hybrid_aligned'].includes(phaseMode) ? Math.floor(length / 2) : 0;
+        const timingMetadata = (intentionalFrames = 0) => ({ version: 1,
+            algorithmic_frames: [algorithmicFrames], intentional_frames: [intentionalFrames] });
         const filenameBase = itemName.replace(/[^a-z0-9._-]+/gi, '-').replace(/^-+|-+$/g, '') || 'measurement-convolver';
         const bySide = Object.fromEntries(analyses.map((analysis) => [analysis.side, analysis]));
         const hybridTransition = typeof dsp.getMeasurementConvolverHybridTransition === 'function'
@@ -563,15 +566,15 @@
             const [finalLeft, finalRight] = ui.measurementConvolverAlignedPhaseModes.includes(phaseMode)
                 ? alignStereoImpulsesForMinimumAligned(leftImpulse, rightImpulse, sampleRate, options.leftTiming || null, options.rightTiming || null, Number(options.timingSafetyLimitMs) || deps.getTimingSafetyLimitMs())
                 : [leftImpulse, rightImpulse];
-            const leftBlob = writeMeasurementConvolverWav([finalLeft], sampleRate);
-            const rightBlob = writeMeasurementConvolverWav([finalRight], sampleRate);
+            const leftBlob = writeMeasurementConvolverWav([finalLeft], sampleRate, timingMetadata(finalLeft.length - leftImpulse.length));
+            const rightBlob = writeMeasurementConvolverWav([finalRight], sampleRate, timingMetadata(finalRight.length - rightImpulse.length));
             const formData = new (deps.getFormDataType())();
             formData.append('preset_name', itemName);
             appendMeasurementConvolverExtras(formData);
             formData.append('left_file', leftBlob, `${filenameBase}-L.wav`);
             formData.append('right_file', rightBlob, `${filenameBase}-R.wav`);
             deps.appendBankBindingFields(formData);
-            formData.append('source_measurement_id', deps.measurementCommitSourceId());
+            formData.append('source_measurement_targets', JSON.stringify(options.sourceTargets || []));
             const resp = await deps.fetch('/api/dsp/presets/import-filter-dual', { method: 'POST', body: formData });
             const data = await resp.json().catch(() => ({}));
             if (!resp.ok) throw new Error(deps.formatTransitionErrorDetail(data.detail, 'Convolver preset creation failed'));
@@ -581,13 +584,13 @@
         const side = mode === 'right' ? 'right' : 'left';
         const applyPhaseMode = phaseMode === 'minimum_aligned' ? 'minimum' : phaseMode;
         const impulse = buildMeasurementConvolverImpulse(bySide[side], sampleRate, length, sharedAutoGainDb, applyPhaseMode);
-        const blob = writeMeasurementConvolverWav([impulse], sampleRate);
+        const blob = writeMeasurementConvolverWav([impulse], sampleRate, timingMetadata());
         const formData = new (deps.getFormDataType())();
         formData.append('preset_name', itemName);
         appendMeasurementConvolverExtras(formData);
         formData.append('file', blob, `${filenameBase}-${side === 'right' ? 'R' : 'L'}.wav`);
         deps.appendBankBindingFields(formData);
-        formData.append('source_measurement_id', deps.measurementCommitSourceId());
+        formData.append('source_measurement_targets', JSON.stringify(options.sourceTargets || []));
         const resp = await deps.fetch('/api/dsp/presets/create-with-ir', { method: 'POST', body: formData });
         const data = await resp.json().catch(() => ({}));
         if (!resp.ok) throw new Error(deps.formatTransitionErrorDetail(data.detail, 'Convolver preset creation failed'));
@@ -596,6 +599,12 @@
     }
 
     function takeMeasurementConvolverToDraft(mode = 'both') {
+        const blocked = deps.measurementImportBlockedReason();
+        if (blocked) {
+            showMeasurementConvolverFeedback(blocked);
+            deps.showToast(blocked, 'warning');
+            return;
+        }
         const selection = getMeasurementConvolverSourceSelectionState();
         if (!selection.take[mode]) {
             const warning = selection.warning || getMeasurementConvolverMultiSourceWarning();
@@ -652,7 +661,7 @@
                     dipGuard: conv.dipGuard,
                     safetyMarginDb: conv.safetyMarginDb,
                     autoGainDb: analysis.autoGainDb,
-                    sampleRate: getMeasurementConvolverSampleRate(),
+                    sampleRate: getMeasurementConvolverSampleRate(sourceMeasurement),
                     quality: conv.quality,
                     phaseMode: conv.phaseMode,
                     irLength: getMeasurementConvolverFirLength(),
@@ -660,6 +669,7 @@
                     sourceMeasurementName: sourceMeasurement?.name || '',
                     sourceMeasurementCreatedAt: sourceMeasurement?.created_at || '',
                     sourceChannel: sourceMeasurement?.channel || side,
+                    sourceMeasurementTargets: getMeasurementConvolverSourceTargets(sourceMeasurement),
                 },
             };
         });
@@ -711,9 +721,14 @@
         }
         if (mode === 'both') {
             const [leftMeta, rightMeta] = drafts.map((draft) => draft?.metadata || {});
-            const sameGeneration = ['sampleRate', 'quality', 'phaseMode', 'irLength'].every((key) => String(leftMeta[key] || '') === String(rightMeta[key] || ''));
+            if (String(leftMeta.sampleRate || '') !== String(rightMeta.sampleRate || '')) {
+                showMeasurementConvolverFeedback('L/R measurements use different sample rates');
+                deps.showToast('Left and Right measurements ran at different sample rates. Use two measurements taken at the same rate.', 'warning');
+                return;
+            }
+            const sameGeneration = ['quality', 'phaseMode', 'irLength'].every((key) => String(leftMeta[key] || '') === String(rightMeta[key] || ''));
             if (!sameGeneration) {
-                showMeasurementConvolverFeedback('Retake L/R with matching Convolver type and sample rate');
+                showMeasurementConvolverFeedback('Retake L/R with matching Convolver type');
                 deps.showToast('Left and Right convolver drafts use different FIR settings. Retake Both for a matched comparison preset.', 'warning');
                 return;
             }
@@ -747,7 +762,7 @@
         try {
             const draftMetadata = drafts[0]?.metadata || {};
             const generationOptions = {
-                sampleRate: draftMetadata.sampleRate || getMeasurementConvolverSampleRate(),
+                sampleRate: draftMetadata.sampleRate || MEASUREMENT_CONVOLVER_FALLBACK_SAMPLE_RATE,
                 quality: draftMetadata.quality || conv.quality,
                 phaseMode: draftMetadata.phaseMode || conv.phaseMode,
                 irLength: draftMetadata.irLength || getMeasurementConvolverFirLength(),
@@ -756,6 +771,9 @@
                 leftTiming: leftDraft?.timing || null,
                 rightTiming: rightDraft?.timing || null,
                 timingSafetyLimitMs: deps.getTimingSafetyLimitMs(),
+                // Only the measurements the draft was taken from are checked;
+                // curves shown since then are not sources.
+                sourceTargets: drafts.flatMap((draft) => draft.metadata?.sourceMeasurementTargets || []),
             };
             const created = await createMeasurementConvolverPreset(mode, analyses, sharedAutoGainDb, itemName, generationOptions);
             const item = {
@@ -804,6 +822,6 @@
 
     return {
         init,
-        clampMeasurementConvolverFrequency, getDefaultMeasurementConvolverState, ensureMeasurementConvolverState, getMeasurementConvolverCurveOptions, getMeasurementConvolverCurve, getMeasurementConvolverCurveDb, getMeasurementConvolverDraftPhaseMode, getMeasurementConvolverDrafts, getMeasurementConvolverDraftPhaseMismatch, clearMeasurementConvolverDraftForPhaseChange, clearMeasurementConvolverDraftForSettingsChange, updateMeasurementConvolverField, getMeasurementConvolverSelectedSourceEntries, getMeasurementConvolverSourceEntries, getMeasurementConvolverSourceSelectionState, getMeasurementConvolverMeasurementForSide, getMeasurementConvolverTracePoints, getMeasurementConvolverAdaptiveDipGuardStrength, applyMeasurementConvolverDipGuard, analyzeMeasurementConvolverSide, getMeasurementConvolverSelectedSourceCount, getMeasurementConvolverMultiSourceWarning, buildMeasurementConvolverWarnings, formatMeasurementConvolverGain, getMeasurementConvolverNameSuffix, getMeasurementConvolverItemName, getMeasurementConvolverPreviewMode, getMeasurementConvolverPreviewGain, showMeasurementConvolverFeedback, getMeasurementConvolverSampleRate, getMeasurementConvolverTypeOption, getMeasurementConvolverTypeKeys, getMeasurementConvolverPhaseModeForType, getMeasurementConvolverPhaseLabel, getMeasurementConvolverPhaseTag, getMeasurementConvolverFirLengthForType, getMeasurementConvolverFirLength, getMeasurementConvolverTypeLabel, interpolateMeasurementConvolverCorrection, buildMeasurementConvolverMagnitudeBins, buildMeasurementConvolverLinearImpulseFromMagnitudes, fftMeasurementConvolverComplex, buildMeasurementConvolverMinimumSpectrum, buildMeasurementConvolverImpulseFromSpectrum, buildMeasurementConvolverImpulse, getMeasurementConvolverTimingMs, getMeasurementConvolverTimingDelta, getMeasurementConvolverTimingPairDebug, formatMeasurementConvolverTimingRelation, getMeasurementConvolverTimingSafetyMessage, alignStereoImpulsesForMinimumAligned, getMeasurementAnalysisSampleRate, getMeasurementDirectArrivalTiming, writeMeasurementConvolverWav, appendMeasurementConvolverExtras, createMeasurementConvolverPreset, takeMeasurementConvolverToDraft, resolveMeasurementConvolverItemName, createMeasurementConvolverPresetFromDraft,
+        clampMeasurementConvolverFrequency, getDefaultMeasurementConvolverState, ensureMeasurementConvolverState, getMeasurementConvolverCurveOptions, getMeasurementConvolverCurve, getMeasurementConvolverDraftPhaseMode, getMeasurementConvolverDrafts, getMeasurementConvolverDraftPhaseMismatch, clearMeasurementConvolverDraftForPhaseChange, clearMeasurementConvolverDraftForSettingsChange, updateMeasurementConvolverField, getMeasurementConvolverSelectedSourceEntries, getMeasurementConvolverSourceEntries, getMeasurementConvolverSourceSelectionState, getMeasurementConvolverMeasurementForSide, getMeasurementConvolverTracePoints, getMeasurementConvolverAdaptiveDipGuardStrength, applyMeasurementConvolverDipGuard, analyzeMeasurementConvolverSide, getMeasurementConvolverMultiSourceWarning, buildMeasurementConvolverWarnings, formatMeasurementConvolverGain, getMeasurementConvolverNameSuffix, getMeasurementConvolverItemName, getMeasurementConvolverPreviewMode, getMeasurementConvolverPreviewGain, showMeasurementConvolverFeedback, getMeasurementConvolverSampleRate, getMeasurementConvolverTypeOption, getMeasurementConvolverTypeKeys, getMeasurementConvolverPhaseModeForType, getMeasurementConvolverPhaseLabel, getMeasurementConvolverPhaseTag, getMeasurementConvolverFirLengthForType, getMeasurementConvolverFirLength, getMeasurementConvolverTypeLabel, interpolateMeasurementConvolverCorrection, buildMeasurementConvolverMagnitudeBins, buildMeasurementConvolverLinearImpulseFromMagnitudes, fftMeasurementConvolverComplex, buildMeasurementConvolverMinimumSpectrum, buildMeasurementConvolverImpulseFromSpectrum, buildMeasurementConvolverImpulse, getMeasurementConvolverTimingMs, getMeasurementConvolverTimingDelta, getMeasurementConvolverTimingPairDebug, formatMeasurementConvolverTimingRelation, getMeasurementConvolverTimingSafetyMessage, alignStereoImpulsesForMinimumAligned, getMeasurementAnalysisSampleRate, getMeasurementDirectArrivalTiming, writeMeasurementConvolverWav, appendMeasurementConvolverExtras, createMeasurementConvolverPreset, takeMeasurementConvolverToDraft, resolveMeasurementConvolverItemName, createMeasurementConvolverPresetFromDraft,
     };
 });

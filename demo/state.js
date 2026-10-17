@@ -4,6 +4,122 @@
 (function () {
     'use strict';
 
+    // ── Demo pace ───────────────────────────────────────────────────────
+    // A real backend answers in a few milliseconds and a real job runs for
+    // minutes. A demo that answers instantly never shows the frontend's own
+    // loading affordances, so every simulated response waits a short
+    // per-surface moment (PACE_MS) — a hint of work, not a wall-clock
+    // replica: no call waits longer than a fraction of a second and the
+    // longest job stays around ten seconds.
+    //
+    // Switched off where holding a response is impossible or meaningless: the
+    // vm test contexts have no document/location and stub their timers (a
+    // delayed promise could never resolve there), and `?fast` in the URL or
+    // window.__demoFast turns the pace off in a browser.
+    function demoFastPace() {
+        if (window.__demoFast === true) return true;
+        if (typeof document === 'undefined' || typeof window.location === 'undefined') return true;
+        if (typeof window.setTimeout !== 'function') return true;
+        try {
+            if (typeof URLSearchParams === 'function') {
+                return new URLSearchParams(String(window.location.search || '')).has('fast');
+            }
+        } catch (e) { /* no search string to read: keep the paced demo */ }
+        return false;
+    }
+    const PACE_MS = { control: 25, read: 90, heavy: 160, job: 220 };
+    const demoPace = { fast: demoFastPace(), ms: PACE_MS };
+    function paceDelayMs(kind) {
+        return demoPace.fast ? 0 : (PACE_MS[kind] || PACE_MS.read);
+    }
+    function pacedResolve(value, kind) {
+        const ms = paceDelayMs(kind);
+        if (ms <= 0 || typeof window.setTimeout !== 'function') return Promise.resolve(value);
+        return new Promise((resolve) => { window.setTimeout(() => resolve(value), ms); });
+    }
+
+    // ── Session persistence ─────────────────────────────────────────────
+    // The real backend is a long-lived process: reloading the page reattaches
+    // to whatever plays and keeps every setting. The demo rebuilds its
+    // runtime from scratch on every load, which made a reload look like a
+    // restart. Everything a reload should survive is mirrored into
+    // sessionStorage under one versioned key, so a fresh tab still opens on
+    // the documented .104 stock. The key follows the Auto Sub job parking
+    // ('fxroute.demo.*') that already survived a reload.
+    const SESSION_KEY = 'fxroute.demo.session';
+    // Bump when the stored shape or the seeded stock changes, so an older
+    // snapshot is dropped instead of shadowing the current seed.
+    const SESSION_VERSION = 1;
+    function sessionStore() {
+        try { return typeof sessionStorage === 'undefined' ? null : sessionStorage; } catch (e) { return null; }
+    }
+    function readSession() {
+        const store = sessionStore();
+        if (!store) return {};
+        try {
+            const parsed = JSON.parse(store.getItem(SESSION_KEY) || 'null');
+            return (parsed && parsed.version === SESSION_VERSION && parsed.data) ? parsed.data : {};
+        } catch (e) { return {}; }
+    }
+    // Slice providers registered by routes.js (DSP, output system,
+    // measurement setup), so one write carries the whole session instead of
+    // one storage key per module.
+    const sessionSlices = [];
+    function registerSessionSlice(provider) {
+        if (typeof provider === 'function') sessionSlices.push(provider);
+    }
+    let sessionReady = false;
+    let sessionWriteAt = 0;
+    let sessionWriteTimer = null;
+    function sessionSnapshot() {
+        const data = {
+            volume,
+            shuffle: !!shuffle,
+            loop: !!loop,
+            playing: !!(playing && !paused && currentTrack),
+            paused: !!paused,
+            owner: currentSource,
+            track_id: currentTrack ? String(currentTrack.id) : null,
+            position: Math.round(positionSec * 10) / 10,
+            saved_at: Date.now(),
+            queue: queue.map(t => String(t.id)),
+            queue_index: queueIndex,
+        };
+        for (const provider of sessionSlices) {
+            try { Object.assign(data, provider() || {}); } catch (e) { /* keep the rest */ }
+        }
+        return data;
+    }
+    function writeSessionNow() {
+        const store = sessionStore();
+        if (!store) return;
+        try {
+            store.setItem(SESSION_KEY, JSON.stringify({ version: SESSION_VERSION, data: sessionSnapshot() }));
+            sessionWriteAt = Date.now();
+        } catch (e) { /* a full or blocked store must never break playback */ }
+    }
+    // Throttled to one write per second (plus a trailing one), so the 500 ms
+    // transport tick cannot turn into a write per tick.
+    function saveSession() {
+        if (!sessionReady) return;
+        if (sessionWriteTimer) return;
+        const wait = Math.max(0, 1000 - (Date.now() - sessionWriteAt));
+        if (wait === 0) { writeSessionNow(); return; }
+        if (typeof window.setTimeout !== 'function') return;
+        sessionWriteTimer = window.setTimeout(() => {
+            sessionWriteTimer = null;
+            writeSessionNow();
+        }, wait);
+    }
+    function markSessionReady() {
+        sessionReady = true;
+        saveSession();
+    }
+    function clearSession() {
+        const store = sessionStore();
+        try { if (store) store.removeItem(SESSION_KEY); } catch (e) { /* nothing to drop */ }
+    }
+
     const lib = window.FXROUTE_DEMO_LIBRARY;
     const lib2 = window.FXROUTE_DEMO_LIBRARY2 || { tracks: [], albums: [], playlists: [] };
     const lib3 = window.FXROUTE_DEMO_LIBRARY3 || { tracks: [], albums: [], playlists: [] };
@@ -138,6 +254,18 @@
     // the cap sits below the threshold, so nothing reaches the red.
     const PEAK_CREST_DB = 3;
     const PEAK_CREST_SPREAD_DB = 3;
+    // Program profile per source: a compressed radio stream breathes less and
+    // carries a lower crest than a local FLAC, so the meter reads like the
+    // source that is playing instead of one generic envelope. Local playback
+    // keeps the reference profile the meter contracts are written against.
+    const LOCAL_PROGRAM = { baseLow: -17, baseSpan: 9, spreadDb: 1.5, transientChance: 0.22, crestDb: PEAK_CREST_DB, crestSpreadDb: PEAK_CREST_SPREAD_DB };
+    const RADIO_PROGRAM = { baseLow: -15, baseSpan: 4.5, spreadDb: 1.0, transientChance: 0.10, crestDb: 4.5, crestSpreadDb: 2.5 };
+    const STREAM_PROGRAM = { baseLow: -16, baseSpan: 6.5, spreadDb: 1.2, transientChance: 0.16, crestDb: 4.0, crestSpreadDb: 2.8 };
+    function programProfileFor(src) {
+        if (src === 'radio') return RADIO_PROGRAM;
+        if (src === 'spotify' || src === 'qobuz' || src === 'tidal') return STREAM_PROGRAM;
+        return LOCAL_PROGRAM;
+    }
     const peakDet = {
         l: { hits: 0, holdUntil: 0, lastOverAt: null },
         r: { hits: 0, holdUntil: 0, lastOverAt: null },
@@ -161,6 +289,63 @@
             det.holdUntil = 0;
         }
     }
+    // Multichannel footer meter: speaker positions of the routed output
+    // layout, mirroring dsp/output_meter.py (crossover ways meter as their
+    // side, the subs share one bass meter). routes.js supplies the layout.
+    let meterLayoutProvider = () => null;
+    function setMeterLayoutProvider(provider) {
+        meterLayoutProvider = typeof provider === 'function' ? provider : () => null;
+    }
+    const SURROUND_METER_ORDER = ['fl', 'fr', 'c', 'lfe', 'sl', 'sr', 'rl', 'rr'];
+    const STEREO_METER_ORDER = ['l', 'r', 'sub_l', 'sub_r', 'sub'];
+    const SURROUND_METER_KEYS = {
+        main_l: 'fl', main_r: 'fr', center: 'c', side_l: 'sl', side_r: 'sr',
+        rear_l: 'rl', rear_r: 'rr', sub1: 'lfe', sub2: 'lfe',
+    };
+    const STEREO_METER_KEYS = { main_l: 'l', main_r: 'r', sub_l: 'sub_l', sub_r: 'sub_r', sub1: 'sub', sub2: 'sub' };
+    function meterPositionKeys(mode, roles) {
+        const surround = mode === 'surround';
+        const found = new Set();
+        for (const role of roles || []) {
+            const key = role.startsWith('left_') ? (surround ? 'fl' : 'l')
+                : role.startsWith('right_') ? (surround ? 'fr' : 'r')
+                : (surround ? SURROUND_METER_KEYS : STEREO_METER_KEYS)[role];
+            if (!key) return [];
+            found.add(key);
+        }
+        return (surround ? SURROUND_METER_ORDER : STEREO_METER_ORDER).filter(key => found.has(key));
+    }
+    // Level of each position relative to the program: surrounds and bass sit
+    // below the fronts, with a slow per-position drift so the bars live.
+    const METER_POSITION_OFFSET_DB = {
+        l: 0, r: 0, fl: 0, fr: 0, c: -4, lfe: -8, sub: -8, sub_l: -8, sub_r: -8,
+        sl: -11, sr: -11, rl: -12, rr: -12,
+    };
+    const meterChannelEnv = {};
+    function channelsSnapshot(nowTs, active, capDb) {
+        const layout = meterLayoutProvider();
+        const keys = layout ? meterPositionKeys(layout.mode, layout.roles) : [];
+        if (keys.length < 3) return null;
+        const leftSide = new Set(['l', 'fl', 'sl', 'rl', 'sub_l']);
+        const vu = [];
+        const detected = [];
+        keys.forEach((key, index) => {
+            const program = leftSide.has(key) ? meterEnv.l : meterEnv.r;
+            const drift = Math.sin(nowTs / 1900 + index * 1.7) * 2.2;
+            const target = active
+                ? Math.min(program + (METER_POSITION_OFFSET_DB[key] ?? -10) + drift + dspMeterOffsetDb, capDb)
+                : -60;
+            const previous = meterChannelEnv[key] ?? -60;
+            const level = previous + (target - previous) * (target >= previous ? 0.5 : 0.25);
+            meterChannelEnv[key] = level;
+            vu.push(Math.round(level * 10) / 10);
+            const front = key === 'l' || key === 'fl' ? 'l' : (key === 'r' || key === 'fr' ? 'r' : null);
+            detected.push(!!front && peakTickNow < peakDet[front].holdUntil);
+        });
+        return { keys, vu_db: vu, detected };
+    }
+    let lastChannels = null;
+
     function peakSnapshot() {
         const activeL = peakTickNow < peakDet.l.holdUntil;
         const activeR = peakTickNow < peakDet.r.holdUntil;
@@ -189,6 +374,7 @@
             last_over_at_l: peakDet.l.lastOverAt,
             last_over_at_r: peakDet.r.lastOverAt,
             last_error: null,
+            channels: lastChannels,
         };
     }
 
@@ -215,10 +401,11 @@
         // through the no-data window.
         peakTickNow = nowTs;
         const active = !!(playing && !paused && currentTrack);
+        const program = programProfileFor(currentSource);
         if (active && !meterWasActive) {
             // Fresh signal: start on the program, not on the floor.
-            const base = -17 + Math.random() * 9;      // -17..-8 dB program
-            const spread = (Math.random() - 0.5) * 3;
+            const base = program.baseLow + Math.random() * program.baseSpan;
+            const spread = (Math.random() - 0.5) * 2 * program.spreadDb;
             meterEnv.tL = base + spread;
             meterEnv.tR = base - spread;
             meterEnv.l = meterEnv.tL;
@@ -233,12 +420,12 @@
                 // stereo spread; occasionally a transient into the upper VU
                 // that decays over the next tick or two. Playback always starts
                 // with one so the meter comes alive immediately.
-                const base = -17 + Math.random() * 9;      // -17..-8 dB program
-                const spread = (Math.random() - 0.5) * 3;  // +/- 1.5 dB
+                const base = program.baseLow + Math.random() * program.baseSpan;
+                const spread = (Math.random() - 0.5) * 2 * program.spreadDb;
                 meterEnv.tL = base + spread;
                 meterEnv.tR = base - spread;
                 meterEnv.nextPickTs = nowTs + 1200 + Math.random() * 2200;
-                if (Math.random() < 0.22) {
+                if (Math.random() < program.transientChance) {
                     meterEnv.transientTs = nowTs + 800 + Math.random() * 800;
                     // Louder passages, still below full scale on their own:
                     // with the music-like crest below, raw peaks reach the
@@ -263,8 +450,8 @@
             // Raw peaks ride the instantaneous program plus a music-like
             // crest factor, feeding the independent peak detector below.
             const capDb = dspLimiterEnabled ? STOCK_LIMITER_THRESHOLD_DB : DISPLAY_CEILING_DB;
-            peakDetect(nowTs, Math.min(targetL + dspMeterOffsetDb + PEAK_CREST_DB + Math.random() * PEAK_CREST_SPREAD_DB, capDb), true);
-            peakDetect(nowTs, Math.min(targetR + dspMeterOffsetDb + PEAK_CREST_DB + Math.random() * PEAK_CREST_SPREAD_DB, capDb), false);
+            peakDetect(nowTs, Math.min(targetL + dspMeterOffsetDb + program.crestDb + Math.random() * program.crestSpreadDb, capDb), true);
+            peakDetect(nowTs, Math.min(targetR + dspMeterOffsetDb + program.crestDb + Math.random() * program.crestSpreadDb, capDb), false);
             const levelL = Math.min(meterEnv.l + dspMeterOffsetDb, capDb);
             const levelR = Math.min(meterEnv.r + dspMeterOffsetDb, capDb);
             meter.vu_db_l = Math.round(levelL * 10) / 10;
@@ -272,6 +459,7 @@
             lastAudioSampleAt = nowTs;
             meter.vu_age_ms = 0;
             meter.vu_fresh = true;
+            lastChannels = channelsSnapshot(nowTs, true, capDb);
         } else {
             // No audio this tick: floor the VU, but keep it fresh through the
             // live monitor's no-data window before the sample age goes stale.
@@ -285,11 +473,15 @@
             meterEnv.tL = -30; meterEnv.tR = -30;
             meterEnv.transientTs = 0;
             meterEnv.nextPickTs = 0;
+            lastChannels = channelsSnapshot(nowTs, false, -60);
         }
     }
     setInterval(() => {
         meterTick(Date.now());
         window.__demoBroadcast && window.__demoBroadcast('playback_peak_warning', peakSnapshot());
+        // The transport position moves with this tick, so it is also the
+        // natural clock for the throttled session snapshot (see saveSession).
+        saveSession();
     }, 500);
 
     function clearProviderOwners(exclude) {
@@ -525,6 +717,10 @@
         paused = false;
         ended = false;
         positionSec = 0;
+        // The tick clock follows the track, not the page: without this the
+        // first start after an idle page (or a session reattach) counts the
+        // whole idle time as playback and jumps into the track.
+        lastTickTs = Date.now();
         currentSource = src;
         currentTrack = track;
         queue = (Array.isArray(trackQueue) && trackQueue.length) ? trackQueue : [track];
@@ -1192,6 +1388,23 @@
         return copy;
     }
 
+    // The demo's fixtures are one pair of speakers.  A speaker group of an
+    // Advanced series gets its own level and tilt so the groups can be told
+    // apart in the graph.
+    const GROUP_SHAPE_DB = { front: [0, 0], center: [-2.5, 0.8], side: [1.5, -0.6], rear: [-4, 1.2] };
+    function shapeFixtureForGroup(fixture, group) {
+        const shape = GROUP_SHAPE_DB[group];
+        if (!shape || !fixture) return fixture;
+        const copy = JSON.parse(JSON.stringify(fixture));
+        ['traces', 'review_traces'].forEach((key) => {
+            (copy[key] || []).forEach((trace) => {
+                trace.points = (trace.points || []).map(([hz, db, ...rest]) =>
+                    [hz, db + shape[0] + shape[1] * Math.log2(Math.max(hz, 20) / 1000), ...rest]);
+            });
+        });
+        return copy;
+    }
+
     function makeMeasurement(opts = {}) {
         const id = opts.id || 'demo_meas_' + (++measurementSeq);
         const name = opts.name || 'Demo Measurement ' + measurementSeq;
@@ -1219,10 +1432,19 @@
                 source = pool[sweepFixtureIndex % pool.length];
             }
             sweepFixtureIndex += 1;
-            const measurement = prepareFixtureMeasurement(source, opts);
+            const measurement = prepareFixtureMeasurement(shapeFixtureForGroup(source, opts.group), opts);
             measurement.id = id;
             measurement.name = name;
             measurement.created_at = created;
+            // Frozen area of a Surround Global group sweep (its saved badge).
+            if (opts.group) {
+                measurement.measurement_target = {
+                    schema: 'fxroute.measurement-target',
+                    bank_id: opts.bank || 'global',
+                    mode: opts.mode || 'surround',
+                    global_group: opts.group,
+                };
+            }
             if (opts.channel) measurement.channel = String(opts.channel).toLowerCase();
             if (opts.role) measurement.measurement_role = String(opts.role);
             if (opts.kind) measurement.measurement_kind = String(opts.kind);
@@ -1246,6 +1468,16 @@
         };
     }
 
+    // Phase labels of a simulated sweep, by progress percentage: settle the
+    // output, run the sweep, average the captures, then process the result.
+    // The run stays a few seconds (never the real minutes) — naming the
+    // phases is what reads as work instead of a bare percentage.
+    const SWEEP_PHASES = [[12, 'Settling output…'], [78, 'Sweeping…'], [92, 'Averaging captures…'], [101, 'Processing measurement…']];
+    function sweepPhaseMessage(progressPct) {
+        for (const [limit, message] of SWEEP_PHASES) if (progressPct < limit) return message;
+        return SWEEP_PHASES[SWEEP_PHASES.length - 1][1];
+    }
+
     function startMeasurement(opts = {}) {
         const id = 'demo_job_' + (++lastJobId);
         const measurement = makeMeasurement({ ...opts, id: 'demo_meas_' + id });
@@ -1254,7 +1486,7 @@
             status: 'running',
             started_at: new Date().toISOString(),
             progress_pct: 0,
-            message: 'Sweep running…',
+            message: sweepPhaseMessage(0),
             measurement,
             result: null,
             timer: null,
@@ -1262,8 +1494,8 @@
         jobs[id].timer = setInterval(() => {
             const j = jobs[id];
             if (!j) return;
-            j.progress_pct = Math.min(100, j.progress_pct + 5 + Math.random() * 8);
-            j.message = j.progress_pct >= 100 ? 'Processing measurement…' : 'Sweep running…';
+            j.progress_pct = Math.min(100, j.progress_pct + 4 + Math.random() * 5);
+            j.message = sweepPhaseMessage(j.progress_pct);
             if (j.progress_pct >= 100) {
                 clearInterval(j.timer);
                 j.timer = null;
@@ -1583,6 +1815,85 @@
         };
     }
 
+    // ── Session transport restore ───────────────────────────────────────
+    // A restored local track may come from any of the demo catalogs (the
+    // active share can have changed before the reload), so the snapshot is
+    // resolved against all of them instead of the active one only.
+    function localTrackAnywhere(trackId) {
+        for (const pool of [localTracks, lib2.tracks || [], lib3.tracks || []]) {
+            const track = pool.find(t => String(t.id) === String(trackId));
+            if (track) return track;
+        }
+        return null;
+    }
+
+    // Reattaches the previous session: the transport comes back on the same
+    // track, position and queue — advancing by the reload time while the
+    // backend kept playing, exactly like a real reattach. The remote-provider
+    // owners (Spotify/Qobuz) run their own demo_start flow and are not
+    // reattached here.
+    function restoreSessionTransport(saved) {
+        if (!saved || typeof saved !== 'object') return;
+        if (Number.isFinite(Number(saved.volume))) volume = Math.max(0, Math.min(100, Number(saved.volume)));
+        shuffle = !!saved.shuffle;
+        loop = !!saved.loop;
+        const trackId = saved.track_id ? String(saved.track_id) : '';
+        // A stopped or finished session comes back stopped: the real backend
+        // has no track loaded either.
+        if (!trackId || (!saved.playing && !saved.paused)) return;
+        const queueIds = Array.isArray(saved.queue) ? saved.queue.map(String) : [];
+        let chosen = null;
+        let tracks = null;
+        let source = 'local';
+        if (saved.owner === 'radio') {
+            const station = stations.find(s => ('radio_' + s.id) === trackId || s.id === trackId);
+            if (!station) return;
+            source = 'radio';
+            chosen = {
+                id: 'radio_' + station.id,
+                title: station.title || station.name || 'Station',
+                artist: station.artist || 'Radio',
+                album: station.title || station.name || 'Radio',
+                source: 'radio',
+                duration: 0,
+                cover_url: station.image_url || '',
+                artwork_url: station.image_url || '',
+                artwork_available: !!station.image_url,
+                artwork_source: 'radio',
+                stream_url: station.stream_url,
+                url: station.stream_url,
+            };
+            tracks = [chosen];
+        } else if (saved.owner === 'tidal') {
+            source = 'tidal';
+            chosen = tidalTrackById(trackId);
+            if (!chosen) return;
+            tracks = queueIds.map(tidalTrackById).filter(Boolean);
+            if (!tracks.length) tracks = (tidalTracksLib || []).slice();
+            if (!tracks.length) tracks = [chosen];
+            else if (!tracks.some(t => String(t.id) === String(chosen.id))) tracks.unshift(chosen);
+        } else {
+            chosen = localTrackAnywhere(trackId);
+            if (!chosen) return;
+            tracks = queueIds.map(localTrackAnywhere).filter(Boolean);
+            if (!tracks.length) tracks = [chosen];
+            else if (!tracks.some(t => String(t.id) === String(chosen.id))) tracks.unshift(chosen);
+        }
+        const index = Math.max(0, tracks.findIndex(t => String(t.id) === String(chosen.id)));
+        startTrack(chosen, source, tracks, index);
+        const elapsed = saved.playing ? Math.max(0, (Date.now() - Number(saved.saved_at || Date.now())) / 1000) : 0;
+        positionSec = Math.max(0, Number(saved.position || 0) + elapsed);
+        const duration = Number((currentTrack && currentTrack.duration) || 0);
+        if (duration > 0) positionSec = Math.min(positionSec, duration);
+        if (saved.paused || !saved.playing) { paused = true; playing = false; }
+        lastTickTs = Date.now();
+        emitPlayback();
+    }
+
+    // Reattach before the frontend scripts load, so the app's very first
+    // state already shows the restored track.
+    restoreSessionTransport(readSession());
+
     window.FXROUTE_DEMO_STATE = {
         lib,
         lib2,
@@ -1629,6 +1940,7 @@
         // this in the browser; tests drive it directly.
         demoMeterTick: meterTick,
         setDspSnapshot,
+        setMeterLayoutProvider,
         // measurement helpers (consumed by routes.js)
         startMeasurement,
         startLrRepeatMeasurement,
@@ -1647,6 +1959,17 @@
         // providers
         spotify,
         qobuz,
+        // Response pace + session store (consumed by routes.js and boot.js)
+        demoPace,
+        paceDelayMs,
+        pacedResolve,
+        registerSessionSlice,
+        sessionSnapshot,
+        saveSession,
+        session: { read: readSession, save: saveSession, ready: markSessionReady, clear: clearSession },
+        // The runs that ship with the demo; anything else in the saved list was
+        // created in this session and is what a reload keeps.
+        seededMeasurementIds: () => savedMeasurementFixtures.map(m => String(m.id)),
         // Simulation hook: routes.js mirrors the native-kHz behavior here so
         // the graph rate follows TIDAL Hi-Res/lossless playback like the real
         // system (see /api/audio/samplerate).

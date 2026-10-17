@@ -26,42 +26,163 @@
         'subwoofer-2.2': '2.2 Mono',
         'subwoofer-2.2-stereo': '2.2 Stereo',
     };
+    const SUB_MODE_NAMES = { mono: 'subwoofer-2.1', 'dual-mono': 'subwoofer-2.2', stereo: 'subwoofer-2.2-stereo' };
 
     function step(id, role, position, channel, title, instruction, active, move) {
         return { id, role, position, channel, title, instruction, active, move };
     }
 
-    function buildSequence(mode = 'stereo') {
+    function capitalize(text) {
+        return text.charAt(0).toUpperCase() + text.slice(1);
+    }
+
+    // A measuring scope says what one Advanced run measures: its channels (a
+    // left/right pair or one mono channel), whether the 1 m direct response is
+    // taken (not for subwoofers), and whether a left+right integration check
+    // exists (needs a pair that plays with subs).  A mode name alone is the
+    // legacy whole-system scope.
+    function legacyScope(mode = 'stereo') {
         const normalized = MODE_LABELS[mode] ? mode : 'stereo';
-        const steps = [
-            step('direct-left', 'direct', 'direct-left', 'left', 'Direct response · Left', 'Place the microphone about 1 m from the left speaker on its listening axis.', 'Left speaker', true),
-            step('direct-right', 'direct', 'direct-right', 'right', 'Direct response · Right', 'Place the microphone about 1 m from the right speaker on its listening axis.', 'Right speaker', true),
-            step('mlp-left', 'mlp', 'mlp', 'left', 'Main listening position', 'Move the microphone to ear height at the main listening position. Left and right will be measured automatically.', 'Left speaker', true),
-            step('mlp-right', 'mlp', 'mlp', 'right', 'Main listening position', 'Keep the microphone here.', 'Right speaker', false),
-            step('area-left-l', 'secondary', 'left', 'left', 'Left listening position', 'Move the microphone 20–30 cm left of the main listening position. Left and right will be measured automatically.', 'Left speaker', true),
-            step('area-left-r', 'secondary', 'left', 'right', 'Left listening position', 'Keep the microphone here.', 'Right speaker', false),
-            step('area-right-l', 'secondary', 'right', 'left', 'Right listening position', 'Move the microphone 20–30 cm right of the main listening position. Left and right will be measured automatically.', 'Left speaker', true),
-            step('area-right-r', 'secondary', 'right', 'right', 'Right listening position', 'Keep the microphone here.', 'Right speaker', false),
-        ];
-        if (normalized !== 'stereo') {
+        return {
+            id: normalized, mode: normalized, label: MODE_LABELS[normalized], channels: ['left', 'right'],
+            direct: true, integration: normalized !== 'stereo', speaker: '', unit: 'speaker', wholeSystem: true,
+            includesSubs: true,
+        };
+    }
+
+    function normalizeScope(scopeOrMode) {
+        return scopeOrMode && typeof scopeOrMode === 'object' ? scopeOrMode : legacyScope(scopeOrMode);
+    }
+
+    // Derive the scope from the measuring area and the active topology.
+    function buildScope(area = {}, topology = {}) {
+        const mode = SUB_MODE_NAMES[topology.sub_mode] || 'stereo';
+        const bankId = String(area.bank_id || 'global');
+        const subwoofer = bankId.startsWith('sub');
+        const channels = area.channel_mode === 'mono' ? ['stereo'] : ['left', 'right'];
+        const wholeSystem = bankId === 'global' && !area.group;
+        // A Surround group target covers every sub; an individual speaker bank
+        // mutes them, and a subwoofer scope measures them directly.
+        const includesSubs = subwoofer || wholeSystem || !!area.group;
+        const name = String(area.label || '').replace(/^Global · /, '').replace(/ \+ Sub$/, '');
+        return {
+            id: [bankId, area.group || '', channels.join(','), mode].join('|'),
+            mode,
+            label: wholeSystem ? MODE_LABELS[mode] : String(area.label || '').replace(/^Global · /, ''),
+            channels,
+            direct: !subwoofer,
+            integration: !subwoofer && channels.length === 2 && mode !== 'stereo',
+            speaker: channels.length === 1 ? (subwoofer ? name : `${name} speaker`) : '',
+            unit: subwoofer ? 'sub' : 'speaker',
+            wholeSystem,
+            includesSubs,
+            group: String(area.group || ''),
+            // Display placement must not change the routing-facing group.
+            diagramGroup: String(area.group || ({ main: 'front', center: 'center', side: 'side', rear: 'rear' }[bankId]) || ''),
+            groupName: name,
+        };
+    }
+
+    // A series measures several groups at shared listening positions. Its scope
+    // lists the group scopes; readers of one step's scope use scopeForStep.
+    function buildSeriesScope(scopes) {
+        const list = (Array.isArray(scopes) ? scopes : []).filter(Boolean);
+        return {
+            id: ['series', ...list.map(scope => scope.id)].join('+'),
+            series: true,
+            scopes: list,
+            mode: list[0]?.mode || 'stereo',
+            label: 'All speakers',
+            channels: [],
+            direct: true,
+            integration: false,
+            speaker: '',
+            unit: 'speaker',
+            wholeSystem: false,
+            includesSubs: true,
+            group: '',
+            groupName: '',
+        };
+    }
+
+    function scopeForStep(scopeOrMode, step) {
+        const scope = normalizeScope(scopeOrMode);
+        if (!scope.series) return scope;
+        return scope.scopes.find(item => item.group === step?.group) || scope.scopes[0] || scope;
+    }
+
+    function buildSequence(scopeOrMode = 'stereo') {
+        const scope = normalizeScope(scopeOrMode);
+        const pair = scope.channels.length === 2;
+        const activeName = channel => (pair ? `${capitalize(channel)} ${scope.unit}` : scope.speaker);
+        const steps = [];
+        if (scope.direct) {
+            scope.channels.forEach(channel => steps.push(step(`direct-${channel}`, 'direct', `direct-${channel}`, channel,
+                pair ? `Direct response · ${capitalize(channel)}` : 'Direct response',
+                `Place the microphone about 1 m from the ${pair ? channel : scope.speaker.toLowerCase().replace(/ speaker$/, '')} speaker on its listening axis.`,
+                activeName(channel), true)));
+        }
+        const automatic = pair ? ' Left and right will be measured automatically.' : '';
+        const series = (position, role, title, baseId, shortSuffix, instruction) => scope.channels.forEach((channel, index) => {
+            const suffix = !pair ? '' : (shortSuffix ? `-${channel === 'left' ? 'l' : 'r'}` : `-${channel}`);
+            steps.push(step(`${baseId}${suffix}`, role, position, channel, title,
+                index === 0 ? `${instruction}${automatic}` : 'Keep the microphone here.', activeName(channel), index === 0));
+        });
+        series('mlp', 'mlp', 'Main listening position', 'mlp', false,
+            'Move the microphone to ear height at the main listening position.');
+        series('left', 'secondary', 'Left listening position', 'area-left', true,
+            'Move the microphone 20–30 cm left of the main listening position.');
+        series('right', 'secondary', 'Right listening position', 'area-right', true,
+            'Move the microphone 20–30 cm right of the main listening position.');
+        if (scope.integration) {
             steps.push(step('integration', 'integration', 'mlp', 'stereo', 'Subwoofer alignment check', 'Move the microphone back to the main listening position.', 'L + R with subwoofer routing', true));
         }
-        return { mode: normalized, modeLabel: MODE_LABELS[normalized], steps };
+        return { mode: scope.mode, scope, modeLabel: scope.label, steps };
+    }
+
+    // Keep every group's capture identity, but visit each listening position
+    // only once. Integration checks share Main with their source captures.
+    function buildSeriesSequence(scopes) {
+        const scope = buildSeriesScope(scopes);
+        const groupedSteps = scope.scopes.flatMap((groupScope) => {
+            // A single speaker already names itself ("Center speaker").
+            const named = groupScope.channels.length === 2;
+            return buildSequence(groupScope).steps.map(item => ({
+                ...item,
+                id: `${groupScope.group}:${item.id}`,
+                group: groupScope.group,
+                active: named ? `${groupScope.groupName} · ${item.active}` : item.active,
+            }));
+        });
+        const steps = groupedSteps.filter(item => item.role === 'direct');
+        for (const position of ['mlp', 'left', 'right']) {
+            groupedSteps.filter(item => item.role !== 'direct' && item.position === position).forEach((item, index) => {
+                const instruction = item.instruction.replace(/ Left and right will be measured automatically\.$/, '');
+                steps.push({ ...item, move: index === 0, instruction: index === 0
+                    ? `${instruction} All speakers will be measured automatically.` : 'Keep the microphone here.' });
+            });
+        }
+        return { mode: scope.mode, scope, modeLabel: scope.label, steps };
     }
 
     function getPositionSeriesEnd(steps, startIndex) {
-        const position = steps[startIndex]?.position;
+        const { position } = steps[startIndex] || {};
         let endIndex = startIndex;
-        while (endIndex + 1 < steps.length && steps[endIndex + 1].position === position) endIndex += 1;
+        while (endIndex + 1 < steps.length && steps[endIndex + 1].position === position
+            && !steps[endIndex + 1].move) endIndex += 1;
         return endIndex;
     }
 
     function getPreviousPositionIndex(steps, currentIndex) {
         if (currentIndex <= 0) return 0;
-        const previousPosition = steps[currentIndex - 1]?.position;
         let index = currentIndex - 1;
-        while (index > 0 && steps[index - 1]?.position === previousPosition) index -= 1;
+        while (index > 0 && !steps[index]?.move
+            && steps[index - 1]?.position === steps[index]?.position) index -= 1;
         return index;
+    }
+
+    function groupCaptures(captures, group) {
+        return (Array.isArray(captures) ? captures : []).filter(item => (item.group || '') === (group || ''));
     }
 
     function interpolate(points, frequency) {
@@ -319,20 +440,26 @@
         };
     }
 
-    function getDiagramState(mode, channel, complete = false) {
-        const normalized = MODE_LABELS[mode] ? mode : 'stereo';
+    function getDiagramState(scopeOrMode, channel, complete = false) {
+        const scope = normalizeScope(scopeOrMode);
+        const normalized = scope.mode;
         const stereoStep = channel === 'stereo' || complete;
         const activeChannel = complete ? 'stereo' : channel;
+        const layout = !scope.direct ? 'sub' : scope.channels.length === 1 ? 'single' : 'pair';
         const subs = {
             left: { visible: false, active: false, label: 'SUB 1', single: false },
             right: { visible: false, active: false, label: 'SUB 2', single: false },
         };
-        if (normalized === 'subwoofer-2.1') {
+        // Only a scope whose target covers the subs shows them: a whole-system
+        // run, a Surround group (its target keeps the subs audible) or a
+        // subwoofer scope.  An individual speaker bank mutes every sub.
+        const showSubs = scope.includesSubs !== false;
+        if (showSubs && normalized === 'subwoofer-2.1') {
             subs.left = { visible: true, active: !!activeChannel, label: 'SUB', single: true };
-        } else if (normalized === 'subwoofer-2.2') {
+        } else if (showSubs && normalized === 'subwoofer-2.2') {
             subs.left.visible = subs.right.visible = true;
             subs.left.active = subs.right.active = !!activeChannel;
-        } else if (normalized === 'subwoofer-2.2-stereo') {
+        } else if (showSubs && normalized === 'subwoofer-2.2-stereo') {
             subs.left.visible = subs.right.visible = true;
             subs.left.label = 'SUB L';
             subs.right.label = 'SUB R';
@@ -340,33 +467,70 @@
             subs.right.active = stereoStep || activeChannel === 'right';
         }
         return {
+            layout,
+            group: scope.diagramGroup || scope.group || '',
             speakers: {
-                left: stereoStep || activeChannel === 'left',
-                right: stereoStep || activeChannel === 'right',
+                left: layout === 'pair' && (stereoStep || activeChannel === 'left'),
+                right: layout === 'pair' && (stereoStep || activeChannel === 'right'),
+                stereo: layout === 'single' && !!activeChannel,
             },
             subs,
         };
     }
 
-    function buildProfile(captures, mode = 'stereo') {
-        const mlpLeft = findCapture(captures, 'mlp', 'mlp', 'left');
-        const mlpRight = findCapture(captures, 'mlp', 'mlp', 'right');
-        const integrationMeasurement = findCapture(captures, 'integration', 'mlp', 'stereo');
-        const integration = validateComplexSum(mlpLeft, mlpRight, integrationMeasurement);
-        if (mode !== 'stereo' && integration.status === 'poor') {
+    // Subwoofer scopes have no direct response: the room model is the weighted
+    // listening-position model alone.
+    function buildListeningSide(captures, channel) {
+        const room = buildListeningModel(captures, channel);
+        return { channel, points: room.points, constraints: room.constraints, timingMeasurement: room.timingMeasurement, modelBlend: null };
+    }
+
+    function validateIntegration(captures, scopeOrMode = 'stereo') {
+        const scope = normalizeScope(scopeOrMode);
+        const pair = scope.channels.length === 2;
+        // A single channel has no second summand to compare.
+        const integration = pair ? validateComplexSum(
+            findCapture(captures, 'mlp', 'mlp', 'left'),
+            findCapture(captures, 'mlp', 'mlp', 'right'),
+            findCapture(captures, 'integration', 'mlp', 'stereo')) : null;
+        if (scope.integration && integration.status === 'poor') {
             const error = new Error('System integration check failed. Verify routing and microphone position, then repeat the integration measurement.');
             error.retryRole = 'integration';
             throw error;
         }
-        const left = buildHybridSide(captures, 'left');
-        const right = buildHybridSide(captures, 'right');
-        return { mode, left, right, integration };
+        return integration;
+    }
+
+    function buildProfile(captures, scopeOrMode = 'stereo') {
+        const scope = normalizeScope(scopeOrMode);
+        const integration = validateIntegration(captures, scope);
+        const models = Object.fromEntries(scope.channels.map(channel => [
+            channel, scope.direct ? buildHybridSide(captures, channel) : buildListeningSide(captures, channel)]));
+        return { mode: scope.mode, scope, models, left: models.left || null, right: models.right || null, integration };
+    }
+
+    // The finished series: one regular profile per group, in series order.
+    function buildSeriesProfile(scopeOrSeries, profilesByGroup = {}) {
+        const scope = normalizeScope(scopeOrSeries);
+        const parts = scope.scopes.map((groupScope) => {
+            const profile = profilesByGroup[groupScope.group];
+            if (!profile) throw new Error(`Missing ${groupScope.groupName || groupScope.group} measurement profile`);
+            return { scope: groupScope, profile };
+        });
+        return { series: true, mode: scope.mode, scope, parts };
     }
 
     return {
         CONFIG,
         MODE_LABELS,
+        buildScope,
+        buildSeriesScope,
+        scopeForStep,
+        normalizeScope,
         buildSequence,
+        buildSeriesSequence,
+        buildSeriesProfile,
+        groupCaptures,
         getPositionSeriesEnd,
         getPreviousPositionIndex,
         buildListeningModel,
@@ -375,6 +539,7 @@
         isUsableDirectMeasurement,
         validateDirectMicrophonePosition,
         validateComplexSum,
+        validateIntegration,
         buildProfile,
         getDiagramState,
         interpolate,

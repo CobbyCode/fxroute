@@ -119,6 +119,32 @@
     background-color: var(--bg-surface);
 }
 
+/* Bank selector and Expert switch share the header's right edge, also when
+   they wrap below the title. */
+.effects-compare-header-tools {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    flex-wrap: wrap;
+    gap: 0.5rem 1rem;
+    margin-left: auto;
+    max-width: 100%;
+}
+
+/* Speaker group of a Surround Global import, under the Target line. */
+.effects-import-group-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    margin-top: 0.6rem;
+}
+
+.effects-import-group-row .measurement-chip {
+    min-height: 32px;
+    padding: 0.3rem 0.8rem;
+    font-size: 0.78rem;
+}
+
 .effects-rew-dual-grid.is-mono {
     grid-template-columns: 1fr;
 }
@@ -139,7 +165,9 @@
     gap: 0.75rem;
 }
 
+/* min-width: long All Banks rows end in an ellipsis instead of widening the column. */
 .effects-compare-slot {
+    min-width: 0;
     padding: 0.8rem;
     border-radius: var(--radius-md);
     border: 1px solid var(--border);
@@ -159,6 +187,94 @@
 
 .effects-compare-fields .field-group {
     margin-bottom: 0;
+}
+
+/* All Banks slots: one row per switched bank, bank left, preset right.
+   Long names end in an ellipsis; the row tooltip carries the full name. */
+.effects-compare-slot-banks {
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    font-size: 0.85rem;
+    line-height: 1.35;
+}
+
+.effects-compare-slot-bank {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 0.75rem;
+    min-width: 0;
+}
+
+.effects-compare-slot-bank-key {
+    flex: 0 0 auto;
+    color: var(--text-secondary);
+    font-size: 0.78rem;
+}
+
+.effects-compare-slot-bank-preset {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text-primary);
+    font-weight: 600;
+}
+
+.effects-compare-slot-bank.is-fixed .effects-compare-slot-bank-preset {
+    color: var(--text-muted);
+    font-weight: 400;
+    font-style: italic;
+}
+
+/* Mixed A/B: the side each bank listens to. */
+.effects-compare-slot-bank.is-heard .effects-compare-slot-bank-preset {
+    color: var(--accent);
+}
+
+/* Surround Global slots: one preset picker per speaker group, group left.
+   A long preset name is clipped; the picker tooltip carries the full name. */
+.effects-compare-slot-group {
+    align-items: center;
+}
+
+.effects-compare-slot-group .effects-compare-slot-bank-key {
+    min-width: 4.5rem;
+}
+
+.effects-compare-slot-group .compare-group-select {
+    flex: 1 1 0;
+    min-height: 34px;
+    padding-block: 0.3rem;
+    padding-left: 0.6rem;
+    font-size: 0.82rem;
+}
+
+/* Group pickers need the width: Preset A and B stack instead of sitting
+   side by side. */
+.effects-compare-fields:has(.effects-compare-slot-banks:not(.hidden) .effects-compare-slot-group) {
+    grid-template-columns: 1fr;
+}
+
+/* A narrow slot (phones) puts the group above its picker, so the picker
+   keeps room for a compact preset name. */
+.effects-compare-slot {
+    container: compare-slot / inline-size;
+}
+
+@container compare-slot (max-width: 380px) {
+    .effects-compare-slot-group {
+        flex-wrap: wrap;
+        row-gap: 0.15rem;
+    }
+
+    .effects-compare-slot-group .effects-compare-slot-bank-key {
+        flex-basis: 100%;
+    }
 }
 
 .compare-select {
@@ -214,6 +330,52 @@ select option:checked {
     line-height: 1.35;
     white-space: normal;
     overflow-wrap: anywhere;
+}
+
+/* Active preset of every bank in the chain: one chip per bank, wrapped in
+   lines of even length like the calibration overview. The badge styles its
+   spans as full-width lines, so the chip parts are named with the container. */
+.effects-compare-banks {
+    width: 100%;
+    margin-top: 0.3rem;
+    padding-top: 0.35rem;
+    border-top: 1px solid rgba(110, 231, 183, 0.16);
+    font-size: 0.74rem;
+    line-height: 1.95;
+    text-wrap: balance;
+}
+
+.effects-compare-banks:empty {
+    display: none;
+}
+
+.effects-compare-banks .effects-compare-bank {
+    display: inline-block;
+    width: auto;
+    max-width: 100%;
+    padding: 0.1rem 0.28rem;
+    border-radius: 6px;
+    background: rgba(255, 255, 255, 0.05);
+    line-height: 1.3;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    vertical-align: middle;
+    white-space: nowrap;
+}
+
+.effects-compare-banks .effects-compare-bank.is-selected {
+    box-shadow: inset 0 0 0 1px rgba(110, 231, 183, 0.34);
+}
+
+.effects-compare-banks .effects-compare-bank-key,
+.effects-compare-banks .effects-compare-bank-preset {
+    display: inline;
+    width: auto;
+}
+
+.effects-compare-banks .effects-compare-bank-key {
+    color: var(--text-secondary);
+    font-size: 0.66rem;
 }
 
 .effects-compare-active-badge.is-side-a {
@@ -363,6 +525,126 @@ select.url-input::-webkit-scrollbar-thumb:hover {
     padding-top: 0.5rem;
 }
 
+/* Calibration overview: the A/B card's info line. One row each for the
+   speaker trims and the sub gains, above the system-wide delay and SPL. */
+.effects-cal {
+    padding-top: 0.7rem;
+    border-top: 1px solid var(--border);
+    line-height: 1.3;
+}
+
+.effects-cal-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    column-gap: 1.1rem;
+}
+
+.effects-cal-group {
+    display: flex;
+    align-items: baseline;
+    gap: 0.45rem;
+    min-width: 0;
+}
+
+.effects-cal-label {
+    flex: none;
+    color: var(--text-muted);
+    font-size: 0.66rem;
+    font-weight: 600;
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+}
+
+/* The leading labels form one column, so the values of all rows line up. */
+.effects-cal-group:first-child > .effects-cal-label {
+    min-width: 2.45rem;
+}
+
+/* A wide Surround wraps its chips behind the label, in lines of even length.
+   The line height is the only vertical spacing, between rows and wrapped lines alike. */
+.effects-cal-values {
+    min-width: 0;
+    font-size: 0.76rem;
+    line-height: 1.95;
+    text-wrap: balance;
+}
+
+.effects-cal-tail {
+    white-space: nowrap;
+}
+
+.effects-cal-chip,
+.effects-cal-badge,
+.effects-cal-value,
+.effects-cal-note {
+    font-family: var(--font-mono);
+    font-size: 0.76rem;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+
+.effects-cal-chip,
+.effects-cal-badge {
+    display: inline-block;
+    line-height: 1.3;
+}
+
+.effects-cal-chip {
+    padding: 0.1rem 0.28rem;
+    border-radius: 6px;
+    background: rgba(255, 255, 255, 0.04);
+    color: var(--text-primary);
+}
+
+.effects-cal-key {
+    margin-right: 0.16rem;
+    color: var(--text-secondary);
+    font-family: var(--font-sans);
+    font-size: 0.68rem;
+    font-weight: 600;
+}
+
+.effects-cal-chip.is-zero,
+.effects-cal-unit,
+.effects-cal-pending {
+    color: var(--text-muted);
+}
+
+.effects-cal-unit {
+    font-size: 0.7rem;
+}
+
+.effects-cal-badge {
+    padding: 0.1rem 0.5rem;
+    border: 1px solid rgba(110, 231, 183, 0.34);
+    border-radius: 999px;
+    background: rgba(110, 231, 183, 0.1);
+    color: #bff9de;
+    font-weight: 600;
+}
+
+.effects-cal-value {
+    color: var(--text-primary);
+}
+
+.effects-cal-note,
+.effects-cal-tag {
+    margin-left: 0.3rem;
+}
+
+.effects-cal-note {
+    color: var(--text-secondary);
+}
+
+.effects-cal-tag {
+    padding: 0 0.4rem;
+    border: 1px dashed var(--border-strong);
+    border-radius: 999px;
+    color: var(--text-muted);
+    font-size: 0.66rem;
+}
+
 .effects-filter-import-area {
     min-height: 112px;
 }
@@ -462,48 +744,65 @@ select.url-input::-webkit-scrollbar-thumb:hover {
     border-color: var(--accent);
     color: var(--text-primary);
 }
-/* Control groups reuse the subwoofer group visuals; tracks hug their
-   content and leftover width becomes even spacing, like the sub tile. */
+/* Control groups reuse the subwoofer group visuals. A group is a grid of
+   equal columns (three, two or one, by the width of the groups' container),
+   each holding one field centred at its fixed width: the columns spread over
+   the group, stacked groups keep them on the same x, and a field that no
+   longer fits on the first row continues under the first column. */
 .crossover-control-groups {
+    /* One width for every field of the three groups, so Frequency/Level,
+       Type/Align and Slope/Polarity share their left edge and width. It holds
+       a stepper with its unit and two 32px buttons (154px) and the widest
+       select, the Type select ("Linkwitz-Riley"). */
+    --effects-field-w: 9.7rem;
+    /* Three fields side by side: their widths, two gaps, the group padding
+       and border. A group asks for this width, so groups wrap as a whole. */
+    --effects-group-w: calc(3 * var(--effects-field-w) + 1.6rem + 1.4rem + 2px);
     display: flex;
     flex-wrap: wrap;
     gap: 0.75rem;
     width: min(100%, 1100px);
     margin: 0 auto;
+    container-type: inline-size;
 }
 .crossover-trio-group {
-    flex: 1 1 auto;
-    display: flex;
-    flex-wrap: wrap;
-    justify-content: space-evenly;
+    flex: 1 1 var(--effects-group-w);
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
     align-items: end;
     gap: 0.7rem 0.8rem;
+}
+@container (min-width: 21.75rem) {
+    .crossover-trio-group {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+}
+@container (min-width: 32.25rem) {
+    .crossover-trio-group {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+}
+.crossover-trio-group > .effects-subwoofer-group-label {
+    grid-column: 1 / -1;
+}
+.crossover-trio-group > .field-group {
+    width: var(--effects-field-w);
+    justify-self: center;
 }
 #tab-effects .crossover-trio-group {
     /* Beats the shared group min-width: 0 so a group wraps as a whole
        instead of squeezing its controls onto two lines. */
     min-width: min-content;
 }
-.crossover-trio-group > .effects-subwoofer-group-label {
-    flex: 1 1 100%;
-}
 #tab-effects select.effects-crossover-type-select {
-    /* 9.5rem is the widest option ("Linkwitz-Riley") plus the native arrow;
-       the old 9rem cap cut the closed label by ~5px on narrow cards. */
-    width: min(100%, 9.5rem);
+    /* Fills its field (9.7rem): the widest option ("Linkwitz-Riley") plus the
+       native arrow needs 9.5rem; the old 9rem cap cut the closed label. */
+    width: 100%;
     min-width: 0;
     max-width: 100%;
     /* Left-aligned like every other app select, closed and open. */
     text-align: left;
 }
-/* The way trim row (Level / Alignment / Polarity): the two steppers keep
-   their own width (the shared unit block makes them identical) and are never
-   squeezed below it, so the row wraps to a second line on a narrow card
-   instead of clipping a digit behind the decimal comma. */
-#effects-crossover-trim-group > .field-group:has(.stepper-control) {
-    min-width: min-content;
-}
-
 .crossover-link-label {
     display: flex;
     align-items: center;
@@ -676,8 +975,9 @@ select.url-input::-webkit-scrollbar-thumb:hover {
     display: grid;
     /* Level and Alignment share the two flexible tracks, so the two steppers
        come out exactly as wide as each other and stay flush in their column;
-       Polarity spans both tracks below, centered on its own single-letter
-       values. A three-across row cannot work: two value fields that keep
+       Polarity sits below in the first column and spells its values out
+       (Normal/Inverted; phone widths keep N/I through the compact labels).
+       A three-across row cannot work: two value fields that keep
        their digit floor plus the polarity select are wider than this card on
        every desktop size, which is what used to clip the alignment value.
        Sub 1 / Sub 2 share the class and stay symmetric; headings and
@@ -701,9 +1001,6 @@ select.url-input::-webkit-scrollbar-thumb:hover {
     .effects-subwoofer-crossover-block {
         grid-template-columns: repeat(2, minmax(0, 1fr));
     }
-    #tab-effects .effects-subwoofer-channel-group select.effects-subwoofer-polarity-select {
-        width: min(100%, 3.5rem);
-    }
 }
 
 .effects-subwoofer-group-label {
@@ -719,15 +1016,15 @@ select.url-input::-webkit-scrollbar-thumb:hover {
     min-width: 0;
     gap: 0.42rem;
     justify-content: end;
-    /* Headings and controls share one center axis, so every box sits
-       centered under its heading at any track width. */
-    align-items: center;
+    /* Heading and control share the column's left edge and width: every
+       control fills its track, selects and steppers alike. */
+    align-items: stretch;
 }
 
 .effects-subwoofer-control-group .field-group label {
     display: flex;
     align-items: flex-end;
-    justify-content: center;
+    justify-content: flex-start;
     min-height: 2.05em;
     color: var(--text-secondary);
     font-size: 0.8rem;
@@ -746,7 +1043,7 @@ select.url-input::-webkit-scrollbar-thumb:hover {
 }
 
 /* At the tightest three-across split (~1101-1130px) a track is a few px
-   narrower than a stepper with 26px buttons; the buttons give up the
+   narrower than a stepper with 32px buttons; the buttons give up the
    difference (22px minimum) instead of pushing "+" out of the frame. The
    value field keeps its digit floor. */
 .effects-subwoofer-controls .stepper-btn {
@@ -811,26 +1108,23 @@ select.url-input::-webkit-scrollbar-thumb:hover {
 }
 
 .effects-subwoofer-channel-group .effects-subwoofer-polarity-field {
-    grid-column: 1 / -1;
-    justify-self: center;
+    grid-column: 1;
 }
 
-/* Subwoofer selects share the common #tab-effects control metrics; the
-   Main highpass cap (5.2rem) fits the widest option ("On"/"Off") with room
-   beside the native arrow on Android, where the narrower cap clipped "On".
-   The polarity selects keep the tighter 4.2rem cap beside the single-letter
-   "N"/"I" values. Left-aligned text like every other app select, closed
-   and open. The select type selectors are load-bearing: #tab-effects
-   .url-input (equal specificity, later in the file) would otherwise keep
-   width:100% alive and stretch the selects back across their grid tracks. */
+/* Subwoofer and crossover selects share the common #tab-effects control
+   metrics and fill their track, so every control of a column starts at the
+   same x and has the same width. Left-aligned text like every other app
+   select, closed and open. The select type selectors are load-bearing:
+   #tab-effects .url-input (equal specificity, later in the file) would
+   otherwise win the width back. */
 #tab-effects select.effects-subwoofer-compact-select {
-    width: min(100%, 5.2rem);
+    width: 100%;
     min-width: 0;
     max-width: 100%;
     text-align: left;
 }
 #tab-effects select.effects-subwoofer-polarity-select {
-    width: min(100%, 4.2rem);
+    width: 100%;
     min-width: 0;
     max-width: 100%;
     text-align: left;
@@ -951,27 +1245,20 @@ select.url-input::-webkit-scrollbar-thumb:hover {
 }
 
 .effects-peq-add-row {
-    /* Flex, not a fixed two-column grid: the mode select and the Add button
-       need a combined width that the PEQ card only offers on wide layouts
-       (it is one of several cards side by side), so the row now wraps when
-       the card is too narrow instead of letting the select overrun its
-       column. The mode field still takes all the space on one row. */
+    /* The mode select takes the free width and Add sits flush right as a
+       compact action. The row still wraps if a card gets too narrow for
+       both, so the select never overruns its column. */
     display: flex;
     flex-wrap: wrap;
-    justify-content: space-between;
-    align-items: end;
-    gap: 1rem;
+    justify-content: flex-end;
+    align-items: flex-end;
+    gap: 0.75rem;
     margin-bottom: 0.35rem;
 }
 
 .effects-peq-mode-field {
-    flex: 1 1 12rem;
+    flex: 1 1 8rem;
     min-width: 0;
-}
-
-.effects-peq-mode-field {
-    width: 100%;
-    max-width: 220px;
     margin: 0;
 }
 
@@ -981,18 +1268,21 @@ select.url-input::-webkit-scrollbar-thumb:hover {
     margin-bottom: 0.3rem;
 }
 
-.effects-peq-mode-field .url-input {
-    min-height: 40px;
+#tab-effects .effects-peq-mode-field .url-input {
+    /* Drop the global .url-input 200px floor so the select shrinks with the field. */
+    min-width: 0;
+    min-height: 42px;
     padding-top: 0.45rem;
     padding-bottom: 0.45rem;
 }
 
 .effects-peq-add-row .btn-inline {
     flex: 0 0 auto;
-    justify-self: end;
-    min-width: 92px;
-    min-height: 44px;
-    padding: 0.45rem 1rem;
+    min-width: 4.75rem;
+    min-height: 42px;
+    padding: 0.45rem 1.2rem;
+    font-size: 0.86rem;
+    font-weight: 600;
 }
 
 .effects-peq-pane-header {
@@ -1019,37 +1309,6 @@ select.url-input::-webkit-scrollbar-thumb:hover {
 
 .effects-actions-peq-dual .btn-primary {
     min-width: 110px;
-}
-
-.delay-field {
-    display: flex;
-    flex-direction: column;
-    gap: 0.3rem;
-    min-width: 0;
-}
-
-.delay-field-compact {
-    flex-direction: row;
-    align-items: center;
-    gap: 0.35rem;
-}
-
-.delay-field-compact label {
-    margin: 0;
-}
-
-.delay-field-compact .delay-input-wrap {
-    gap: 0.3rem;
-}
-
-.delay-field-compact .delay-unit {
-    font-size: 0.76rem;
-}
-
-.delay-field label {
-    font-size: 0.82rem;
-    font-weight: 600;
-    color: var(--text-primary);
 }
 
 .delay-input-wrap {
@@ -1180,19 +1439,101 @@ input[type="number"]::-webkit-outer-spin-button {
     gap: 1rem;
 }
 
-/* Loudness row wraps when the narrow two-column card cannot fit checkbox
-   + Strength + FFT on one line. The old nowrap overflowed the card in the
-   768–~880px band where the two-column grid starts but cards are small. */
-.effects-loudness-row {
-    flex-wrap: wrap;
+/* Tone effects (Upmixer, Loudness, Bass enhancer, Tone effect) share one
+   pattern: a compact header (checkbox + name) and, below it, one details block
+   that holds every parameter. The block is hidden while the effect is off, so a
+   disabled effect leaves no gap. The lines inside sit side by side where there
+   is room and wrap where there is not.
+   Inside a line, label and control sit on a fixed grid: the label cell and the
+   control cell have one width each, so the controls of a column start at the
+   same x in every line and every effect. In a card too narrow for two such
+   pairs (below 27rem) the labels move above their controls so each pair still
+   sits side by side, and below 19rem the control cell and the 0..10 value
+   fields shrink a little (two cells then need 14.5rem); where container queries
+   are missing the lines simply wrap. */
+.effects-effect {
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
 }
 
-.effects-loudness-controls {
-    display: inline-flex;
+.effects-effect:not(.hidden) ~ .effects-effect {
+    padding-top: 0.45rem;
+    border-top: 1px solid var(--border);
+}
+
+.effects-effect-header {
+    align-self: flex-start;
+}
+
+.effects-effect-details {
+    --effects-label-w: 4rem;
+    --effects-control-w: 8.5rem;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.55rem;
+    width: 100%;
+    max-width: 100%;
+    padding-bottom: 0.35rem;
+    container-type: inline-size;
+}
+
+.effects-effect-line {
+    display: flex;
     align-items: center;
-    gap: 0.55rem 1rem;
+    gap: 0.55rem 0.75rem;
     flex-wrap: wrap;
     max-width: 100%;
+}
+
+.effects-effect-line .effects-inline-control {
+    flex-wrap: nowrap;
+}
+
+.effects-effect-line .effects-inline-control-label {
+    flex: 0 0 var(--effects-label-w);
+}
+
+.effects-effect-line .stepper-control {
+    /* The same cell as the selects; the buttons give way before the value
+       field does, so the cell width holds in every card. */
+    width: var(--effects-control-w);
+}
+
+.effects-effect-line .stepper-control:has(.stepper-unit) {
+    /* A unit needs its room: the cell is a minimum, not the width. */
+    width: auto;
+    min-width: var(--effects-control-w);
+}
+
+#tab-effects .effects-effect-line select.url-input {
+    width: auto;
+    min-width: var(--effects-control-w);
+}
+
+@container (max-width: 27rem) {
+    .effects-effect-line .effects-inline-control {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 0.25rem;
+    }
+
+    .effects-effect-line .effects-inline-control-label {
+        flex: 0 0 auto;
+    }
+}
+
+@container (max-width: 19rem) {
+    .effects-effect-line {
+        --effects-control-w: 7rem;
+        column-gap: 0.5rem;
+    }
+
+    #tab-effects .effects-effect-line .stepper-control .stepper-input.effects-stepper-compact {
+        width: 2.5rem;
+        min-width: 2.5rem;
+    }
 }
 
 .effects-headroom-controls {
@@ -1241,56 +1582,47 @@ input[type="number"]::-webkit-outer-spin-button {
     white-space: nowrap;
 }
 
-.effects-bass-row {
-    display: flex;
-    align-items: center;
-    flex-wrap: wrap;
-    gap: 0.65rem 0.95rem;
-    width: 100%;
-}
-
-.effects-bass-controls {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.55rem;
-    flex-wrap: wrap;
-    max-width: 100%;
-}
-
-.effects-bass-controls .effects-inline-control-label {
-    white-space: nowrap;
-}
-
-.effects-bass-controls .delay-input-wrap {
-    gap: 0.45rem;
-}
-
 .effects-card-peq-workshop {
     padding-top: 1.45rem;
 }
 
-/* Collapsed PEQ card: read-only draft preview plus hint. Both hide while
-   the editor is expanded; the summary text is filled from the draft. */
+/* Collapsed PEQ card: read-only draft preview as one L/R row per side.
+   Hidden while the editor is expanded; filled from the draft. */
 .effects-peq-summary {
-    margin-top: 0.5rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+    margin-top: 0.9rem;
+}
+
+.effects-peq-summary-row {
+    display: flex;
+    align-items: baseline;
+    gap: 0.65rem;
+    padding: 0.45rem 0.7rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: rgba(255,255,255,0.02);
+}
+
+.effects-peq-summary-side {
+    flex: 0 0 auto;
+    min-width: 1rem;
+    font-size: 0.76rem;
+    font-weight: 700;
+    color: var(--accent);
+}
+
+.effects-peq-summary-text {
+    min-width: 0;
     font-size: 0.8rem;
-    line-height: 1.55;
-    color: var(--text-muted);
+    line-height: 1.5;
+    color: var(--text-secondary);
     font-family: var(--font-mono);
-    white-space: pre-line;
     overflow-wrap: anywhere;
 }
 
-.effects-peq-summary-hint {
-    display: block;
-    margin-top: 0.35rem;
-    font-size: 0.76rem;
-    letter-spacing: 0.01em;
-    color: var(--text-muted);
-}
-
-.effects-disclosure[open] .effects-peq-summary,
-.effects-disclosure[open] .effects-peq-summary-hint {
+.effects-disclosure[open] .effects-peq-summary {
     display: none;
 }
 
@@ -1311,6 +1643,10 @@ input[type="number"]::-webkit-outer-spin-button {
     display: none;
 }
 
+.effects-disclosure-summary {
+    align-items: flex-start;
+}
+
 .effects-disclosure-summary h3 {
     margin: 0 0 0.4rem;
 }
@@ -1324,6 +1660,7 @@ input[type="number"]::-webkit-outer-spin-button {
 
 .effects-disclosure-meta {
     flex: 0 0 auto;
+    align-self: flex-start;
     padding: 0.35rem 0.7rem;
     border-radius: 999px;
     border: 1px solid var(--border);
@@ -1435,13 +1772,6 @@ input[type="number"]::-webkit-outer-spin-button {
     width: 4.6rem;
     text-align: center;
 }
-#tab-effects .delay-field-compact .delay-number-input {
-    width: 4.6rem;
-}
-#tab-effects .effects-bass-controls .delay-number-input {
-    width: 4.6rem;
-    min-width: 4.6rem;
-}
 /* Compact − / value / + stepper for small-range DSP numbers. Replaces the
    native spinners where stepping is the primary interaction; the value
    stays directly editable and keeps its step/min/max semantics. Placed
@@ -1460,14 +1790,18 @@ input[type="number"]::-webkit-outer-spin-button {
 }
 
 .stepper-btn {
-    flex: 0 0 auto;
-    width: 26px;
+    /* Minus and plus share one box. Where a control is tighter than its
+       preferred width the buttons give up the difference before the value
+       field loses a digit. */
+    flex: 0 1 auto;
+    width: 32px;
+    min-width: 24px;
     border: 0;
     padding: 0;
     background: transparent;
     color: var(--text-secondary);
     font-family: inherit;
-    font-size: 1.05rem;
+    font-size: 1.15rem;
     line-height: 1;
     cursor: pointer;
     user-select: none;
@@ -1568,7 +1902,7 @@ input[type="number"]::-webkit-outer-spin-button {
    digits and the five-digit frequency override stays in force. */
 @media (max-width: 520px) {
     .stepper-btn {
-        width: 34px;
+        width: 38px;
     }
 }
 /* ============================================================

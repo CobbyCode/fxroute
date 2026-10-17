@@ -12,12 +12,10 @@
         getDocument: () => root.document,
         renderMeasurementArea: () => {},
         isSelectFocused: () => false,
-        getSelectedMeasurementInput: () => null,
         getSelectedMeasurementInputChannelCount: () => 1,
         getMeasurementReferenceWarning: () => '',
         measurementModeReady: () => false,
         escapeHtml: (value) => String(value == null ? '' : value),
-        formatRateKhz: (rate) => String(rate),
         measurementAreaBadge: () => null,
         syncMeasurementSweepButton: () => {},
         getActiveMeasurementKind: () => '',
@@ -87,13 +85,6 @@
                 : availableInputs;
             elements.measurementInputSelect.innerHTML = inputs.map(input => `<option value="${deps.escapeHtml(input.id)}" ${input.id === measurementState.selectedInputId ? 'selected' : ''}>${deps.escapeHtml(input.label)}</option>`).join('');
             elements.measurementInputSelect.disabled = measurementState.inputsLoading || !measurementState.hostCaptureAvailable;
-        }
-        if (elements.measurementConvolverSampleRate && !deps.isSelectFocused(elements.measurementConvolverSampleRate)) {
-            const selectedInput = deps.getSelectedMeasurementInput();
-            const rates = selectedInput?.supportedRates?.length ? selectedInput.supportedRates : [48000];
-            elements.measurementConvolverSampleRate.innerHTML = rates.map(rate => `<option value="${deps.escapeHtml(rate)}">${deps.formatRateKhz(rate)}</option>`).join('');
-            elements.measurementConvolverSampleRate.value = String(measurementState.measurementSampleRate || 48000);
-            elements.measurementConvolverSampleRate.disabled = measurementState.startInFlight || !deps.measurementModeReady();
         }
         if (elements.measurementInputRefreshBtn) {
             elements.measurementInputRefreshBtn.disabled = measurementState.startInFlight || measurementState.inputsLoading;
@@ -216,7 +207,10 @@
             elements.measurementNameInput.title = areaBadge
                 ? `Measured area: ${areaBadge.title}`
                 : 'Measurement name';
-            elements.measurementNameInput.placeholder = 'Measurement name';
+            // An Auto Sub result is saved as "AutoSub" while the field is blank.
+            const autoSubPending = Array.isArray(measurementState.autoSubMeasurements)
+                && measurementState.autoSubMeasurements.length > 0;
+            elements.measurementNameInput.placeholder = autoSubPending ? 'AutoSub' : 'Measurement name';
         }
         deps.syncMeasurementSweepButton();
         if (elements.measurementRepeatStartBtn) {
@@ -264,7 +258,9 @@
         if (elements.measurementClearBtn) {
             const hasResettableSettings = root.FXRouteMeasurementUI.hasResettableMeasurementSettings(
                 assistMode, peq, conv, deps.getDefaultMeasurementConvolverState());
-            elements.measurementClearBtn.disabled = !frequencyView || !hasResettableSettings || measurementState.startInFlight || !!measurementState.activeJobId;
+            const hasUnsavedContent = root.FXRouteMeasurementUI.hasUnsavedMeasurementContent(measurementState);
+            elements.measurementClearBtn.disabled = !frequencyView || (!hasResettableSettings && !hasUnsavedContent)
+                || measurementState.startInFlight || measurementState.saveInFlight || deps.hasActiveMeasurementJob();
             elements.measurementClearBtn.title = frequencyView ? '' : 'Only available in frequency view.';
         }
     }
@@ -298,6 +294,16 @@
                 ? `Impulse response view: Speaker Align takes on their shared time base${
                     plainEntries.length ? '; other measurements -2 ms to +30 ms' : ''}.`
                 : 'Impulse response view: -2 ms to +30 ms.';
+        }
+        if (elements.measurementCurrentKey) {
+            // Unsaved results beyond an L/R pair (an Advanced series) have no
+            // other key before they are saved; the saved list has its own.
+            const keyed = graphEntries.filter(entry => entry.current && entry.graphColor);
+            const shown = keyed.length > 2;
+            elements.measurementCurrentKey.classList.toggle('hidden', !shown);
+            elements.measurementCurrentKey.innerHTML = shown ? keyed.map(entry => `<span class="measurement-current-key-item" role="listitem">`
+                + `<span class="measurement-swatch" style="background:${deps.escapeHtml(entry.graphColor)}"></span>`
+                + `${deps.escapeHtml(entry.name)}</span>`).join('') : '';
         }
         if (elements.measurementEmpty) {
             elements.measurementEmpty.textContent = frequencyView

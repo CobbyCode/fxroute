@@ -37,6 +37,11 @@
             broadcast({ type: 'qobuz', data });
         } else if (type === 'dsp') {
             broadcast({ type: 'dsp', data });
+        } else if (type === 'source') {
+            // The live backend pushes the audio-source overview whenever it
+            // changes, which is what keeps the Source Inputs surface and the
+            // footer switcher current (see the 'source' case in app.js).
+            broadcast({ type: 'source', data });
         } else if (type === 'measurement_done') {
             // No dedicated WS type in the app; the dsp push nudges reloads.
             broadcast({ type: 'dsp', data: api.easyeffectsStatus() });

@@ -338,19 +338,21 @@
         return buildMeasurementConvolverLinearImpulseFromMagnitudes(magnitudes, length);
     }
 
-    function writeMeasurementConvolverWav(channels, sampleRate) {
+    function writeMeasurementConvolverWav(channels, sampleRate, latency = null) {
         const channelCount = channels.length;
         const frameCount = channels[0]?.length || 0;
         const bytesPerSample = 4;
         const bitsPerSample = 32;
         const formatTag = 3; // WAVE_FORMAT_IEEE_FLOAT
         const dataBytes = frameCount * channelCount * bytesPerSample;
-        const buffer = new ArrayBuffer(44 + dataBytes);
+        const metadata = latency ? new TextEncoder().encode(JSON.stringify(latency)) : null;
+        const metadataBytes = metadata ? 8 + metadata.length + (metadata.length % 2) : 0;
+        const buffer = new ArrayBuffer(44 + dataBytes + metadataBytes);
         const view = new DataView(buffer);
         const writeString = (offset, value) => Array.from(value).forEach((char, index) => view.setUint8(offset + index, char.charCodeAt(0)));
         const peakBeforeExport = getMeasurementConvolverChannelPeak(channels);
         writeString(0, 'RIFF');
-        view.setUint32(4, 36 + dataBytes, true);
+        view.setUint32(4, 36 + dataBytes + metadataBytes, true);
         writeString(8, 'WAVE');
         writeString(12, 'fmt ');
         view.setUint32(16, 16, true);
@@ -370,6 +372,11 @@
                 view.setFloat32(offset, exportSample, true);
                 offset += 4;
             }
+        }
+        if (metadata) {
+            writeString(offset, 'fxlt');
+            view.setUint32(offset + 4, metadata.length, true);
+            new Uint8Array(buffer, offset + 8, metadata.length).set(metadata);
         }
         const peakAfterExportReadback = getMeasurementConvolverFloat32WavDataPeak(view, 44, frameCount, channelCount);
         console.debug('[measurement-convolver-wav-export]', {

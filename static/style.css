@@ -176,7 +176,7 @@ html {
 /* Visually hidden skip link, revealed on keyboard focus. */
 .skip-link {
     position: absolute;
-    top: -40px;
+    top: -5rem;
     left: 0.75rem;
     z-index: var(--z-skip-link);
     padding: 0.6rem 0.9rem;
@@ -1068,6 +1068,45 @@ select.url-input {
     font-size: 0.9rem;
 }
 
+.manage-dialog.effects-delete-dialog {
+    width: min(520px, 100%);
+}
+.effects-delete-list {
+    display: grid;
+    gap: 0.6rem;
+}
+.effects-delete-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.75rem;
+    padding: 0.8rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+}
+label.effects-delete-item {
+    cursor: pointer;
+}
+.effects-delete-item input {
+    flex: 0 0 auto;
+    margin-top: 0.2rem;
+    accent-color: var(--accent);
+}
+.effects-delete-copy {
+    display: grid;
+    gap: 0.25rem;
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+.effects-delete-copy > span {
+    color: var(--text-secondary);
+}
+.effects-delete-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 0.75rem;
+    margin-top: 1rem;
+}
+
 .radio-manage-section {
     display: flex;
     flex-direction: column;
@@ -1114,13 +1153,15 @@ select.url-input {
     flex-wrap: wrap;
     margin-top: 0.85rem;
 }
-/* Qobuz/qbzd and TIDAL logins stack above the settings dialog they are launched from. */
+/* Qobuz/qbzd and TIDAL logins and the custom input mapping stack above the settings dialog they are launched from. */
 .qobuz-login-overlay,
-.tidal-login-overlay {
+.tidal-login-overlay,
+.custom-mapping-overlay {
     z-index: calc(var(--z-overlay) + 10);
 }
 .qobuz-login-overlay .url-input,
-.tidal-login-overlay .url-input {
+.tidal-login-overlay .url-input,
+.custom-mapping-overlay .url-input {
     width: 100%;
 }
 .qobuz-login-overlay a.btn-primary,
@@ -1501,7 +1542,7 @@ select.url-input {
     grid-template-columns: repeat(auto-fit, minmax(var(--tile-min), var(--tile-min)));
     justify-content: center;
     gap: var(--tile-gap);
-    margin-top: 1.25rem;
+    margin-top: 0.9rem;
 }
 .album-card {
     background: linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01));
@@ -1895,10 +1936,20 @@ select.url-input {
 }
 
 /* Artwork-led detail heroes: the local album and playlist details and the
-   TIDAL detail roots share the same framed composition. */
-.album-detail--hero,
-.streaming-detail--hero {
-    gap: clamp(1rem, 1.8vw, 1.5rem);
+   TIDAL detail roots share the same framed composition (the rules below
+   list both roots). The column gap is deliberately not declared for both:
+   each host owns it in exactly one place, and the docked playlist row
+   pulls against that same owner, so gap and row margin cannot drift. */
+.album-detail--hero {
+    /* Local hero rhythm, and the single source for it: the docked
+       playlist row below computes its pull against this same property.
+       The TIDAL root keeps its own 0.7rem rhythm in .streaming-detail
+       (--tidal-detail-gap); giving it a gap here too would leave the
+       winner between two equal-specificity declarations to be decided by
+       source order alone, which is exactly how the docked TIDAL row
+       margin drifted away from its container. */
+    --detail-hero-gap: clamp(1rem, 1.8vw, 1.5rem);
+    gap: var(--detail-hero-gap);
 }
 .album-detail--hero .detail-hero-header,
 .streaming-detail--hero .detail-hero-header {
@@ -2096,9 +2147,14 @@ select.url-input {
     padding-inline: 1.05rem;
     box-shadow: 0 8px 22px rgba(0, 0, 0, 0.22);
 }
-.album-detail--hero > .album-detail-tracks,
-.streaming-detail--hero > .streaming-results {
+.album-detail--hero > .album-detail-tracks {
     margin-top: 0.2rem;
+}
+/* The TIDAL results margin mirrors the docked row's margin-top (both
+   express the reference standoff against the container gap), so the
+   row-to-results gap stays the reference too when the gap is tuned. */
+.streaming-detail--hero > .streaming-results {
+    margin-top: calc(0.9rem - var(--tidal-detail-gap));
 }
 .album-detail-tracks {
     display: flex;
@@ -2229,7 +2285,7 @@ select.url-input {
     justify-content: space-between;
     gap: var(--control-gap);
     flex-wrap: nowrap;
-    margin: 0.15rem 0 1.15rem;
+    margin: 0.15rem 0 0.9rem;
     /* Same horizontal separator as the TIDAL subbar so both browse headers
        share one underline language. */
     border-bottom: 1px solid var(--border-strong);
@@ -2309,10 +2365,45 @@ select.url-input {
     display: flex;
     align-items: center;
     gap: 0.65rem;
-    margin-bottom: 0.75rem;
+    /* Unified vertical rhythm: the reference is the TIDAL artist detail
+       (0.9rem of standoff above and below the row, 14.4px at the 16px root
+       size). The home row (direct child of the library tab, above
+       Tracks/Folders and the Albums/Favorites grid) owns the same 0.9rem
+       on both sides; the top margin takes the larger share against the
+       actions-row/folder-path margin, the bottom one against the grid
+       margin, so every overview lands on the reference standoff. The two
+       neighbour margins were aligned to the same rhythm (actions-row
+       bottom 1.15rem to 0.9rem, grid top 1.25rem to 0.9rem), which also
+       tightens the no-selection overview spacing by that difference. */
+    margin: 0.9rem 0;
     flex-wrap: nowrap;
     overflow: hidden;
     width: 100%;
+}
+/* Docked inside an album/playlist detail the row pulls exactly against the
+   hero gap via the same custom property that sets it, so header/row and
+   row/tracks both land on the 0.9rem reference standoff at any viewport
+   and the two declarations cannot drift apart. The container gap itself
+   is never touched, so the track-list to discover spacing stays identical
+   whether the row is visible or not. Margins on the hidden row take no
+   space. */
+.album-detail--hero > .playlist-save-row {
+    margin-top: calc(0.9rem - var(--detail-hero-gap));
+    margin-bottom: calc(0.9rem - var(--detail-hero-gap) - 0.2rem);
+}
+/* Same logic for the TIDAL hosts. Browse keeps its own gap and the row
+   adds the small difference to reach the reference standoff on both
+   sides. The detail pulls against the very token that sets its container
+   gap (--tidal-detail-gap, declared in .streaming-detail), so the gap and
+   both flanking margins express one value and stay drift-proof: the row
+   adds the difference above, the results margin below, and together with
+   the gap each side lands on the reference exactly. */
+.streaming-browse > .playlist-save-row {
+    margin: 0.15rem 0;
+}
+.streaming-detail > .playlist-save-row {
+    margin-top: calc(0.9rem - var(--tidal-detail-gap));
+    margin-bottom: 0;
 }
 .playlist-save-controls {
     display: flex;
@@ -2748,12 +2839,6 @@ select.url-input {
     border-style: solid;
     background: linear-gradient(180deg, rgba(110,231,183,0.05), rgba(110,231,183,0.04));
 }
-.upload-area-url-primary {
-    min-height: 124px;
-    border-width: 2px;
-    border-style: dashed;
-    background: linear-gradient(180deg, rgba(110,231,183,0.08), rgba(110,231,183,0.05));
-}
 .upload-area-file-primary {
     min-height: 124px;
 }
@@ -2765,9 +2850,6 @@ select.url-input {
 }
 .upload-area-url .upload-area-icon {
     font-size: 1.1rem;
-}
-.upload-area-url-primary .upload-area-icon {
-    font-size: 1.4rem;
 }
 .upload-area-url-station .upload-area-icon {
     font-size: 1.45rem;
@@ -3310,9 +3392,6 @@ select.url-input {
 .catalog-station-card .station-name {
     min-height: calc(1.3em * 2);
 }
-.catalog-station-card .catalog-station-action {
-    margin-top: auto;
-}
 .radio-station-section {
     display: flex;
     flex-direction: column;
@@ -3488,33 +3567,6 @@ select.url-input {
 }
 .catalog-station-card:hover {
     transform: none;
-}
-.catalog-station-action {
-    width: 100%;
-    min-height: 36px;
-    padding: 0.48rem 0.65rem;
-    border: 1px solid var(--accent);
-    border-radius: var(--radius-sm);
-    background: var(--accent-dim);
-    color: var(--text-primary);
-    font: inherit;
-    font-size: 0.8rem;
-    font-weight: 700;
-    cursor: pointer;
-}
-.catalog-station-action:hover:not(:disabled) {
-    background: var(--accent);
-    color: var(--bg-primary);
-}
-.catalog-station-action:focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: 2px;
-}
-.catalog-station-action--saved {
-    border-color: var(--border);
-    background: rgba(255,255,255,0.035);
-    color: var(--text-secondary);
-    cursor: default;
 }
 
 .station-browser-status {
@@ -4070,6 +4122,15 @@ select.url-input {
 #tidal-fav-results,
 #tidal-playlists-results,
 #tidal-search-items { margin-top: 0.35rem; }
+/* While the playlist action row is visible it already holds the reference
+   standoff below itself, so a results container opening the body drops its
+   own top margin — the first tile/row then starts exactly like in the
+   Library overviews and switching tabs stops jumping. Hidden, the margin
+   still reserves the subtab-to-content gap. */
+.streaming-browse:has(> #tidal-playlist-save-row:not(.hidden)) > #tidal-browse-body > #tidal-fav-results:first-child,
+.streaming-browse:has(> #tidal-playlist-save-row:not(.hidden)) > #tidal-browse-body > #tidal-playlists-results:first-child {
+    margin-top: 0;
+}
 .tidal-search-results-header { display: flex; flex-direction: column; gap: 0.5rem; }
 .streaming-results-title { margin: 0; color: var(--text-primary); font-size: 1rem; font-weight: 700; }
 .streaming-results-heading {
@@ -4108,11 +4169,20 @@ select.url-input {
     background-repeat: no-repeat;
     background-size: 100% 100%;
 }
-.streaming-result-info,
 .streaming-result .track-info { flex: 1; min-width: 0; }
 
 
-.streaming-detail { display: flex; flex-direction: column; gap: 0.7rem; }
+.streaming-detail {
+    display: flex;
+    flex-direction: column;
+    /* Single source for the TIDAL detail column rhythm: the docked
+       playlist row and the results margin both pull against this same
+       property, so the container gap and the two flanking margins cannot
+       drift apart. This is also the only gap declaration reaching this
+       root, so nothing is decided by source order. */
+    --tidal-detail-gap: 0.7rem;
+    gap: var(--tidal-detail-gap);
+}
 /* The detail header grid (cover/meta/back) is the shared rule defined with
    .album-detail-header above; this block keeps the streaming-specific chrome. */
 .streaming-detail-cover {
@@ -4197,7 +4267,9 @@ select.url-input {
 
 /* TIDAL artist about: directly visible in the hero, reusing the library
    .album-detail-about text styling (colors, size, max-width) without its
-   accordion. Long bios clamp to a few lines with a subtle More/Less toggle. */
+   accordion. Long bios clamp to the hero text budget (about the cover
+   height) with a subtle More/Less toggle that only stays when the text is
+   actually truncated. */
 .tidal-artist-about { margin-top: 0.5rem; }
 .streaming-about-text {
     margin: 0;
@@ -4208,7 +4280,7 @@ select.url-input {
 }
 .streaming-about-text.is-clamped {
     display: -webkit-box;
-    -webkit-line-clamp: 3;
+    -webkit-line-clamp: 5;
     -webkit-box-orient: vertical;
     overflow: hidden;
 }
@@ -4343,6 +4415,11 @@ select.url-input {
     max-height: calc(100dvh - 2rem);
     overflow: auto;
 }
+/* The generic .manage-dialog width steps (up to 900px and from 2560px, in
+   _responsive.css) come later in the cascade and cap this dialog at 620px.
+   Two classes win; the steps of this dialog below 980px resolve to the full
+   overlay width. */
+.manage-dialog.measurement-dialog { width: min(1240px, 100%); }
 
 
 .measurement-layout {
@@ -4530,7 +4607,7 @@ select.url-input {
 
 #measurement-sweep-toggle,
 #measurement-auto-sub-start,
-#measurement-spl-calibration-open {
+#measurement-calibration-toggle {
     width: 190px;
     min-width: 190px;
     min-height: 44px;
@@ -4636,6 +4713,16 @@ select.url-input {
     font-size: 0.78rem;
 }
 
+/* Surround Global speaker choice: up to four group chips (Front, Center,
+   Side, Rear), wrapped so they fit the menu panel. */
+.measurement-sweep-group-row {
+    flex-wrap: wrap;
+}
+
+.measurement-sweep-group-row .measurement-chip {
+    flex: 1 1 auto;
+}
+
 /* Read-only measurement area: the A/B selector owns the scope, so the sweep
    menu shows the selected area; the side chips only narrow a stereo area to
    one side for the single sweep. */
@@ -4674,11 +4761,6 @@ select.url-input {
     /* Stays whole; the title truncates around it. */
     flex: 0 0 auto;
     max-width: 100%;
-}
-
-.measurement-area-badge.is-stale {
-    border-color: var(--warning);
-    color: var(--warning);
 }
 
 .speaker-align-table-wrap {
@@ -4847,6 +4929,70 @@ select.url-input {
     justify-content: flex-start;
 }
 
+.level-match-dialog,
+.polarity-check-dialog {
+    position: relative;
+    width: min(560px, 100%);
+    max-height: calc(100dvh - 2rem);
+    overflow-y: auto;
+}
+
+#level-match-panel,
+#polarity-check-panel {
+    align-items: center;
+}
+
+.level-match-dialog .effects-stack,
+.polarity-check-dialog .effects-stack {
+    gap: 0.85rem;
+}
+
+.level-match-dialog #level-match-status,
+.polarity-check-dialog #polarity-check-status {
+    margin-top: 0.35rem;
+}
+
+.level-match-dialog .level-match-action-row,
+.polarity-check-dialog .polarity-check-action-row {
+    justify-content: flex-start;
+}
+
+.level-match-results,
+.polarity-check-results {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+}
+
+.level-match-row,
+.polarity-check-row {
+    display: flex;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: 0.3rem 0;
+    border-bottom: 1px solid var(--border);
+    font-variant-numeric: tabular-nums;
+}
+
+.level-match-outdated,
+.polarity-check-note {
+    margin-left: 0.4rem;
+    color: var(--text-muted);
+    font-size: 0.8em;
+}
+
+.polarity-check-verdict-correct {
+    color: var(--success);
+}
+
+.polarity-check-verdict-reversed {
+    color: var(--danger);
+}
+
+.polarity-check-verdict-inconclusive {
+    color: var(--text-muted);
+}
+
 .hybrid-measurement-overlay {
     z-index: var(--z-measurement-hybrid);
     align-items: center;
@@ -4858,6 +5004,10 @@ select.url-input {
     max-height: calc(100dvh - 2rem);
     overflow-y: auto;
 }
+/* The generic .manage-dialog width steps (up to 900px and from 2560px, in
+   _responsive.css) come later in the cascade and cap this dialog at 620px,
+   which left the room view 253px wide on a tablet.  Two classes win. */
+.manage-dialog.hybrid-measurement-dialog { width: min(980px, 100%); }
 
 .hybrid-mode-label {
     margin: 0 0 0.25rem;
@@ -4877,8 +5027,23 @@ select.url-input {
 }
 
 .hybrid-room-view {
+    /* Where the speakers, their 1 m microphones and the listening area sit.
+       The front wall is the default; side and rear groups override below. */
+    --hybrid-speaker-y: 16%;
+    --hybrid-speaker-left: 23%;
+    --hybrid-speaker-right: 77%;
+    --hybrid-direct-y: 38%;
+    --hybrid-direct-left: 23%;
+    --hybrid-direct-right: 77%;
+    --hybrid-listen-shift: 0%;
+    /* Distance of the Left and Right listening pills from the Main pill: a
+       sixth of a wide room, never closer than a pill plus a gap (48 + 6px). */
+    --hybrid-listen-spread: max(13%, 54px);
     position: relative;
     min-height: 470px;
+    /* The room is its own query container: the pills and speakers answer to
+       the room's width, which is not the viewport's (the wizard stacks). */
+    container: hybrid-room / inline-size;
     overflow: hidden;
     border: 1px solid var(--border);
     border-radius: var(--radius-xl);
@@ -4898,7 +5063,7 @@ select.url-input {
 }
 
 .hybrid-speaker {
-    top: 16%;
+    top: var(--hybrid-speaker-y);
     width: 58px;
     height: 74px;
     border: 2px solid var(--border);
@@ -4910,8 +5075,9 @@ select.url-input {
     transition: 180ms ease;
 }
 
-.hybrid-speaker-left { left: 23%; }
-.hybrid-speaker-right { left: 77%; }
+.hybrid-speaker-left { left: var(--hybrid-speaker-left); }
+.hybrid-speaker-right { left: var(--hybrid-speaker-right); }
+.hybrid-speaker-center { left: 50%; }
 .hybrid-speaker.is-active {
     border-color: var(--accent);
     box-shadow: 0 0 0 5px color-mix(in srgb, var(--accent) 14%, transparent), 0 0 28px color-mix(in srgb, var(--accent) 24%, transparent);
@@ -4935,7 +5101,7 @@ select.url-input {
 
 .hybrid-seat {
     left: 50%;
-    top: 79%;
+    top: calc(79% + var(--hybrid-listen-shift));
     width: 210px;
     height: 92px;
     z-index: var(--z-base);
@@ -4980,11 +5146,65 @@ select.url-input {
     font-size: 0.62rem;
     transition: 180ms ease;
 }
-.hybrid-mic-direct-left { left: 23%; top: 38%; }
-.hybrid-mic-direct-right { left: 77%; top: 38%; }
-.hybrid-mic-left { left: 37%; top: 69%; }
-.hybrid-mic-mlp { left: 50%; top: 66%; }
-.hybrid-mic-right { left: 63%; top: 69%; }
+.hybrid-mic-direct-left { left: var(--hybrid-direct-left); top: var(--hybrid-direct-y); }
+.hybrid-mic-direct-right { left: var(--hybrid-direct-right); top: var(--hybrid-direct-y); }
+.hybrid-mic-direct-center { left: 50%; top: var(--hybrid-direct-y); }
+/* The room view shows a speaker pair (default), one speaker, or only subwoofers. */
+.hybrid-room-view .hybrid-speaker-center,
+.hybrid-room-view .hybrid-mic-direct-center,
+.hybrid-room-view[data-hybrid-layout="single"] .hybrid-speaker-left,
+.hybrid-room-view[data-hybrid-layout="single"] .hybrid-speaker-right,
+.hybrid-room-view[data-hybrid-layout="single"] .hybrid-mic-direct-left,
+.hybrid-room-view[data-hybrid-layout="single"] .hybrid-mic-direct-right,
+.hybrid-room-view[data-hybrid-layout="sub"] .hybrid-speaker,
+.hybrid-room-view[data-hybrid-layout="sub"] .hybrid-mic-direct-left,
+.hybrid-room-view[data-hybrid-layout="sub"] .hybrid-mic-direct-right { display: none; }
+.hybrid-room-view[data-hybrid-layout="single"] .hybrid-speaker-center,
+.hybrid-room-view[data-hybrid-layout="single"] .hybrid-mic-direct-center { display: grid; }
+/* The sub circles keep clear of the speakers and 1 m microphones.  Two subs
+   sit at 11% / 89% of the room; the front pair keeps half a speaker, a gap
+   and the sub's width (57px) from them, which only matters in a narrow room.
+   Keep this spacing without subs too, so individual banks match Global.
+   A single sub of a one-speaker layout stands at the wall instead of on the
+   speaker's microphone. */
+.hybrid-room-view[data-hybrid-group="front"] {
+    --hybrid-speaker-left: max(23%, calc(11% + 57px));
+    --hybrid-speaker-right: min(77%, calc(89% - 57px));
+    --hybrid-direct-left: var(--hybrid-speaker-left);
+    --hybrid-direct-right: var(--hybrid-speaker-right);
+}
+/* A centered mono sub clears the shared Front speaker/microphone spacing. */
+.hybrid-room-view[data-hybrid-group="front"][data-hybrid-layout="pair"] .hybrid-sub-left.is-single { top: 52%; }
+.hybrid-room-view[data-hybrid-layout="single"] .hybrid-sub-left.is-single { left: max(11%, 26px); }
+.hybrid-mic-left { left: calc(50% - var(--hybrid-listen-spread)); top: calc(69% + var(--hybrid-listen-shift)); }
+.hybrid-mic-mlp { left: 50%; top: calc(66% + var(--hybrid-listen-shift)); }
+.hybrid-mic-right { left: calc(50% + var(--hybrid-listen-spread)); top: calc(69% + var(--hybrid-listen-shift)); }
+/* Side speakers stand at the walls beside the listener, rear speakers behind
+   the seat; the listening area moves up to make room for them. */
+.hybrid-room-view[data-hybrid-group="side"] {
+    --hybrid-speaker-y: 60%;
+    /* Half a speaker plus a margin from the wall, also on a phone. */
+    --hybrid-speaker-left: max(9%, 33px);
+    --hybrid-speaker-right: min(91%, calc(100% - 33px));
+    --hybrid-direct-y: 50%;
+    /* The 1 m microphone stands on the listener's side of its speaker: a
+       quarter of a wide room in, never inside the speaker on a narrow one
+       (half a speaker + half a microphone + a gap = 59px from its centre). */
+    --hybrid-direct-left: max(25%, calc(var(--hybrid-speaker-left) + 59px));
+    --hybrid-direct-right: min(75%, calc(var(--hybrid-speaker-right) - 59px));
+}
+.hybrid-room-view[data-hybrid-group="rear"] {
+    --hybrid-speaker-y: 87%;
+    --hybrid-direct-y: 74%;
+    --hybrid-listen-shift: -18%;
+}
+/* A side room under ~290px has no width for the three listening pills between
+   the speakers at the walls: Left and Right drop below the speakers onto the
+   seat (Main keeps its place, so the pills stay apart vertically). */
+@container hybrid-room (max-width: 290px) {
+    .hybrid-room-view[data-hybrid-group="side"] .hybrid-mic-left,
+    .hybrid-room-view[data-hybrid-group="side"] .hybrid-mic-right { top: calc(78% + var(--hybrid-listen-shift)); }
+}
 .hybrid-mic.is-target {
     border: 2px solid var(--success);
     background: color-mix(in srgb, var(--success) 18%, var(--bg-surface));
@@ -5029,6 +5249,28 @@ select.url-input {
 .hybrid-action-row { display: grid; grid-template-columns: minmax(0, 0.35fr) minmax(0, 1fr); gap: 0.7rem; margin-top: 0.9rem; }
 .hybrid-action-row button { min-height: 54px; }
 .hybrid-summary { display: grid; gap: 0.45rem; margin: 0.7rem 0; }
+/* The speaker choice of the dialog: one chip per routed group, plus All.  The
+   chips are compact so that all five fit one line of the narrowest step card
+   and grow to fill it, like the sweep menu's group chips. */
+.hybrid-scope-row { display: flex; flex-wrap: wrap; gap: 0.3rem; margin-top: 0.75rem; }
+.hybrid-scope-row .measurement-chip {
+    flex: 1 1 auto;
+    min-width: 0;
+    padding-inline: 0.4rem;
+    font-size: 0.75rem;
+}
+/* Once measuring began the row is locked (disabled), but it still has to say
+   which speakers are measured: the selected chip keeps its look and only the
+   other chips dim. */
+.hybrid-scope-row .measurement-chip.is-active:disabled {
+    color: #0d0d0f;
+    background: var(--accent);
+    border-color: transparent;
+    cursor: default;
+    opacity: 1;
+}
+.measurement-current-key { display: flex; flex-wrap: wrap; gap: 0.35rem 1rem; margin-top: 0.5rem; color: var(--text-secondary); font-size: 0.78rem; }
+.measurement-current-key-item { display: inline-flex; align-items: center; gap: 0.4rem; }
 .hybrid-summary-item { padding-left: 1.2rem; color: var(--text-secondary); font-size: 0.84rem; }
 .hybrid-summary-item::before { content: '✓'; float: left; margin-left: -1.2rem; color: var(--success); }
 .hybrid-advanced-details { margin-top: 0.35rem; color: var(--text-muted); font-size: 0.78rem; }
@@ -5576,6 +5818,152 @@ select.url-input {
 .measurement-saved-delete-action.is-inert {
     display: none;
 }
+
+.av-sync-dialog {
+    width: min(560px, calc(100vw - 2rem));
+}
+
+.av-sync-stack {
+    gap: 0.7rem;
+}
+
+/* Target and effective delay share one row; the range sits compactly below. */
+.av-sync-values {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    gap: 0.75rem 2rem;
+}
+
+.av-sync-target-group {
+    margin-bottom: 0;
+}
+
+/* Compact stepper (~165 px total): same value width as the effect steppers,
+   native spinners hidden by the shared .stepper-control rules. */
+.av-sync-stepper .av-sync-target-input {
+    width: 4.5rem;
+    min-width: 4.5rem;
+    flex: 1 1 auto;
+    min-height: 0;
+    height: auto;
+    border: 0;
+    background: transparent;
+    text-align: center;
+    padding: 0.35rem 0;
+    font-size: 0.92rem;
+}
+
+.av-sync-stepper .av-sync-target-input:focus {
+    outline: none;
+    border-color: transparent;
+    box-shadow: none;
+}
+
+.av-sync-effective {
+    display: flex;
+    flex-direction: column;
+    gap: 0.45rem;
+    padding-bottom: 0.35rem;
+}
+
+.av-sync-effective-label {
+    color: var(--text-secondary);
+    font-size: 0.85rem;
+    font-weight: 600;
+    line-height: 1.2;
+}
+
+.av-sync-effective strong {
+    color: var(--accent);
+    font-family: var(--font-mono);
+    font-size: 1.05rem;
+    line-height: 1.2;
+    white-space: nowrap;
+}
+
+.av-sync-range {
+    margin: 0;
+    color: var(--text-muted);
+    font-size: 0.8rem;
+    line-height: 1.3;
+}
+
+.av-sync-range:empty {
+    display: none;
+}
+
+.av-sync-summary {
+    margin: 0.6rem 0 0;
+    color: var(--text-secondary);
+    font-size: 0.8rem;
+    line-height: 1.3;
+}
+
+.av-sync-table-wrap {
+    max-width: 100%;
+    overflow-x: auto;
+    margin-top: 0.5rem;
+}
+
+.av-sync-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.78rem;
+    white-space: nowrap;
+}
+
+.av-sync-table th,
+.av-sync-table td {
+    text-align: right;
+    padding: 0.35rem 0.5rem;
+    border-bottom: 1px solid var(--border);
+}
+
+.av-sync-table thead th {
+    color: var(--text-secondary);
+    font-weight: 600;
+}
+
+.av-sync-table th:first-child {
+    text-align: left;
+}
+
+.av-sync-table td {
+    font-family: var(--font-mono);
+}
+
+.av-sync-note {
+    margin: 0.5rem 0 0;
+    color: var(--text-muted);
+    font-size: 0.78rem;
+    line-height: 1.35;
+}
+
+.av-sync-note:empty {
+    display: none;
+}
+
+.av-sync-details > summary {
+    cursor: pointer;
+    color: var(--text-muted);
+}
+
+@media (max-width: 480px) {
+    .av-sync-values {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 0.7rem;
+    }
+
+    .av-sync-stepper {
+        align-self: flex-start;
+    }
+
+    .av-sync-effective {
+        padding-bottom: 0;
+    }
+}
 /* ============================================================
    Effects tab styling
    ============================================================ */
@@ -5697,6 +6085,32 @@ select.url-input {
     background-color: var(--bg-surface);
 }
 
+/* Bank selector and Expert switch share the header's right edge, also when
+   they wrap below the title. */
+.effects-compare-header-tools {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    flex-wrap: wrap;
+    gap: 0.5rem 1rem;
+    margin-left: auto;
+    max-width: 100%;
+}
+
+/* Speaker group of a Surround Global import, under the Target line. */
+.effects-import-group-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    margin-top: 0.6rem;
+}
+
+.effects-import-group-row .measurement-chip {
+    min-height: 32px;
+    padding: 0.3rem 0.8rem;
+    font-size: 0.78rem;
+}
+
 .effects-rew-dual-grid.is-mono {
     grid-template-columns: 1fr;
 }
@@ -5717,7 +6131,9 @@ select.url-input {
     gap: 0.75rem;
 }
 
+/* min-width: long All Banks rows end in an ellipsis instead of widening the column. */
 .effects-compare-slot {
+    min-width: 0;
     padding: 0.8rem;
     border-radius: var(--radius-md);
     border: 1px solid var(--border);
@@ -5737,6 +6153,94 @@ select.url-input {
 
 .effects-compare-fields .field-group {
     margin-bottom: 0;
+}
+
+/* All Banks slots: one row per switched bank, bank left, preset right.
+   Long names end in an ellipsis; the row tooltip carries the full name. */
+.effects-compare-slot-banks {
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    font-size: 0.85rem;
+    line-height: 1.35;
+}
+
+.effects-compare-slot-bank {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 0.75rem;
+    min-width: 0;
+}
+
+.effects-compare-slot-bank-key {
+    flex: 0 0 auto;
+    color: var(--text-secondary);
+    font-size: 0.78rem;
+}
+
+.effects-compare-slot-bank-preset {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text-primary);
+    font-weight: 600;
+}
+
+.effects-compare-slot-bank.is-fixed .effects-compare-slot-bank-preset {
+    color: var(--text-muted);
+    font-weight: 400;
+    font-style: italic;
+}
+
+/* Mixed A/B: the side each bank listens to. */
+.effects-compare-slot-bank.is-heard .effects-compare-slot-bank-preset {
+    color: var(--accent);
+}
+
+/* Surround Global slots: one preset picker per speaker group, group left.
+   A long preset name is clipped; the picker tooltip carries the full name. */
+.effects-compare-slot-group {
+    align-items: center;
+}
+
+.effects-compare-slot-group .effects-compare-slot-bank-key {
+    min-width: 4.5rem;
+}
+
+.effects-compare-slot-group .compare-group-select {
+    flex: 1 1 0;
+    min-height: 34px;
+    padding-block: 0.3rem;
+    padding-left: 0.6rem;
+    font-size: 0.82rem;
+}
+
+/* Group pickers need the width: Preset A and B stack instead of sitting
+   side by side. */
+.effects-compare-fields:has(.effects-compare-slot-banks:not(.hidden) .effects-compare-slot-group) {
+    grid-template-columns: 1fr;
+}
+
+/* A narrow slot (phones) puts the group above its picker, so the picker
+   keeps room for a compact preset name. */
+.effects-compare-slot {
+    container: compare-slot / inline-size;
+}
+
+@container compare-slot (max-width: 380px) {
+    .effects-compare-slot-group {
+        flex-wrap: wrap;
+        row-gap: 0.15rem;
+    }
+
+    .effects-compare-slot-group .effects-compare-slot-bank-key {
+        flex-basis: 100%;
+    }
 }
 
 .compare-select {
@@ -5792,6 +6296,52 @@ select option:checked {
     line-height: 1.35;
     white-space: normal;
     overflow-wrap: anywhere;
+}
+
+/* Active preset of every bank in the chain: one chip per bank, wrapped in
+   lines of even length like the calibration overview. The badge styles its
+   spans as full-width lines, so the chip parts are named with the container. */
+.effects-compare-banks {
+    width: 100%;
+    margin-top: 0.3rem;
+    padding-top: 0.35rem;
+    border-top: 1px solid rgba(110, 231, 183, 0.16);
+    font-size: 0.74rem;
+    line-height: 1.95;
+    text-wrap: balance;
+}
+
+.effects-compare-banks:empty {
+    display: none;
+}
+
+.effects-compare-banks .effects-compare-bank {
+    display: inline-block;
+    width: auto;
+    max-width: 100%;
+    padding: 0.1rem 0.28rem;
+    border-radius: 6px;
+    background: rgba(255, 255, 255, 0.05);
+    line-height: 1.3;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    vertical-align: middle;
+    white-space: nowrap;
+}
+
+.effects-compare-banks .effects-compare-bank.is-selected {
+    box-shadow: inset 0 0 0 1px rgba(110, 231, 183, 0.34);
+}
+
+.effects-compare-banks .effects-compare-bank-key,
+.effects-compare-banks .effects-compare-bank-preset {
+    display: inline;
+    width: auto;
+}
+
+.effects-compare-banks .effects-compare-bank-key {
+    color: var(--text-secondary);
+    font-size: 0.66rem;
 }
 
 .effects-compare-active-badge.is-side-a {
@@ -5941,6 +6491,126 @@ select.url-input::-webkit-scrollbar-thumb:hover {
     padding-top: 0.5rem;
 }
 
+/* Calibration overview: the A/B card's info line. One row each for the
+   speaker trims and the sub gains, above the system-wide delay and SPL. */
+.effects-cal {
+    padding-top: 0.7rem;
+    border-top: 1px solid var(--border);
+    line-height: 1.3;
+}
+
+.effects-cal-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    column-gap: 1.1rem;
+}
+
+.effects-cal-group {
+    display: flex;
+    align-items: baseline;
+    gap: 0.45rem;
+    min-width: 0;
+}
+
+.effects-cal-label {
+    flex: none;
+    color: var(--text-muted);
+    font-size: 0.66rem;
+    font-weight: 600;
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+}
+
+/* The leading labels form one column, so the values of all rows line up. */
+.effects-cal-group:first-child > .effects-cal-label {
+    min-width: 2.45rem;
+}
+
+/* A wide Surround wraps its chips behind the label, in lines of even length.
+   The line height is the only vertical spacing, between rows and wrapped lines alike. */
+.effects-cal-values {
+    min-width: 0;
+    font-size: 0.76rem;
+    line-height: 1.95;
+    text-wrap: balance;
+}
+
+.effects-cal-tail {
+    white-space: nowrap;
+}
+
+.effects-cal-chip,
+.effects-cal-badge,
+.effects-cal-value,
+.effects-cal-note {
+    font-family: var(--font-mono);
+    font-size: 0.76rem;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+
+.effects-cal-chip,
+.effects-cal-badge {
+    display: inline-block;
+    line-height: 1.3;
+}
+
+.effects-cal-chip {
+    padding: 0.1rem 0.28rem;
+    border-radius: 6px;
+    background: rgba(255, 255, 255, 0.04);
+    color: var(--text-primary);
+}
+
+.effects-cal-key {
+    margin-right: 0.16rem;
+    color: var(--text-secondary);
+    font-family: var(--font-sans);
+    font-size: 0.68rem;
+    font-weight: 600;
+}
+
+.effects-cal-chip.is-zero,
+.effects-cal-unit,
+.effects-cal-pending {
+    color: var(--text-muted);
+}
+
+.effects-cal-unit {
+    font-size: 0.7rem;
+}
+
+.effects-cal-badge {
+    padding: 0.1rem 0.5rem;
+    border: 1px solid rgba(110, 231, 183, 0.34);
+    border-radius: 999px;
+    background: rgba(110, 231, 183, 0.1);
+    color: #bff9de;
+    font-weight: 600;
+}
+
+.effects-cal-value {
+    color: var(--text-primary);
+}
+
+.effects-cal-note,
+.effects-cal-tag {
+    margin-left: 0.3rem;
+}
+
+.effects-cal-note {
+    color: var(--text-secondary);
+}
+
+.effects-cal-tag {
+    padding: 0 0.4rem;
+    border: 1px dashed var(--border-strong);
+    border-radius: 999px;
+    color: var(--text-muted);
+    font-size: 0.66rem;
+}
+
 .effects-filter-import-area {
     min-height: 112px;
 }
@@ -6040,48 +6710,65 @@ select.url-input::-webkit-scrollbar-thumb:hover {
     border-color: var(--accent);
     color: var(--text-primary);
 }
-/* Control groups reuse the subwoofer group visuals; tracks hug their
-   content and leftover width becomes even spacing, like the sub tile. */
+/* Control groups reuse the subwoofer group visuals. A group is a grid of
+   equal columns (three, two or one, by the width of the groups' container),
+   each holding one field centred at its fixed width: the columns spread over
+   the group, stacked groups keep them on the same x, and a field that no
+   longer fits on the first row continues under the first column. */
 .crossover-control-groups {
+    /* One width for every field of the three groups, so Frequency/Level,
+       Type/Align and Slope/Polarity share their left edge and width. It holds
+       a stepper with its unit and two 32px buttons (154px) and the widest
+       select, the Type select ("Linkwitz-Riley"). */
+    --effects-field-w: 9.7rem;
+    /* Three fields side by side: their widths, two gaps, the group padding
+       and border. A group asks for this width, so groups wrap as a whole. */
+    --effects-group-w: calc(3 * var(--effects-field-w) + 1.6rem + 1.4rem + 2px);
     display: flex;
     flex-wrap: wrap;
     gap: 0.75rem;
     width: min(100%, 1100px);
     margin: 0 auto;
+    container-type: inline-size;
 }
 .crossover-trio-group {
-    flex: 1 1 auto;
-    display: flex;
-    flex-wrap: wrap;
-    justify-content: space-evenly;
+    flex: 1 1 var(--effects-group-w);
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
     align-items: end;
     gap: 0.7rem 0.8rem;
+}
+@container (min-width: 21.75rem) {
+    .crossover-trio-group {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+}
+@container (min-width: 32.25rem) {
+    .crossover-trio-group {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+}
+.crossover-trio-group > .effects-subwoofer-group-label {
+    grid-column: 1 / -1;
+}
+.crossover-trio-group > .field-group {
+    width: var(--effects-field-w);
+    justify-self: center;
 }
 #tab-effects .crossover-trio-group {
     /* Beats the shared group min-width: 0 so a group wraps as a whole
        instead of squeezing its controls onto two lines. */
     min-width: min-content;
 }
-.crossover-trio-group > .effects-subwoofer-group-label {
-    flex: 1 1 100%;
-}
 #tab-effects select.effects-crossover-type-select {
-    /* 9.5rem is the widest option ("Linkwitz-Riley") plus the native arrow;
-       the old 9rem cap cut the closed label by ~5px on narrow cards. */
-    width: min(100%, 9.5rem);
+    /* Fills its field (9.7rem): the widest option ("Linkwitz-Riley") plus the
+       native arrow needs 9.5rem; the old 9rem cap cut the closed label. */
+    width: 100%;
     min-width: 0;
     max-width: 100%;
     /* Left-aligned like every other app select, closed and open. */
     text-align: left;
 }
-/* The way trim row (Level / Alignment / Polarity): the two steppers keep
-   their own width (the shared unit block makes them identical) and are never
-   squeezed below it, so the row wraps to a second line on a narrow card
-   instead of clipping a digit behind the decimal comma. */
-#effects-crossover-trim-group > .field-group:has(.stepper-control) {
-    min-width: min-content;
-}
-
 .crossover-link-label {
     display: flex;
     align-items: center;
@@ -6254,8 +6941,9 @@ select.url-input::-webkit-scrollbar-thumb:hover {
     display: grid;
     /* Level and Alignment share the two flexible tracks, so the two steppers
        come out exactly as wide as each other and stay flush in their column;
-       Polarity spans both tracks below, centered on its own single-letter
-       values. A three-across row cannot work: two value fields that keep
+       Polarity sits below in the first column and spells its values out
+       (Normal/Inverted; phone widths keep N/I through the compact labels).
+       A three-across row cannot work: two value fields that keep
        their digit floor plus the polarity select are wider than this card on
        every desktop size, which is what used to clip the alignment value.
        Sub 1 / Sub 2 share the class and stay symmetric; headings and
@@ -6279,9 +6967,6 @@ select.url-input::-webkit-scrollbar-thumb:hover {
     .effects-subwoofer-crossover-block {
         grid-template-columns: repeat(2, minmax(0, 1fr));
     }
-    #tab-effects .effects-subwoofer-channel-group select.effects-subwoofer-polarity-select {
-        width: min(100%, 3.5rem);
-    }
 }
 
 .effects-subwoofer-group-label {
@@ -6297,15 +6982,15 @@ select.url-input::-webkit-scrollbar-thumb:hover {
     min-width: 0;
     gap: 0.42rem;
     justify-content: end;
-    /* Headings and controls share one center axis, so every box sits
-       centered under its heading at any track width. */
-    align-items: center;
+    /* Heading and control share the column's left edge and width: every
+       control fills its track, selects and steppers alike. */
+    align-items: stretch;
 }
 
 .effects-subwoofer-control-group .field-group label {
     display: flex;
     align-items: flex-end;
-    justify-content: center;
+    justify-content: flex-start;
     min-height: 2.05em;
     color: var(--text-secondary);
     font-size: 0.8rem;
@@ -6324,7 +7009,7 @@ select.url-input::-webkit-scrollbar-thumb:hover {
 }
 
 /* At the tightest three-across split (~1101-1130px) a track is a few px
-   narrower than a stepper with 26px buttons; the buttons give up the
+   narrower than a stepper with 32px buttons; the buttons give up the
    difference (22px minimum) instead of pushing "+" out of the frame. The
    value field keeps its digit floor. */
 .effects-subwoofer-controls .stepper-btn {
@@ -6389,26 +7074,23 @@ select.url-input::-webkit-scrollbar-thumb:hover {
 }
 
 .effects-subwoofer-channel-group .effects-subwoofer-polarity-field {
-    grid-column: 1 / -1;
-    justify-self: center;
+    grid-column: 1;
 }
 
-/* Subwoofer selects share the common #tab-effects control metrics; the
-   Main highpass cap (5.2rem) fits the widest option ("On"/"Off") with room
-   beside the native arrow on Android, where the narrower cap clipped "On".
-   The polarity selects keep the tighter 4.2rem cap beside the single-letter
-   "N"/"I" values. Left-aligned text like every other app select, closed
-   and open. The select type selectors are load-bearing: #tab-effects
-   .url-input (equal specificity, later in the file) would otherwise keep
-   width:100% alive and stretch the selects back across their grid tracks. */
+/* Subwoofer and crossover selects share the common #tab-effects control
+   metrics and fill their track, so every control of a column starts at the
+   same x and has the same width. Left-aligned text like every other app
+   select, closed and open. The select type selectors are load-bearing:
+   #tab-effects .url-input (equal specificity, later in the file) would
+   otherwise win the width back. */
 #tab-effects select.effects-subwoofer-compact-select {
-    width: min(100%, 5.2rem);
+    width: 100%;
     min-width: 0;
     max-width: 100%;
     text-align: left;
 }
 #tab-effects select.effects-subwoofer-polarity-select {
-    width: min(100%, 4.2rem);
+    width: 100%;
     min-width: 0;
     max-width: 100%;
     text-align: left;
@@ -6529,27 +7211,20 @@ select.url-input::-webkit-scrollbar-thumb:hover {
 }
 
 .effects-peq-add-row {
-    /* Flex, not a fixed two-column grid: the mode select and the Add button
-       need a combined width that the PEQ card only offers on wide layouts
-       (it is one of several cards side by side), so the row now wraps when
-       the card is too narrow instead of letting the select overrun its
-       column. The mode field still takes all the space on one row. */
+    /* The mode select takes the free width and Add sits flush right as a
+       compact action. The row still wraps if a card gets too narrow for
+       both, so the select never overruns its column. */
     display: flex;
     flex-wrap: wrap;
-    justify-content: space-between;
-    align-items: end;
-    gap: 1rem;
+    justify-content: flex-end;
+    align-items: flex-end;
+    gap: 0.75rem;
     margin-bottom: 0.35rem;
 }
 
 .effects-peq-mode-field {
-    flex: 1 1 12rem;
+    flex: 1 1 8rem;
     min-width: 0;
-}
-
-.effects-peq-mode-field {
-    width: 100%;
-    max-width: 220px;
     margin: 0;
 }
 
@@ -6559,18 +7234,21 @@ select.url-input::-webkit-scrollbar-thumb:hover {
     margin-bottom: 0.3rem;
 }
 
-.effects-peq-mode-field .url-input {
-    min-height: 40px;
+#tab-effects .effects-peq-mode-field .url-input {
+    /* Drop the global .url-input 200px floor so the select shrinks with the field. */
+    min-width: 0;
+    min-height: 42px;
     padding-top: 0.45rem;
     padding-bottom: 0.45rem;
 }
 
 .effects-peq-add-row .btn-inline {
     flex: 0 0 auto;
-    justify-self: end;
-    min-width: 92px;
-    min-height: 44px;
-    padding: 0.45rem 1rem;
+    min-width: 4.75rem;
+    min-height: 42px;
+    padding: 0.45rem 1.2rem;
+    font-size: 0.86rem;
+    font-weight: 600;
 }
 
 .effects-peq-pane-header {
@@ -6597,37 +7275,6 @@ select.url-input::-webkit-scrollbar-thumb:hover {
 
 .effects-actions-peq-dual .btn-primary {
     min-width: 110px;
-}
-
-.delay-field {
-    display: flex;
-    flex-direction: column;
-    gap: 0.3rem;
-    min-width: 0;
-}
-
-.delay-field-compact {
-    flex-direction: row;
-    align-items: center;
-    gap: 0.35rem;
-}
-
-.delay-field-compact label {
-    margin: 0;
-}
-
-.delay-field-compact .delay-input-wrap {
-    gap: 0.3rem;
-}
-
-.delay-field-compact .delay-unit {
-    font-size: 0.76rem;
-}
-
-.delay-field label {
-    font-size: 0.82rem;
-    font-weight: 600;
-    color: var(--text-primary);
 }
 
 .delay-input-wrap {
@@ -6758,19 +7405,101 @@ input[type="number"]::-webkit-outer-spin-button {
     gap: 1rem;
 }
 
-/* Loudness row wraps when the narrow two-column card cannot fit checkbox
-   + Strength + FFT on one line. The old nowrap overflowed the card in the
-   768–~880px band where the two-column grid starts but cards are small. */
-.effects-loudness-row {
-    flex-wrap: wrap;
+/* Tone effects (Upmixer, Loudness, Bass enhancer, Tone effect) share one
+   pattern: a compact header (checkbox + name) and, below it, one details block
+   that holds every parameter. The block is hidden while the effect is off, so a
+   disabled effect leaves no gap. The lines inside sit side by side where there
+   is room and wrap where there is not.
+   Inside a line, label and control sit on a fixed grid: the label cell and the
+   control cell have one width each, so the controls of a column start at the
+   same x in every line and every effect. In a card too narrow for two such
+   pairs (below 27rem) the labels move above their controls so each pair still
+   sits side by side, and below 19rem the control cell and the 0..10 value
+   fields shrink a little (two cells then need 14.5rem); where container queries
+   are missing the lines simply wrap. */
+.effects-effect {
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
 }
 
-.effects-loudness-controls {
-    display: inline-flex;
+.effects-effect:not(.hidden) ~ .effects-effect {
+    padding-top: 0.45rem;
+    border-top: 1px solid var(--border);
+}
+
+.effects-effect-header {
+    align-self: flex-start;
+}
+
+.effects-effect-details {
+    --effects-label-w: 4rem;
+    --effects-control-w: 8.5rem;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.55rem;
+    width: 100%;
+    max-width: 100%;
+    padding-bottom: 0.35rem;
+    container-type: inline-size;
+}
+
+.effects-effect-line {
+    display: flex;
     align-items: center;
-    gap: 0.55rem 1rem;
+    gap: 0.55rem 0.75rem;
     flex-wrap: wrap;
     max-width: 100%;
+}
+
+.effects-effect-line .effects-inline-control {
+    flex-wrap: nowrap;
+}
+
+.effects-effect-line .effects-inline-control-label {
+    flex: 0 0 var(--effects-label-w);
+}
+
+.effects-effect-line .stepper-control {
+    /* The same cell as the selects; the buttons give way before the value
+       field does, so the cell width holds in every card. */
+    width: var(--effects-control-w);
+}
+
+.effects-effect-line .stepper-control:has(.stepper-unit) {
+    /* A unit needs its room: the cell is a minimum, not the width. */
+    width: auto;
+    min-width: var(--effects-control-w);
+}
+
+#tab-effects .effects-effect-line select.url-input {
+    width: auto;
+    min-width: var(--effects-control-w);
+}
+
+@container (max-width: 27rem) {
+    .effects-effect-line .effects-inline-control {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 0.25rem;
+    }
+
+    .effects-effect-line .effects-inline-control-label {
+        flex: 0 0 auto;
+    }
+}
+
+@container (max-width: 19rem) {
+    .effects-effect-line {
+        --effects-control-w: 7rem;
+        column-gap: 0.5rem;
+    }
+
+    #tab-effects .effects-effect-line .stepper-control .stepper-input.effects-stepper-compact {
+        width: 2.5rem;
+        min-width: 2.5rem;
+    }
 }
 
 .effects-headroom-controls {
@@ -6819,56 +7548,47 @@ input[type="number"]::-webkit-outer-spin-button {
     white-space: nowrap;
 }
 
-.effects-bass-row {
-    display: flex;
-    align-items: center;
-    flex-wrap: wrap;
-    gap: 0.65rem 0.95rem;
-    width: 100%;
-}
-
-.effects-bass-controls {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.55rem;
-    flex-wrap: wrap;
-    max-width: 100%;
-}
-
-.effects-bass-controls .effects-inline-control-label {
-    white-space: nowrap;
-}
-
-.effects-bass-controls .delay-input-wrap {
-    gap: 0.45rem;
-}
-
 .effects-card-peq-workshop {
     padding-top: 1.45rem;
 }
 
-/* Collapsed PEQ card: read-only draft preview plus hint. Both hide while
-   the editor is expanded; the summary text is filled from the draft. */
+/* Collapsed PEQ card: read-only draft preview as one L/R row per side.
+   Hidden while the editor is expanded; filled from the draft. */
 .effects-peq-summary {
-    margin-top: 0.5rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+    margin-top: 0.9rem;
+}
+
+.effects-peq-summary-row {
+    display: flex;
+    align-items: baseline;
+    gap: 0.65rem;
+    padding: 0.45rem 0.7rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: rgba(255,255,255,0.02);
+}
+
+.effects-peq-summary-side {
+    flex: 0 0 auto;
+    min-width: 1rem;
+    font-size: 0.76rem;
+    font-weight: 700;
+    color: var(--accent);
+}
+
+.effects-peq-summary-text {
+    min-width: 0;
     font-size: 0.8rem;
-    line-height: 1.55;
-    color: var(--text-muted);
+    line-height: 1.5;
+    color: var(--text-secondary);
     font-family: var(--font-mono);
-    white-space: pre-line;
     overflow-wrap: anywhere;
 }
 
-.effects-peq-summary-hint {
-    display: block;
-    margin-top: 0.35rem;
-    font-size: 0.76rem;
-    letter-spacing: 0.01em;
-    color: var(--text-muted);
-}
-
-.effects-disclosure[open] .effects-peq-summary,
-.effects-disclosure[open] .effects-peq-summary-hint {
+.effects-disclosure[open] .effects-peq-summary {
     display: none;
 }
 
@@ -6889,6 +7609,10 @@ input[type="number"]::-webkit-outer-spin-button {
     display: none;
 }
 
+.effects-disclosure-summary {
+    align-items: flex-start;
+}
+
 .effects-disclosure-summary h3 {
     margin: 0 0 0.4rem;
 }
@@ -6902,6 +7626,7 @@ input[type="number"]::-webkit-outer-spin-button {
 
 .effects-disclosure-meta {
     flex: 0 0 auto;
+    align-self: flex-start;
     padding: 0.35rem 0.7rem;
     border-radius: 999px;
     border: 1px solid var(--border);
@@ -7013,13 +7738,6 @@ input[type="number"]::-webkit-outer-spin-button {
     width: 4.6rem;
     text-align: center;
 }
-#tab-effects .delay-field-compact .delay-number-input {
-    width: 4.6rem;
-}
-#tab-effects .effects-bass-controls .delay-number-input {
-    width: 4.6rem;
-    min-width: 4.6rem;
-}
 /* Compact − / value / + stepper for small-range DSP numbers. Replaces the
    native spinners where stepping is the primary interaction; the value
    stays directly editable and keeps its step/min/max semantics. Placed
@@ -7038,14 +7756,18 @@ input[type="number"]::-webkit-outer-spin-button {
 }
 
 .stepper-btn {
-    flex: 0 0 auto;
-    width: 26px;
+    /* Minus and plus share one box. Where a control is tighter than its
+       preferred width the buttons give up the difference before the value
+       field loses a digit. */
+    flex: 0 1 auto;
+    width: 32px;
+    min-width: 24px;
     border: 0;
     padding: 0;
     background: transparent;
     color: var(--text-secondary);
     font-family: inherit;
-    font-size: 1.05rem;
+    font-size: 1.15rem;
     line-height: 1;
     cursor: pointer;
     user-select: none;
@@ -7146,7 +7868,7 @@ input[type="number"]::-webkit-outer-spin-button {
    digits and the five-digit frequency override stays in force. */
 @media (max-width: 520px) {
     .stepper-btn {
-        width: 34px;
+        width: 38px;
     }
 }
 /* ============================================================
@@ -7714,7 +8436,7 @@ input[type="number"]::-webkit-outer-spin-button {
 .source-select {
     min-width: 0;
     flex: 1 1 auto;
-    max-width: min(460px, 100%);
+    max-width: min(360px, 100%);
     padding: .45rem .6rem;
     border: 1px solid rgba(110,231,183,.28);
     border-radius: 999px;
@@ -7739,6 +8461,53 @@ input[type="number"]::-webkit-outer-spin-button {
 }
 .source-select:disabled { opacity: .45; cursor: default; }
 .source-select option { background: #16281f; color: #f0fff8; }
+/* App playback shortcut and the auto-select toggle for the shown input:
+   quiet pills; Auto turns accent when armed. A dot marks a live signal;
+   it glows while the input was selected automatically. */
+.source-app-btn,
+.source-auto-btn {
+    flex: 0 0 auto;
+    position: relative;
+    height: 30px;
+    padding: 0 .62rem;
+    border: 1px solid rgba(255,255,255,.12);
+    border-radius: 999px;
+    background: transparent;
+    color: var(--text-muted);
+    font: inherit;
+    font-size: .68rem;
+    font-weight: 700;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    cursor: pointer;
+    transition: color .15s var(--ease), border-color .15s var(--ease), background .15s var(--ease);
+}
+.source-app-btn:hover:not(:disabled),
+.source-app-btn:focus-visible:not(:disabled),
+.source-auto-btn:hover:not(:disabled),
+.source-auto-btn:focus-visible:not(:disabled) {
+    color: #f0fff8;
+    border-color: rgba(110,231,183,.42);
+    outline: none;
+}
+.source-auto-btn.is-armed {
+    color: var(--accent);
+    border-color: rgba(110,231,183,.5);
+    background: var(--accent-dim);
+}
+.source-auto-btn.has-signal::after {
+    content: "";
+    position: absolute;
+    top: -2px;
+    right: -2px;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--accent);
+}
+.source-auto-btn.is-engaged::after { box-shadow: 0 0 0 2px rgba(110,231,183,.22), 0 0 8px rgba(110,231,183,.7); }
+.source-app-btn:disabled,
+.source-auto-btn:disabled { opacity: .38; cursor: default; }
 .control-btn, .control-btn-secondary, .control-btn-mode, .control-btn-clear { padding: 0;
     line-height: 1;
     align-self: center;
@@ -7851,7 +8620,59 @@ input[type="number"]::-webkit-outer-spin-button {
 
 /* Hidden meter segments (JS-driven via .meter-segment-hidden): must win
    over the base .meter-segments i { display: block } row rule. */
-.meter-segments .meter-segment-hidden { display: none; }
+.meter-segments .meter-segment-hidden,
+.meter-bar .meter-segment-hidden { display: none; }
+
+/* Multichannel output meter: with three or more speaker positions the two
+   stereo rows give way to one vertical bar per position (FL FR C LFE SL SR
+   RL RR). The level in dB is dropped here; the bars say enough. */
+.meter-multi { display: none; }
+.playback-meter.is-multichannel {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 0;
+}
+.playback-meter.is-multichannel .meter-row,
+.playback-meter.is-multichannel .output-level-badge { display: none; }
+.playback-meter.is-multichannel .meter-multi {
+    display: flex;
+    align-items: flex-start;
+}
+.meter-col {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 3px;
+    width: 16px;
+}
+.meter-bar {
+    display: flex;
+    flex-direction: column-reverse;
+    gap: 1.5px;
+}
+.meter-bar i {
+    display: block;
+    width: 5px;
+    height: 3px;
+    border-radius: 999px;
+    background: rgba(255,255,255,.075);
+    transition: background .08s linear, box-shadow .08s linear, opacity .08s linear;
+}
+.meter-bar i.is-lit { background: #55d99f; }
+.meter-bar i.is-lit.is-warn { background: #e9b949; }
+.meter-bar i.is-lit.is-hot { background: #ef7b4f; }
+.meter-bar i.is-peak {
+    background: #ff5a5f;
+    box-shadow: 0 0 8px rgba(255,90,95,.72);
+}
+.meter-col-label {
+    font-size: .5rem;
+    line-height: 1;
+    font-weight: 760;
+    white-space: nowrap;
+    color: rgba(160,160,172,.68);
+}
 /* Shared detail track-row body (library album detail + Tidal album/playlist
    detail): track number, round play button, stacked title/sub, favorite,
    duration. One visual language for both providers; the row container chrome
@@ -8063,6 +8884,7 @@ input[type="number"]::-webkit-outer-spin-button {
         #playback-bar .samplerate-status,
         #playback-bar .queue-status { font-size: 0.67rem; }
         #playback-bar .meter-channel { font-size: 0.57rem; }
+        #playback-bar .meter-col-label { font-size: 0.54rem; }
         #playback-bar .output-level-badge { font-size: 0.65rem; }
         .tab-btn { font-size: 0.94rem; }
         .section-title { font-size: 1.12rem; }
@@ -8179,6 +9001,12 @@ input[type="number"]::-webkit-outer-spin-button {
         gap: 1.7px;
     }
     .meter-segments i { height: 4px; }
+    /* Multichannel bars sit centred in the meter row; the stereo rows'
+       bottom alignment would push the labels into the volume row. */
+    .playback-meter.is-multichannel {
+        align-self: center;
+        margin: 0;
+    }
     .playback-bar .controls {
         width: min(100%, 235px);
         max-width: 235px;
@@ -8316,6 +9144,17 @@ input[type="number"]::-webkit-outer-spin-button {
         height: 40px;
         font-size: .92rem;
     }
+    /* Phone source switcher: the select shrinks to the row instead of
+       its longest option, so App, the arrows and Auto always stay on screen. */
+    .source-switcher {
+        min-width: 0;
+        min-height: 40px;
+        gap: .4rem;
+    }
+    .source-select {
+        padding-block: .4rem;
+        font-size: .84rem;
+    }
     .control-btn-secondary {
         width: 29px;
         height: 29px;
@@ -8371,6 +9210,16 @@ input[type="number"]::-webkit-outer-spin-button {
         height: 4px;
         border-radius: 999px;
     }
+    /* Multichannel on a phone: up to eight slim bars in the 84px meter slot,
+       positions told apart by order only (labels stay in the tooltips). */
+    .playback-meter.is-multichannel {
+        width: auto;
+        max-width: 84px;
+        min-height: 0;
+    }
+    .meter-col { width: 10px; }
+    .meter-col-label { display: none; }
+    .meter-bar { gap: 1.4px; }
     .output-level-badge { display: none; }
     /* Phone: volume percent shares the seek duration right value column. */
     .playback-bar .controls {
@@ -8415,14 +9264,15 @@ input[type="number"]::-webkit-outer-spin-button {
         font-size: .64rem;
         line-height: 1;
     }
-    /* Phone: no-media fallback keeps track + volume only. */
-    .playback-bar:not(.has-media) {
+    /* Phone: no-media fallback keeps track + volume only. Line sources
+       never carry app media; they keep their switcher and meter. */
+    .playback-bar:not(.has-media):not(.source-mode) {
         grid-template-areas:
             "track track"
             "volume volume";
     }
-    .playback-bar:not(.has-media) .playback-center,
-    .playback-bar:not(.has-media) .playback-meter { display: none; }
+    .playback-bar:not(.has-media):not(.source-mode) .playback-center,
+    .playback-bar:not(.has-media):not(.source-mode) .playback-meter { display: none; }
     /* Phone slider paint and thumb geometry. */
     .seek-slider::-webkit-slider-runnable-track,
     .volume-slider::-webkit-slider-runnable-track {
@@ -8464,6 +9314,11 @@ input[type="number"]::-webkit-outer-spin-button {
             max-width: 78px;
             grid-template-columns: .5rem 57px;
         }
+        .playback-meter.is-multichannel {
+            width: auto;
+            max-width: 78px;
+        }
+        .meter-col { width: 9px; }
         .meter-segments {
             width: 57px;
             min-width: 57px;
@@ -8483,6 +9338,11 @@ input[type="number"]::-webkit-outer-spin-button {
     @media (max-width: 390px) {
         .playback-bar {
             grid-template-areas: "track track" "transport transport" "volume volume";
+        }
+        /* The meter row would stay empty: switcher and volume only. */
+        .playback-bar.source-mode {
+            grid-template-rows: auto auto;
+            grid-template-areas: "transport transport" "volume volume";
         }
         .playback-meter { display: none; }
     }
@@ -8869,7 +9729,7 @@ input[type="number"]::-webkit-outer-spin-button {
         #measurement-repeat-start,
         #measurement-hybrid-open,
     #measurement-auto-sub-start,
-    #measurement-spl-calibration-open {
+    #measurement-calibration-toggle {
         width: 100%;
         min-width: 0;
     }
@@ -8892,18 +9752,27 @@ input[type="number"]::-webkit-outer-spin-button {
        width here and dragged the room view and the action row out of the
        panel on a 320px screen. */
     .hybrid-wizard-grid { grid-template-columns: minmax(0, 1fr); }
-    .hybrid-room-view { min-height: 300px; }
+    .hybrid-room-view { min-height: 320px; }
+    /* A phone-wide room: a smaller seat leaves the side and rear speakers
+       their own space instead of sitting on its arms (the front group keeps
+       the full seat). */
+    .hybrid-room-view[data-hybrid-group="side"] .hybrid-seat,
+    .hybrid-room-view[data-hybrid-group="rear"] .hybrid-seat { transform: translate(-50%, -50%) scale(0.8); }
+    /* Rear: seat, 1 m microphones and speakers stack in the 320px room
+       without touching (the room is too short for the wide-room positions). */
+    .hybrid-room-view[data-hybrid-group="rear"] {
+        --hybrid-listen-shift: -33%;
+        --hybrid-direct-y: 66%;
+        --hybrid-speaker-y: 85%;
+    }
+    /* The subwoofers stand above the moved-up listening area. */
+    .hybrid-room-view[data-hybrid-group="rear"] .hybrid-sub { top: 15%; }
     .hybrid-step-card { min-height: 390px; }
     .hybrid-action-row { position: sticky; bottom: -0.85rem; margin-inline: -0.85rem; padding: 0.75rem 0.85rem; background: var(--bg-surface); }
 
-        .measurement-channel-chip-row,
     .measurement-smoothing-chips {
         width: 100%;
         justify-content: flex-start;
-    }
-
-    .measurement-channel-chip-row {
-        justify-content: center;
     }
 
         .measurement-card-setup,
@@ -8993,7 +9862,6 @@ input[type="number"]::-webkit-outer-spin-button {
         flex-direction: column;
         align-items: stretch;
         gap: 0.5rem;
-        margin-bottom: 0.7rem;
     }
     .playlist-save-controls {
         width: 100%;
@@ -9164,7 +10032,6 @@ input[type="number"]::-webkit-outer-spin-button {
     .playlist-save-row {
         flex-wrap: nowrap;
         align-items: stretch;
-        margin-bottom: 0.7rem;
     }
     .playlist-save-controls {
         width: 100%;
@@ -9264,7 +10131,6 @@ input[type="number"]::-webkit-outer-spin-button {
     }
 
     /* Touch targets that can grow without moving surrounding layout. */
-    .catalog-station-action { min-height: 44px; }
     .dialog-header-corner-close .btn-close-manage { width: 44px; height: 44px; min-height: 44px; }
     .measurement-chip { min-height: 44px; }
     .measurement-view-toggle .measurement-chip { min-height: 44px; }
@@ -9422,11 +10288,9 @@ input[type="number"]::-webkit-outer-spin-button {
     }
 
     /* Sub trim cards mirror the speaker Trim block: Level + Align share
-       one row, Polarity sits centered below instead of dangling alone
-       in an empty second column. */
+       one row, Polarity sits below Level in the first column. */
     .effects-subwoofer-channel-group .effects-subwoofer-polarity-field {
-        grid-column: 1 / -1;
-        justify-self: center;
+        grid-column: 1;
     }
 
     /* Mobile: both crossover blocks wrap into two columns, so the single
@@ -9469,41 +10333,6 @@ input[type="number"]::-webkit-outer-spin-button {
         width: auto;
         min-width: 96px;
         flex: 0 0 auto;
-    }
-
-    /* The row wraps on its own once the card is too narrow; on a phone the
-       Add button drops to its own line and starts at the leading edge. */
-    .effects-peq-add-row .btn-inline {
-        margin-right: auto;
-    }
-
-    .effects-peq-mode-field {
-        max-width: none;
-    }
-
-    .effects-loudness-row {
-        display: grid;
-        grid-template-columns: minmax(0, 1fr);
-        align-items: center;
-    }
-
-    .effects-loudness-controls {
-        display: inline-flex;
-        width: max-content;
-        max-width: 100%;
-        gap: 0.65rem;
-    }
-
-    .effects-loudness-controls .effects-inline-control {
-        flex-wrap: nowrap;
-    }
-
-        .effects-bass-row,
-    .effects-bass-controls {
-        display: flex;
-        align-items: center;
-        gap: 0.65rem;
-        flex-wrap: wrap;
     }
 
     .effects-extras-inner {
@@ -9549,6 +10378,18 @@ input[type="number"]::-webkit-outer-spin-button {
 
     .effects-subwoofer-derived-delays {
         grid-column: 1 / -1;
+    }
+
+    /* Combine keeps its three preset columns inside the two-column card
+       grid, where they are too narrow for "Preset 3 optional" on one line.
+       The wrapped label raises the row and the Preset 1 and 2 selects grew
+       into it (.url-input carries flex: 1). Labels stay on the top line,
+       the selects keep their natural height on a shared bottom line. */
+    .effects-combine-grid .field-group {
+        justify-content: space-between;
+    }
+    .effects-combine-grid .compare-select {
+        flex: 0 0 auto;
     }
 }
 
@@ -9799,15 +10640,23 @@ input[type="number"]::-webkit-outer-spin-button {
        (long preset names cut after ~25 characters) and the tile ended
        ~110px above the card bottom. Stacked, each select gets the full tile
        width and the tile fills the card; height the neighbour adds (enabled
-       extras) is spread between the tile's sections instead of collecting
-       under it. The one-column grid below 768px keeps the natural height
-       and the side-by-side slots. */
+       extras) is spread evenly between the tile's sections (status, preset
+       pair, actions, info line) instead of collecting under the actions.
+       The info line's own auto margin would take all of it, and an empty
+       status line must not claim a gap of its own. The one-column grid
+       below 768px keeps the natural height and the side-by-side slots. */
     .effects-card-manage-order .effects-stack,
     .effects-card-manage-order .effects-compare-row {
         flex: 1 1 auto;
     }
     .effects-card-manage-order .effects-compare-row {
         justify-content: space-between;
+    }
+    .effects-card-manage-order .effects-info {
+        margin-top: 0;
+    }
+    .effects-card-manage-order .effects-status:empty {
+        display: none;
     }
     .effects-card-manage-order .effects-compare-fields {
         grid-template-columns: 1fr;
@@ -9831,9 +10680,10 @@ input[type="number"]::-webkit-outer-spin-button {
    shared control column. Both cards then read the same, and a setting costs
    one row instead of a label line plus a centered control of its own width.
    The label column keeps 4.5rem for the longest single word ("Frequency");
-   the control column holds a digit-safe stepper (9rem) and grows to 10rem
-   where the card allows it, so every control in every group ends up equally
-   wide. Longer labels ("Main highpass") wrap inside their column. */
+   the control column holds a digit-safe stepper (9rem) and grows to 10.5rem
+   (two 38px buttons, the value field and the unit) where the card allows it,
+   so every control in every group ends up equally wide. Longer labels
+   ("Main highpass") wrap inside their column. */
 @media (max-width: 520px) {
     .effects-subwoofer-global-group {
         grid-template-columns: minmax(0, 1fr);
@@ -9844,7 +10694,7 @@ input[type="number"]::-webkit-outer-spin-button {
     .effects-subwoofer-crossover-block,
     .effects-subwoofer-channel-group {
         display: grid;
-        grid-template-columns: minmax(4.5rem, 1fr) minmax(9rem, 10rem);
+        grid-template-columns: minmax(4.5rem, 1fr) minmax(9rem, 10.5rem);
         align-items: center;
         gap: 0.5rem 0.75rem;
     }
@@ -9860,20 +10710,22 @@ input[type="number"]::-webkit-outer-spin-button {
         min-height: 0;
         font-weight: 500;
     }
-    /* Short select values (LR, 24, On, N) sit centered in the control: the
+    /* Short select values (LR, 24, On, N/I) sit centered in the control: the
        left padding mirrors the chevron reserve, so the text box is
-       symmetric. Stepper values keep their own layout. */
+       symmetric. Polarity keeps N/I here through the compact labels while
+       wider screens spell out Normal/Inverted. Stepper values keep their
+       own layout. */
     #tab-effects .effects-subwoofer-control-group select {
         width: 100%;
         padding-left: var(--arrow-reserve);
         text-align: center;
         text-align-last: center;
     }
-    /* Between 9rem and 10rem the stepper buttons give up the difference
-       (34px preferred, 26px minimum); the value field keeps its digit floor. */
+    /* Between 9rem and 10.5rem the stepper buttons give up the difference
+       (38px preferred, 26px minimum); the value field keeps its digit floor. */
     .effects-subwoofer-control-group .stepper-btn {
         width: auto;
-        flex: 0 1 34px;
+        flex: 0 1 38px;
         min-width: 26px;
     }
 }

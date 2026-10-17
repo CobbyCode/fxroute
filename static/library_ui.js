@@ -1815,21 +1815,34 @@ function syncRenderedTrackSelection() {
     });
 }
 
-// The save row is a single shared node. Its home is below the detail cards
-// (right before #library-info), but while an album detail is open it docks
-// inside the detail between header and tracks — like the TIDAL save row —
-// instead of sitting misplaced under the track list. Placement is
-// idempotent, so typing in the name field never moves the focused input.
+// The save row is a single shared node. Its home is above the content lists
+// (right before #tracks-list, hence above the Tracks/Folders list and above
+// the Albums/Favorites grid at the same full content width), but while an
+// album or playlist detail is open it docks inside the detail between header
+// and tracks — like the TIDAL save row — instead of sitting misplaced under
+// the track list. Placement is idempotent, so typing in the name field never
+// moves the focused input.
 function dockPlaylistSaveRow() {
-    const row = deps.getElements().playlistSaveRow;
-    if (!row || !deps.getElements().albumDetail || !deps.getElements().albumDetailTracks || !deps.getElements().libraryInfo) return;
-    if (!deps.getElements().albumDetail.classList.contains('hidden')) {
-        if (row.parentElement !== deps.getElements().albumDetail || row.nextSibling !== deps.getElements().albumDetailTracks) {
-            deps.getElements().albumDetail.insertBefore(row, deps.getElements().albumDetailTracks);
+    const els = deps.getElements();
+    const row = els.playlistSaveRow;
+    if (!row || !els.albumDetail || !els.albumDetailTracks) return;
+    if (!els.albumDetail.classList.contains('hidden')) {
+        if (row.parentElement !== els.albumDetail || row.nextSibling !== els.albumDetailTracks) {
+            els.albumDetail.insertBefore(row, els.albumDetailTracks);
         }
         return;
     }
-    const home = deps.getElements().libraryInfo;
+    if (els.playlistDetail && els.playlistDetailTracks && !els.playlistDetail.classList.contains('hidden')) {
+        if (row.parentElement !== els.playlistDetail || row.nextSibling !== els.playlistDetailTracks) {
+            els.playlistDetail.insertBefore(row, els.playlistDetailTracks);
+        }
+        return;
+    }
+    // Home above the lists: the same logical position (before the content)
+    // and the same full width as the docked album-detail row, for Tracks,
+    // Folders, Albums grid and Favorites alike.
+    const home = els.tracksList || els.libraryInfo;
+    if (!home) return;
     if (row.parentElement !== home.parentElement || row.nextSibling !== home) {
         home.parentElement.insertBefore(row, home);
     }
@@ -1842,18 +1855,13 @@ function updatePlaylistSaveRowVisibility() {
     // as at least one track is consciously added via the + action (never via
     // playback), the save-playlist row is reachable. Playback never touches
     // selectedTrackIds, so this trigger stays exclusive to the + selection.
-    // The row also stays open while a playlist detail is edited so Delete
-    // remains reachable without a selection.
+    // The playlist detail follows the same selection state as every other
+    // view: with no track selected the row stays hidden.
     const hasPlaylistSelection = count >= 1;
-    const isEditingPlaylist = !!deps.getState().library.playlistDetail;
-    const showRow = hasPlaylistSelection || isEditingPlaylist;
+    const showRow = hasPlaylistSelection;
     deps.getElements().playlistSaveRow.classList.toggle('hidden', !showRow);
     if (deps.getElements().playlistSaveControls) {
         deps.getElements().playlistSaveControls.classList.toggle('hidden', !showRow);
-    }
-    // Delete belongs to the edit flow only: hidden while merely creating.
-    if (deps.getElements().deletePlaylistBtn) {
-        deps.getElements().deletePlaylistBtn.classList.toggle('hidden', !isEditingPlaylist);
     }
     dockPlaylistSaveRow();
 }
@@ -2459,18 +2467,6 @@ function setupLibraryActions() {
     }
     if (deps.getElements().playlistDetailBack) {
         deps.getElements().playlistDetailBack.addEventListener('click', () => closePlaylistDetail());
-    }
-    if (deps.getElements().deletePlaylistBtn) {
-        deps.getElements().deletePlaylistBtn.addEventListener('click', async () => {
-            const detail = deps.getState().library.playlistDetail;
-            if (!detail || !detail.playlist) return;
-            if (!confirm(`Delete playlist "${detail.playlist.name}"?`)) return;
-            await deletePlaylistById(detail.playlist.id);
-            // deletePlaylistById reloads playlists; close the (now gone) detail.
-            if (!deps.getState().playlists.some(p => p.id === (detail.playlist && detail.playlist.id))) {
-                closePlaylistDetail();
-            }
-        });
     }
     deps.getElements().toggleImportBtn.addEventListener('click', () => {
         const shouldOpen = deps.getElements().libraryImportPanel.classList.contains('hidden');

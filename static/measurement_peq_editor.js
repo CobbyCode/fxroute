@@ -23,11 +23,12 @@
         setMeasurementActiveEditor: () => {},
         measurementBankSumsBothInputs: () => false,
         requireConcreteFilterBank: () => false,
+        // Why the visible results cannot become a filter ('' when they can).
+        measurementImportBlockedReason: () => '',
         validatePeqBands: () => null,
         normalizePeqEqMode: (mode) => mode,
         collectEffectsExtras: () => ({}),
         bankBindingJson: () => ({}),
-        measurementCommitSourceId: () => '',
         measurementPeqParams: () => ({}),
         formatTransitionErrorDetail: (_detail, fallback) => fallback,
         fetchEffects: async () => {},
@@ -86,11 +87,6 @@
     function focusMeasurementPeqPanelContext() {
         if (!deps.getElements().measurementPeqPanel || deps.getElements().measurementPeqPanel.classList.contains('hidden')) return;
         deps.getElements().measurementPeqPanel.focus({ preventScroll: true });
-    }
-
-    function isEditableMeasurementPeqTarget(target) {
-        if (!(target instanceof (deps.getElementType()))) return false;
-        return !!target.closest('input, select, textarea, [contenteditable="true"]');
     }
 
     function handleMeasurementPeqNumberInputArrowKey(event) {
@@ -263,6 +259,12 @@
     }
 
     function takeMeasurementPeqToPreset(mode = 'both') {
+        const blocked = deps.measurementImportBlockedReason();
+        if (blocked) {
+            showMeasurementPeqTakeFeedback(blocked);
+            deps.showToast(blocked, 'warning');
+            return;
+        }
         const peq = ensureMeasurementPeqState();
         if (!peq.filters.length) {
             deps.showToast('Add at least one measurement PEQ filter first', 'warning');
@@ -309,6 +311,11 @@
 
     async function createMeasurementPeqPresetFromDraft() {
         if (!deps.requireConcreteFilterBank()) return;
+        const blocked = deps.measurementImportBlockedReason();
+        if (blocked) {
+            deps.showToast(blocked, 'warning');
+            return;
+        }
         if (deps.isPeqCreateInFlight()) {
             deps.showToast('PEQ preset creation already in progress', 'warning');
             return;
@@ -338,10 +345,8 @@
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     presetName,
-                    loadAfterCreate: false,
                     ...deps.collectEffectsExtras(),
                     ...deps.bankBindingJson(),
-                    source_measurement_id: deps.measurementCommitSourceId(),
                     peq: {
                         enabled: true,
                         params: deps.measurementPeqParams(leftBands, rightBands, eqMode),
@@ -456,7 +461,7 @@
         init,
         getDefaultMeasurementPeqFilter, getDefaultMeasurementPeqState,
         ensureMeasurementPeqState, getMeasurementPeqFilters, getMeasurementPeqActiveFilter,
-        focusMeasurementPeqPanelContext, isEditableMeasurementPeqTarget,
+        focusMeasurementPeqPanelContext,
         handleMeasurementPeqNumberInputArrowKey, syncMeasurementPeqQInput,
         stepActiveMeasurementPeqQ, handleMeasurementPeqGraphWheel,
         selectMeasurementPeqFilter, clampMeasurementPeqFrequency,

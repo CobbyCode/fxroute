@@ -77,6 +77,13 @@ window.FXRouteMeasurementFlows?.init({
         const area = measurementAreaFromCatalog();
         return area ? area.bank_id : '';
     },
+    measurementAreaGroup: () => measurementAreaFromCatalog()?.group || '',
+    measurementArea: () => measurementAreaFromCatalog(),
+    // Routed speaker groups of the Surround Global area, the area of one such
+    // group, and the shared speaker selection (the sweep menu chips set it too).
+    measurementGroupChoice: () => measurementGroupChoiceFromCatalog(),
+    measurementAreaForGroup: (group) => measurementAreaFromCatalog(group),
+    selectMeasurementGroup: (group) => selectMeasurementSpeakerGroup(group),
     getMeasurementReferenceWarning: (...args) => window.FXRouteMeasurementSetup.getMeasurementReferenceWarning(...args),
     appendMeasurementReferenceFields: (formData) => window.FXRouteMeasurementSetup.appendMeasurementReferenceFields(formData),
     normalizeOutputModeName,
@@ -139,6 +146,7 @@ window.FXRouteEffectsUI?.init({
     formatTransitionErrorDetail: (detail, fallback) => formatTransitionErrorDetail(detail, fallback),
     measurementBankSumsBothInputs: () => measurementBankSumsBothInputs(),
     renderCrossoverTile: () => renderCrossoverTile(),
+    refreshCalibrationOverview: () => window.FXRouteCalibrationOverview.refresh(),
     repaintCrossoverGraph: () => repaintCrossoverGraph(),
     setupUploadArea: (areaId, fileInputId, onFile) => LibraryUI.setupUploadArea(areaId, fileInputId, onFile),
     getActiveEditing: () => _activeEditing,
@@ -246,6 +254,8 @@ window.FXRoutePlaybackUI?.init({
     buildSourceSwitcherEntries: (...args) => buildSourceSwitcherEntries(...args),
     activateSourceSwitcherEntry: (...args) => activateSourceSwitcherEntry(...args),
     stepSourceSwitcher: (...args) => stepSourceSwitcher(...args),
+    toggleSourceAuto: (...args) => toggleSourceAuto(...args),
+    selectAppPlaybackSource: (...args) => selectAppPlaybackSource(...args),
     spotifyCommand: (...args) => StreamingRuntime.spotifyCommand(...args),
     qobuzCommand: (...args) => StreamingRuntime.qobuzCommand(...args),
     spotifySeek: (...args) => StreamingRuntime.spotifySeek(...args),
@@ -342,7 +352,10 @@ window.FXRouteOutputSystemController?.init({
     ensureOutputBoxes: () => ensureOutputSystemBoxes(),
     renderOutputSection: () => renderOutputSystemSection(),
     renderBankSelector: () => window.FXRouteBankUI.renderEffectsBankSelector(),
-    renderCompare: () => window.FXRouteBankUI.renderEffectsCompare(),
+    renderCompare: () => {
+        window.FXRouteBankUI.renderEffectsCompare();
+        window.FXRouteCalibrationOverview.refresh();
+    },
     syncCrossover: (enabled) => {
         if (enabled) {
             void fetchCrossoverResponse();
@@ -354,6 +367,7 @@ window.FXRouteOutputSystemController?.init({
     syncSpeakerAlign: () => MeasurementFlows.syncSpeakerAlignButton(),
     renderSubwoofer: () => renderSubwooferPanel(),
     syncAutoSub: () => MeasurementFlows.syncAutoSubButton(),
+    updateEffectsExtras: () => window.FXRouteEffectsUI?.updateEffectsExtrasUi?.(),
     reportMutationError: (html) => {
         if (elements.osFeedback) elements.osFeedback.innerHTML = html;
     },
@@ -374,23 +388,20 @@ window.FXRouteBankUI?.init({
     refreshCatalog: (force) => fetchOutputSystemCatalog(force),
     collectEffectsExtras: () => EffectsUI.collectEffectsExtras(),
     measurementBankSumsBothInputs: () => measurementBankSumsBothInputs(),
-    presetFileUrl: (name) => MeasurementUI.presetFileUrl(name),
+    presetFileUrl: (name, owner) => MeasurementUI.presetFileUrl(name, owner),
     renderEffects: () => EffectsUI.renderEffects(),
     renderMeasurementArea: () => renderMeasurementArea(),
     measurementArea: () => measurementAreaFromCatalog(),
     applyMutation: (kind, fields, message, options) => applyOutputSystemMutation(kind, fields, message, options),
-    confirmDialog: (message) => confirm(message),
 });
 window.FXRouteMeasurementPanelUI?.init({
     getElements: () => elements,
     renderMeasurementArea: () => renderMeasurementArea(),
     isSelectFocused: (select) => isSelectFocused(select),
-    getSelectedMeasurementInput: () => window.FXRouteMeasurementSetup.getSelectedMeasurementInput(),
     getSelectedMeasurementInputChannelCount: () => window.FXRouteMeasurementSetup.getSelectedMeasurementInputChannelCount(),
     getMeasurementReferenceWarning: () => window.FXRouteMeasurementSetup.getMeasurementReferenceWarning(),
     measurementModeReady: () => measurementModeReady(),
     escapeHtml: (value) => escapeHtml(value),
-    formatRateKhz: (rate) => formatRateKhz(rate),
     measurementAreaBadge: (measurement) => window.FXRouteMeasurementSavedUI.measurementAreaBadge(measurement),
     syncMeasurementSweepButton: () => window.FXRouteMeasurementJob.syncMeasurementSweepButton(),
     getActiveMeasurementKind: () => window.FXRouteMeasurementJob.getActiveMeasurementKind(),
@@ -419,6 +430,7 @@ window.FXRouteMeasurementSavedUI?.init({
     renderMeasurementPanel: () => renderMeasurementPanel(),
     mergeSelectedMeasurements: () => window.FXRouteMeasurementSavedActions.mergeSelectedMeasurements(),
     deleteSelectedMeasurements: () => window.FXRouteMeasurementSavedActions.deleteSelectedMeasurements(),
+    adoptSelectedMeasurementGroup: () => adoptSelectedMeasurementGroup(),
 });
 window.FXRouteMeasurementEditorsUI?.init({
     getState: () => state,
@@ -493,11 +505,11 @@ window.FXRouteMeasurementPeqEditor?.init({
     setMeasurementActiveEditor: (editor) => setMeasurementActiveEditor(editor),
     measurementBankSumsBothInputs: () => measurementBankSumsBothInputs(),
     requireConcreteFilterBank: () => window.FXRouteBankUI.requireConcreteFilterBank(),
+    measurementImportBlockedReason: () => measurementImportBlockedReason(),
     validatePeqBands: (side, bands) => EffectsUI.validatePeqBands(side, bands),
     normalizePeqEqMode: (mode) => EffectsUI.normalizePeqEqMode(mode),
     collectEffectsExtras: () => EffectsUI.collectEffectsExtras(),
     bankBindingJson: () => window.FXRouteBankUI.bankBindingJson(),
-    measurementCommitSourceId: () => measurementCommitSourceId(),
     measurementPeqParams: (left, right, mode) => window.FXRouteBankUI.measurementPeqParams(left, right, mode),
     formatTransitionErrorDetail: (detail, fallback) => formatTransitionErrorDetail(detail, fallback),
     fetchEffects: () => EffectsUI.fetchEffects(),
@@ -518,11 +530,10 @@ window.FXRouteMeasurementConvolverEditor?.init({
     showToast: (message, kind) => showToast(message, kind),
     renderMeasurementPanel: () => renderMeasurementPanel(),
     scheduleMeasurementGraphRender: () => MeasurementGraph.scheduleMeasurementGraphRender(),
-    saveMeasurementSetupSettings: (patch) => window.FXRouteMeasurementSetup.saveMeasurementSetupSettings(patch),
     collectEffectsExtras: () => EffectsUI.collectEffectsExtras(),
     appendBankBindingFields: (formData) => window.FXRouteBankUI.appendBankBindingFields(formData),
-    measurementCommitSourceId: () => measurementCommitSourceId(),
     requireConcreteFilterBank: () => window.FXRouteBankUI.requireConcreteFilterBank(),
+    measurementImportBlockedReason: () => measurementImportBlockedReason(),
     measurementBankSumsBothInputs: () => measurementBankSumsBothInputs(),
     fetchEffects: () => EffectsUI.fetchEffects(),
     fetchOutputSystemCatalog: (force) => fetchOutputSystemCatalog(force),
@@ -542,7 +553,7 @@ window.FXRouteMeasurementCapture?.init({
     fetch: (...args) => fetch(...args),
     showToast: (message, kind) => showToast(message, kind),
     renderMeasurementPanel: () => renderMeasurementPanel(),
-    requireConcreteFilterBank: () => window.FXRouteBankUI.requireConcreteFilterBank(),
+    requireMeasurableArea: () => window.FXRouteBankUI.requireMeasurableArea(),
     measurementModeReady: () => measurementModeReady(),
     measurementRepeatBlockedReason: () => measurementRepeatBlockedReason(),
     flushSubwooferSettingsBeforeMeasurement: () => flushSubwooferSettingsBeforeMeasurement(),
@@ -600,6 +611,47 @@ window.FXRouteMeasurementSplCalibration?.init({
     openModal: (panel, options) => window.FXRouteModal?.open(panel, options),
     closeModal: (panel) => window.FXRouteModal?.close(panel),
 });
+window.FXRouteCalibrationOverview?.init({
+    getElements: () => elements,
+    getState: () => state,
+    fetch: (...args) => fetch(...args),
+    isVisible: () => window.__visibleTab === 'effects',
+});
+window.FXRouteAvSync?.init({
+    getElements: () => elements,
+    fetch: (...args) => fetch(...args),
+    refreshCatalog: () => fetchOutputSystemCatalog(true),
+    closeCalibrationMenu: () => setMeasurementCalibrationMenuOpen(false),
+    hasActiveMeasurementJob: () => !!state.measurement.startInFlight || window.FXRouteMeasurementJob.hasActiveMeasurementJob(),
+    roleLabel: (role, mode) => window.FXRouteOutputState?.roleLabel(role, mode) ?? role,
+});
+window.FXRouteMeasurementLevelMatch?.init({
+    getElements: () => elements,
+    getState: () => state,
+    fetch: (...args) => fetch(...args),
+    openModal: (panel, options) => window.FXRouteModal?.open(panel, options),
+    closeModal: (panel) => window.FXRouteModal?.close(panel),
+    measurementArea: () => measurementAreaFromCatalog(),
+    ensureAreaCatalog: () => ensureMeasurementAreaCatalog(),
+    normalizeMeasurementInputChannelSelections: (...args) => window.FXRouteMeasurementSetup.normalizeMeasurementInputChannelSelections(...args),
+    applyMutation: (kind, fields, message, options) => applyOutputSystemMutation(kind, fields, message, options),
+    hasActiveMeasurementJob: () => !!state.measurement.startInFlight || window.FXRouteMeasurementJob.hasActiveMeasurementJob(),
+    escapeHtml,
+    roleLabel: (role, mode) => window.FXRouteOutputState?.roleLabel(role, mode) ?? role,
+});
+window.FXRouteMeasurementPolarityCheck?.init({
+    getElements: () => elements,
+    getState: () => state,
+    fetch: (...args) => fetch(...args),
+    openModal: (panel, options) => window.FXRouteModal?.open(panel, options),
+    closeModal: (panel) => window.FXRouteModal?.close(panel),
+    measurementArea: () => measurementAreaFromCatalog(),
+    ensureAreaCatalog: () => ensureMeasurementAreaCatalog(),
+    normalizeMeasurementInputChannelSelections: (...args) => window.FXRouteMeasurementSetup.normalizeMeasurementInputChannelSelections(...args),
+    hasActiveMeasurementJob: () => !!state.measurement.startInFlight || window.FXRouteMeasurementJob.hasActiveMeasurementJob(),
+    escapeHtml,
+    roleLabel: (role, mode) => window.FXRouteOutputState?.roleLabel(role, mode) ?? role,
+});
 // Leaf modules (api.js, ui_helpers.js, modal.js) own the canonical
 // implementations below; app.js keeps thin delegating wrappers so existing
 // call sites stay unchanged.
@@ -648,6 +700,7 @@ let state = {
             target: null,
             last_over_at: null,
             last_error: null,
+            channels: null,
         },
     },
     library: {
@@ -674,6 +727,8 @@ let state = {
     outputSystem: {
         catalog: null,
         busy: false,
+        // Easy (Global only) or Expert (bank selection) view of the DSP tab.
+        expert: window.FXRouteBankUI ? window.FXRouteBankUI.readStoredExpertView() : false,
     },
     crossover: {
         activeWay: null,
@@ -695,7 +750,6 @@ let state = {
         },
         peqDraft: {
             presetName: '',
-            loadAfterCreate: false,
             leftBands: [],
             rightBands: [],
         },
@@ -715,6 +769,7 @@ let state = {
         pendingRepeatMeasurements: [],
         currentMeasurementSaved: false,
         currentMeasurementName: '',
+        typedMeasurementName: '',
         inputs: [],
         selectedInputId: '',
         selectedInputLegacyId: '',
@@ -726,6 +781,8 @@ let state = {
         selectedReferenceInputChannelLeft: '',
         selectedReferenceInputChannelRight: '',
         sweepSide: 'stereo',
+        globalGroup: '',
+        allBanksGroup: '',
         cancelRequested: false,
         repeatJobActive: false,
         displaySmoothing: '1/6-oct',
@@ -775,7 +832,6 @@ let state = {
         speakerAlignResult: null,
         speakerAlignResults: null,
         statusText: 'Sweep ready. Calibration file is optional.',
-        measurementSampleRate: '48000',
         assistMode: 'peq',
         convolverAssistant: {
             targetCurve: 'neutral',
@@ -798,8 +854,10 @@ let state = {
             jobId: '',
             stepIndex: 0,
             mode: 'stereo',
+            scope: null,
             sequence: [],
             captures: [],
+            groupProfiles: {},
             status: '',
             phase: '',
             cancelRequested: false,
@@ -864,8 +922,21 @@ let state = {
             current_input: null,
             inputs: [],
             bluetooth: {},
+            stdin: {},
             notes: [],
             pending: false,
+        },
+        // Inputs of sourceMode (see composeSourceModeState): the newest server
+        // overview by (epoch, revision), the mode an in-flight save shows and
+        // the last fetch failure, kept apart from the good snapshot.
+        sourceSync: {
+            epoch: null,
+            retiredEpochs: [],
+            revision: -1,
+            overview: null,
+            saveMode: null,
+            saveSerial: 0,
+            fetchError: null,
         },
         musicLibrary: {
             active_id: 'local',
@@ -965,6 +1036,7 @@ const elements = {
     osTopology: document.getElementById('os-topology'),
     osFeedback: document.getElementById('os-feedback'),
     effectsBankSelect: document.getElementById('effects-bank-select'),
+    effectsExpertToggle: document.getElementById('effects-expert-toggle'),
     effectsCrossoverCard: document.getElementById('effects-crossover-card'),
     effectsCrossoverSummary: document.getElementById('effects-crossover-summary'),
     effectsCrossoverTabs: document.getElementById('effects-crossover-tabs'),
@@ -987,8 +1059,9 @@ const elements = {
     effectsCrossoverPolarity: document.getElementById('effects-crossover-polarity'),
     effectsCrossoverLink: document.getElementById('effects-crossover-link'),
     settingsSourceSelect: document.getElementById('settings-source-select'),
-    settingsSourceModeHint: document.getElementById('settings-source-mode-hint'),
+    settingsSourceStatus: document.getElementById('settings-source-status'),
     settingsBluetoothStatus: document.getElementById('settings-bluetooth-status'),
+    settingsStdinStatus: document.getElementById('settings-stdin-status'),
     settingsMusicLibrarySelect: document.getElementById('settings-music-library-select'),
     settingsMusicLibraryHint: document.getElementById('settings-music-library-hint'),
     settingsProvidersList: document.getElementById('settings-providers-list'),
@@ -1070,7 +1143,6 @@ const elements = {
     playlistDetailCount: document.getElementById('playlist-detail-count'),
     playlistDetailInfo: document.getElementById('playlist-detail-info'),
     playlistDetailTracks: document.getElementById('playlist-detail-tracks'),
-    deletePlaylistBtn: document.getElementById('delete-playlist'),
     selectAllTracksBtn: document.getElementById('select-all-tracks'),
     playlistName: document.getElementById('playlist-name'),
     savePlaylistBtn: document.getElementById('save-playlist'),
@@ -1090,6 +1162,11 @@ const elements = {
     effectsInfo: document.getElementById('effects-info'),
     // elements.effectsPresetStatus removed — preset status is now shown in the compare row
     effectsDeleteBtn: document.getElementById('effects-delete'),
+    effectsDeletePanel: document.getElementById('effects-delete-panel'),
+    effectsDeleteList: document.getElementById('effects-delete-list'),
+    effectsDeleteDescription: document.getElementById('effects-delete-description'),
+    effectsDeleteConfirm: document.getElementById('effects-delete-confirm'),
+    effectsDeleteCancel: document.getElementById('effects-delete-cancel'),
     effectsCompareA: document.getElementById('effects-compare-a'),
     effectsCompareB: document.getElementById('effects-compare-b'),
     effectsCompareToggle: document.getElementById('effects-compare-toggle'),
@@ -1134,6 +1211,7 @@ const elements = {
     measurementSweepToggleBtn: document.getElementById('measurement-sweep-toggle'),
     measurementSweepMenu: document.getElementById('measurement-sweep-menu'),
     measurementSweepStartBtn: document.getElementById('measurement-sweep-start'),
+    measurementSweepGroupRow: document.getElementById('measurement-sweep-group-row'),
     measurementSweepSideRow: document.getElementById('measurement-sweep-side-row'),
     measurementAreaIndicator: document.getElementById('measurement-area-indicator'),
     measurementAreaNote: document.getElementById('measurement-area-note'),
@@ -1155,6 +1233,7 @@ const elements = {
     measurementHybridHeaderActions: document.getElementById('measurement-hybrid-header-actions'),
     measurementHybridMode: document.getElementById('measurement-hybrid-mode'),
     measurementHybridProgress: document.getElementById('measurement-hybrid-progress'),
+    measurementHybridScopeRow: document.getElementById('measurement-hybrid-scope-row'),
     measurementHybridTitle: document.getElementById('measurement-hybrid-step-title'),
     measurementHybridInstruction: document.getElementById('measurement-hybrid-instruction'),
     measurementHybridActive: document.getElementById('measurement-hybrid-active'),
@@ -1173,6 +1252,7 @@ const elements = {
     measurementGraph: document.getElementById('measurement-graph'),
     measurementIrDiagnostics: document.getElementById('measurement-ir-diagnostics'),
     measurementEmpty: document.getElementById('measurement-empty'),
+    measurementCurrentKey: document.getElementById('measurement-current-key'),
     measurementPeqPanel: document.getElementById('measurement-peq-panel'),
     measurementPeqChips: document.getElementById('measurement-peq-chips'),
     measurementPeqEditor: document.getElementById('measurement-peq-editor'),
@@ -1190,7 +1270,6 @@ const elements = {
     measurementConvolverMaxBoost: document.getElementById('measurement-convolver-max-boost'),
     measurementConvolverMaxCut: document.getElementById('measurement-convolver-max-cut'),
     measurementConvolverDipGuard: document.getElementById('measurement-convolver-dip-guard'),
-    measurementConvolverSampleRate: document.getElementById('measurement-convolver-sample-rate'),
     measurementConvolverPhaseMode: document.getElementById('measurement-convolver-phase-mode'),
     measurementConvolverIrLength: document.getElementById('measurement-convolver-ir-length'),
     measurementConvolverPresetName: document.getElementById('measurement-convolver-preset-name'),
@@ -1204,9 +1283,13 @@ const elements = {
     measurementList: document.getElementById('measurement-list'),
     effectsCompareActive: document.getElementById('effects-compare-active'),
     effectsCompareChain: document.getElementById('effects-compare-chain'),
+    effectsCompareBanks: document.getElementById('effects-compare-banks'),
+    effectsCompareABanks: document.getElementById('effects-compare-a-banks'),
+    effectsCompareBBanks: document.getElementById('effects-compare-b-banks'),
     effectsCompareRow: document.getElementById('effects-compare-row'),
     effectsToggleImportBtn: document.getElementById('effects-toggle-import'),
     effectsImportPanel: document.getElementById('effects-import-panel'),
+    effectsImportGroupRow: document.getElementById('effects-import-group-row'),
     effectsImportFile: document.getElementById('effects-import-file'),
     effectsImportFilename: document.getElementById('effects-import-filename'),
     effectsLimiterEnabled: document.getElementById('effects-limiter-enabled'),
@@ -1218,14 +1301,22 @@ const elements = {
     effectsAutogainTargetWrap: document.getElementById('effects-autogain-target-wrap'),
     effectsLoudnessEnabled: document.getElementById('effects-loudness-enabled'),
     effectsLoudnessStrength: document.getElementById('effects-loudness-strength'),
-    effectsLoudnessStrengthWrap: document.getElementById('effects-loudness-strength-wrap'),
     effectsLoudnessFftSize: document.getElementById('effects-loudness-fft-size'),
-    effectsLoudnessFftWrap: document.getElementById('effects-loudness-fft-wrap'),
+    effectsLoudnessDetails: document.getElementById('effects-loudness-details'),
     effectsBassEnabled: document.getElementById('effects-bass-enabled'),
     effectsBassAmount: document.getElementById('effects-bass-amount'),
-    effectsBassControlsWrap: document.getElementById('effects-bass-controls-wrap'),
+    effectsBassDetails: document.getElementById('effects-bass-details'),
+    effectsUpmixerRow: document.getElementById('effects-upmixer-row'),
+    effectsUpmixerEnabled: document.getElementById('effects-upmixer-enabled'),
+    effectsUpmixerMode: document.getElementById('effects-upmixer-mode'),
+    effectsUpmixerDetails: document.getElementById('effects-upmixer-details'),
+    effectsUpmixerCenter: document.getElementById('effects-upmixer-center'),
+    effectsUpmixerCenterWrap: document.getElementById('effects-upmixer-center-wrap'),
+    effectsUpmixerSurround: document.getElementById('effects-upmixer-surround'),
+    effectsUpmixerFftSize: document.getElementById('effects-upmixer-fft-size'),
+    effectsUpmixerFftWrap: document.getElementById('effects-upmixer-fft-wrap'),
     effectsToneEffectEnabled: document.getElementById('effects-tone-effect-enabled'),
-    effectsToneEffectWrap: document.getElementById('effects-tone-effect-wrap'),
+    effectsToneEffectDetails: document.getElementById('effects-tone-effect-details'),
     effectsToneEffectMode: document.getElementById('effects-tone-effect-mode'),
     effectsExtrasFeedback: document.getElementById('effects-extras-feedback'),
     effectsSubwooferCard: document.querySelector('.effects-card-subwoofer'),
@@ -1238,6 +1329,10 @@ const elements = {
     effectsSubwooferTabLeft: document.getElementById('effects-subwoofer-tab-left'),
     effectsSubwooferTabRight: document.getElementById('effects-subwoofer-tab-right'),
     effectsSubwooferTabBoth: document.getElementById('effects-subwoofer-tab-both'),
+    effectsSubwooferGroupTabs: Array.from(document.querySelectorAll('[data-sub-group]')),
+    effectsSubwooferLinkText: document.getElementById('effects-subwoofer-link-text'),
+    effectsSubwooferMainHighpassLabel: document.querySelector('label[for="effects-subwoofer-main-highpass"]'),
+    effectsSubwooferLeftMainHighpassLabel: document.querySelector('label[for="effects-subwoofer-left-main-highpass"]'),
     effectsSubwooferSharedCrossover: document.getElementById('effects-subwoofer-shared-crossover'),
     effectsSubwooferLeftCrossover: document.getElementById('effects-subwoofer-left-crossover'),
     effectsSubwooferRightCrossover: document.getElementById('effects-subwoofer-right-crossover'),
@@ -1283,6 +1378,7 @@ const elements = {
     effectsCombinePreset3: document.getElementById('effects-combine-preset-3'),
     effectsCombinePresetName: document.getElementById('effects-combine-preset-name'),
     effectsCombineSaveBtn: document.getElementById('effects-combine-save'),
+    effectsCombineGroupRow: document.getElementById('effects-combine-group-row'),
     effectsRewLeftFile: document.getElementById('effects-rew-left-file'),
     effectsRewRightFile: document.getElementById('effects-rew-right-file'),
     effectsRewLeftText: document.getElementById('effects-rew-left-text'),
@@ -1291,6 +1387,7 @@ const elements = {
     effectsPeqDisclosure: document.getElementById('effects-peq-disclosure'),
     effectsPeqDisclosureMeta: document.querySelector('#effects-peq-disclosure .effects-disclosure-meta'),
     effectsPeqSummary: document.getElementById('effects-peq-summary'),
+    effectsPeqGroupRow: document.getElementById('effects-peq-group-row'),
     effectsPeqPresetName: document.getElementById('effects-peq-preset-name'),
     effectsPeqModeSelect: document.getElementById('effects-peq-mode-select'),
     effectsPeqAddBandBtn: document.getElementById('effects-peq-add-band'),
@@ -1321,6 +1418,7 @@ const elements = {
     playbackMeter: document.getElementById('playback-meter'),
     meterLeft: document.getElementById('meter-l'),
     meterRight: document.getElementById('meter-r'),
+    meterMulti: document.getElementById('meter-multi'),
     footerShuffleBtn: document.getElementById('footer-shuffle'),
     btnPrevious: document.getElementById('btn-previous'),
     btnPlayPause: document.getElementById('btn-play-pause'),
@@ -1329,9 +1427,11 @@ const elements = {
     btnClearQueue: document.getElementById('btn-clear-queue'),
     transportControls: document.querySelector('.playback-center .transport-controls'),
     sourceSwitcher: document.getElementById('source-switcher'),
+    sourceApp: document.getElementById('source-app'),
     sourcePrev: document.getElementById('source-prev'),
     sourceSelect: document.getElementById('source-select'),
     sourceNext: document.getElementById('source-next'),
+    sourceAuto: document.getElementById('source-auto'),
     queueStatus: document.getElementById('queue-status'),
     samplerateStatus: document.getElementById('samplerate-status'),
     outputLevelBadge: document.getElementById('output-level-badge'),
@@ -1342,6 +1442,36 @@ const elements = {
     volumeSlider: document.getElementById('volume-slider'),
     volumeDisplay: document.getElementById('volume-display'),
     splCalibrationOpen: document.getElementById('measurement-spl-calibration-open'),
+    avSyncOpen: document.getElementById('measurement-av-sync-open'),
+    avSyncPanel: document.getElementById('av-sync-panel'),
+    avSyncClose: document.getElementById('av-sync-close'),
+    avSyncTarget: document.getElementById('av-sync-target'),
+    avSyncMode: document.getElementById('av-sync-mode'),
+    avSyncActual: document.getElementById('av-sync-actual'),
+    avSyncLimits: document.getElementById('av-sync-limits'),
+    avSyncDetails: document.getElementById('av-sync-details'),
+    avSyncStatus: document.getElementById('av-sync-status'),
+    avSyncBasis: document.getElementById('av-sync-basis'),
+    avSyncSave: document.getElementById('av-sync-save'),
+    measurementCalibrationToggleBtn: document.getElementById('measurement-calibration-toggle'),
+    measurementCalibrationMenu: document.getElementById('measurement-calibration-menu'),
+    levelMatchOpen: document.getElementById('measurement-level-match-open'),
+    levelMatchPanel: document.getElementById('level-match-panel'),
+    levelMatchClose: document.getElementById('level-match-close'),
+    levelMatchArea: document.getElementById('level-match-area'),
+    levelMatchStart: document.getElementById('level-match-start'),
+    levelMatchReset: document.getElementById('level-match-reset'),
+    levelMatchActionStatus: document.getElementById('level-match-action-status'),
+    levelMatchResults: document.getElementById('level-match-results'),
+    levelMatchStatus: document.getElementById('level-match-status'),
+    polarityCheckOpen: document.getElementById('measurement-polarity-check-open'),
+    polarityCheckPanel: document.getElementById('polarity-check-panel'),
+    polarityCheckClose: document.getElementById('polarity-check-close'),
+    polarityCheckArea: document.getElementById('polarity-check-area'),
+    polarityCheckStart: document.getElementById('polarity-check-start'),
+    polarityCheckActionStatus: document.getElementById('polarity-check-action-status'),
+    polarityCheckResults: document.getElementById('polarity-check-results'),
+    polarityCheckStatus: document.getElementById('polarity-check-status'),
     splCalibrationPanel: document.getElementById('spl-calibration-panel'),
     splCalibrationClose: document.getElementById('spl-calibration-close'),
     splCalibrationNoise: document.getElementById('spl-calibration-noise'),
@@ -1349,6 +1479,15 @@ const elements = {
     splCalibrationAutoStatus: document.getElementById('spl-calibration-auto-status'),
     splCalibrationSave: document.getElementById('spl-calibration-save'),
     splCalibrationStatus: document.getElementById('spl-calibration-status'),
+    customMappingPanel: document.getElementById('custom-mapping-panel'),
+    customMappingClose: document.getElementById('custom-mapping-close'),
+    customMappingSubtitle: document.getElementById('custom-mapping-subtitle'),
+    customMappingDevice: document.getElementById('custom-mapping-device'),
+    customMappingName: document.getElementById('custom-mapping-name'),
+    customMappingGrid: document.getElementById('custom-mapping-grid'),
+    customMappingSave: document.getElementById('custom-mapping-save'),
+    customMappingDelete: document.getElementById('custom-mapping-delete'),
+    customMappingStatus: document.getElementById('custom-mapping-status'),
     toastContainer: document.getElementById('toast-container'),
     powerMenuRoot: document.getElementById('power-menu-root'),
     powerMenuToggle: document.getElementById('power-menu-toggle'),
@@ -1429,7 +1568,20 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 
+function setMeasurementCalibrationMenuOpen(shouldOpen) {
+    if (!elements.measurementCalibrationMenu || !elements.measurementCalibrationToggleBtn) return;
+    elements.measurementCalibrationMenu.classList.toggle('hidden', !shouldOpen);
+    elements.measurementCalibrationToggleBtn.setAttribute('aria-expanded', shouldOpen ? 'true' : 'false');
+    if (shouldOpen) {
+        elements.measurementCalibrationMenu.focus({ preventScroll: true });
+    } else if (elements.measurementCalibrationMenu.contains(document.activeElement)) {
+        elements.measurementCalibrationToggleBtn.focus({ preventScroll: true });
+    }
+}
+
 function setMeasurementSweepMenuOpen(shouldOpen) {
+    // One popover at a time: every sweep menu change also closes the calibration menu.
+    setMeasurementCalibrationMenuOpen(false);
     if (!elements.measurementSweepMenu || !elements.measurementSweepToggleBtn) return;
     elements.measurementSweepMenu.classList.toggle('hidden', !shouldOpen);
     elements.measurementSweepToggleBtn.setAttribute('aria-expanded', shouldOpen ? 'true' : 'false');
@@ -1474,6 +1626,9 @@ function connectWebSocket() {
         PlaybackCore.stopMetadataPolling();
         PlaybackCore.startPeakStatusPolling();
         void PlaybackCore.resyncPlaybackAfterReconnect();
+        // Source pushes sent while the socket was down or not yet ready are
+        // lost; the revision check keeps a newer push that lands first.
+        void fetchAudioSourceOverview();
         if (isMeasurementPanelOpen()) void MeasurementFlows.recoverAutoSubJob();
     };
     socket.onclose = (event) => {
@@ -1625,6 +1780,11 @@ function handleWebSocketMessage(msg) {
                         bassAmount: Number(state.dsp.global_extras?.bass_enhancer?.params?.amount || 0),
                         toneEffectEnabled: !!state.dsp.global_extras?.tone_effect?.enabled,
                         toneEffectMode: String(state.dsp.global_extras?.tone_effect?.mode || 'crystalizer'),
+                        upmixerEnabled: !!state.dsp.global_extras?.upmixer?.enabled,
+                        upmixerMode: String(state.dsp.global_extras?.upmixer?.params?.mode || 'fast'),
+                        upmixerCenter: state.dsp.global_extras?.upmixer?.params?.center ?? 6,
+                        upmixerSurround: state.dsp.global_extras?.upmixer?.params?.surround ?? 6,
+                        upmixerFftSize: Number(state.dsp.global_extras?.upmixer?.params?.fftSize ?? 2048),
                     });
                 }
                 EffectsUI.renderEffects();
@@ -1701,6 +1861,19 @@ function handleWebSocketMessage(msg) {
             state.playback.output_peak_warning = data || state.playback.output_peak_warning;
             PlaybackUI.renderPeakWarningBadge();
             break;
+        case 'source':
+            // Live audio source overview. The settings poll only runs while
+            // the dialog is open, so source switches and STDIN connect/stream/
+            // drop would otherwise leave tabs, the footer switcher and VU
+            // gating stale.
+            if (applySourceOverview(data)) renderSourceState();
+            if (data?.output_system_mode && data.output_system_mode !== state.outputSystem?.catalog?.active_mode) {
+                void fetchOutputSystemCatalog(true);
+            }
+            break;
+        case 'src':
+            window.FXRouteSrcSettings.update(data);
+            break;
         case 'download':
             state.download = data;
             LibraryUI.updateDownloadUI();
@@ -1712,13 +1885,11 @@ function handleWebSocketMessage(msg) {
             }
             break;
         case 'dsp':
-            const prev = state.dsp?.compare;
             const presetNames = (data.presets || []).map(p => p.name);
             state.dsp = {
                 ...data,
                 combineDraft: state.dsp?.combineDraft || window.FXRouteBankUI.getDefaultEffectsCombineDraft(),
-                peqDraft: state.dsp?.peqDraft || { presetName: '', eqMode: 'IIR', loadAfterCreate: false, leftBands: [EffectsUI.defaultPeqBand()], rightBands: [EffectsUI.defaultPeqBand()] },
-                compare: window.FXRouteBankUI.resolveEffectsCompareState(data.compare || prev, presetNames, data.active_preset || ''),
+                peqDraft: state.dsp?.peqDraft || { presetName: '', eqMode: 'IIR', leftBands: [EffectsUI.defaultPeqBand()], rightBands: [EffectsUI.defaultPeqBand()] },
             };
             state.dsp.combineDraft = window.FXRouteBankUI.normalizeEffectsCombineDraft(state.dsp.combineDraft, presetNames);
             EffectsUI.renderEffects();
@@ -1735,11 +1906,6 @@ function handleWebSocketMessage(msg) {
             break;
         default:
             console.log('Unknown WS message type:', type);
-    }
-}
-function sendWS(data) {
-    if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify(data));
     }
 }
 // Tab navigation
@@ -1880,6 +2046,25 @@ function setupSettingsActions() {
             void saveSampleRatePolicy(event.target.value || 'auto');
         });
     }
+    window.FXRouteCustomMapping.init({
+        getElements: () => elements,
+        fetch: (...args) => fetch(...args),
+        openModal: (panel, options) => window.FXRouteModal?.open(panel, options),
+        closeModal: (panel) => window.FXRouteModal?.close(panel),
+        confirm: (message) => window.confirm(message),
+        showToast,
+        refreshSources: () => fetchAudioSourceOverview(),
+    });
+    window.FXRouteCustomMapping.bind();
+    window.FXRouteSrcSettings.init({
+        select: document.getElementById('settings-src-select'),
+        hint: document.getElementById('settings-src-hint'),
+        onError: message => showToast(message, 'error'),
+        onApplied: async () => { await fetchAudioOutputOverview(); PlaybackCore.triggerSamplerateBurstPolling(); },
+    });
+    document.getElementById('settings-src-select')?.addEventListener('change', event => {
+        void window.FXRouteSrcSettings.save(event.target.value);
+    });
     if (elements.settingsCrossoverSelect) {
         elements.settingsCrossoverSelect.addEventListener('change', (event) => {
             const catalog = state.outputSystem.catalog;
@@ -1921,8 +2106,14 @@ function setupSettingsActions() {
                 void saveAudioSourceSelection('app-playback');
             } else if (value === 'bluetooth-input') {
                 void saveAudioSourceSelection('bluetooth-input');
+            } else if (value === 'stdin-input') {
+                void saveAudioSourceSelection('stdin-input');
             } else if (value.startsWith('external-input::')) {
                 void saveAudioSourceSelection('external-input', value.slice('external-input::'.length));
+            } else if (value === 'custom-mapping') {
+                // Configuration entry, not a source: restore the shown selection first.
+                renderSourceSection();
+                void window.FXRouteCustomMapping.open();
             }
         });
     }
@@ -2124,6 +2315,17 @@ function normalizeOutputModeName(mode) {
     return isSubwooferModeName(mode) ? mode : 'stereo';
 }
 
+function formatStdinRouting(stdin) {
+    // The engine calls the rear pair BL/BR; the CLI and PipeWire call it RL/RR.
+    const labels = { BL: 'RL', BR: 'RR' };
+    const map = Array.isArray(stdin.channel_map) ? stdin.channel_map : [];
+    if (!map.length) return `${stdin.left} → L / ${stdin.right} → R`;
+    return map
+        .map((position, index) => (position === '-' ? '' : `${index + 1} → ${labels[position] || position}`))
+        .filter(Boolean)
+        .join(', ');
+}
+
 function formatSampleRateKhz(rate) {
     const mod = (typeof window !== 'undefined' && window.FXRouteUiHelpers) || (typeof globalThis !== 'undefined' && globalThis.FXRouteUiHelpers) || null;
     return mod.formatSampleRateKhz(rate);
@@ -2221,7 +2423,7 @@ function toggleSettingsPanel(forceOpen = null) {
     if (shouldOpen) {
         settingsOutputScanOnFocusDone = false;
         renderSettingsPanel();
-        void Promise.all([fetchAudioOutputOverview(), fetchAudioSourceOverview(), SettingsSystem.fetchHardwareStatus(), SettingsSystem.fetchMusicLibraries(), fetchProviderAdmin(), SettingsSystem.checkFxrouteUpdate({ silent: true })]);
+        void Promise.all([fetchAudioOutputOverview(), fetchAudioSourceOverview(), window.FXRouteSrcSettings.refresh(), SettingsSystem.fetchHardwareStatus(), SettingsSystem.fetchMusicLibraries(), fetchProviderAdmin(), SettingsSystem.checkFxrouteUpdate({ silent: true })]);
         startSettingsStatusPolling();
         window.FXRouteModal?.open(elements.settingsPanel, {
             initialFocus: elements.settingsCloseBtn,
@@ -2584,49 +2786,12 @@ function renderSettingsPanel() {
         elements.settingsSamplerateSelect.disabled = !!state.samplerate?.pending || !overview.available;
     }
     if (elements.settingsSamplerateHint) {
-        const tierNote = activeTier ? ` · ${activeTier.channels} channels active` : '';
         elements.settingsSamplerateHint.textContent = sampleRatePolicy.mode === 'fixed'
-            ? `Playback graph and hardware output are fixed at ${formatSampleRateKhz(sampleRatePolicy.rate)}${tierNote}.`
-            : `Follows the effective playback sample rate${activeTier ? '; the device switches channel inventory automatically' : ''}.`;
+            ? `Playback graph and hardware output are fixed at ${formatSampleRateKhz(sampleRatePolicy.rate)}.`
+            : `Follows playback sample rate${activeTier ? '; channel count adjusts automatically' : ''}.`;
     }
 
-    const sourceOverview = state.settings?.sourceMode || {};
-    const sourceInputs = Array.isArray(sourceOverview.inputs) ? sourceOverview.inputs : [];
-    const bluetooth = sourceOverview.bluetooth || {};
-    const currentSourceInput = sourceOverview.current_input || sourceOverview.default_input || null;
-    const selectedSourceInput = sourceOverview.selected_input || currentSourceInput || null;
-    const currentMode = sourceOverview.mode || 'app-playback';
-    const bluetoothSelectable = !!bluetooth.selectable;
-
-    if (elements.settingsSourceSelect) {
-        const inputOptions = [
-            '<option value="app-playback">App playback</option>',
-            ...sourceInputs.map((input) => `<option value="external-input::${escapeHtml(input.key || '')}">External input: ${escapeHtml(input.label || input.name || 'Unknown input')}</option>`),
-            `<option value="bluetooth-input"${bluetoothSelectable ? '' : ' disabled'}>Bluetooth input</option>`,
-        ];
-        elements.settingsSourceSelect.innerHTML = inputOptions.join('');
-        if (currentMode === 'external-input') {
-            elements.settingsSourceSelect.value = `external-input::${selectedSourceInput?.key || currentSourceInput?.key || ''}`;
-        } else if (currentMode === 'bluetooth-input') {
-            elements.settingsSourceSelect.value = 'bluetooth-input';
-        } else {
-            elements.settingsSourceSelect.value = 'app-playback';
-        }
-        elements.settingsSourceSelect.disabled = !!sourceOverview.pending;
-    }
-    if (elements.settingsSourceModeHint) {
-        if (currentMode === 'external-input') {
-            elements.settingsSourceModeHint.textContent = `Current: ${selectedSourceInput?.label || currentSourceInput?.label || 'No inputs detected'}`;
-        } else if (currentMode === 'bluetooth-input') {
-            elements.settingsSourceModeHint.textContent = 'Current: Bluetooth input';
-        } else {
-            elements.settingsSourceModeHint.textContent = 'Current: App playback';
-        }
-    }
-    if (elements.settingsBluetoothStatus) {
-        const bluetoothNote = Array.isArray(bluetooth.notes) && bluetooth.notes.length ? ` · ${bluetooth.notes[0]}` : '';
-        elements.settingsBluetoothStatus.textContent = `Bluetooth: ${formatBluetoothModeStatus(bluetooth)}${bluetoothNote}`;
-    }
+    renderSourceSection();
     const musicLibrary = state.settings?.musicLibrary || {};
     if (elements.settingsMusicLibrarySelect && !isSelectFocused(elements.settingsMusicLibrarySelect)) {
         const model = SettingsSystem.musicLibrarySelectModel(musicLibrary);
@@ -2648,6 +2813,82 @@ function renderSettingsPanel() {
     applySourceModeUiState();
 }
 
+// Source-overview changes only touch the source section, the tabs/footer
+// switcher and the footer VU gating, not the rest of the settings panel.
+function renderSourceState() {
+    renderSourceSection();
+    applySourceModeUiState();
+    PlaybackUI.renderPeakWarningBadge();
+}
+
+function renderSourceSection() {
+    const sourceOverview = state.settings?.sourceMode || {};
+    const sourceInputs = Array.isArray(sourceOverview.inputs) ? sourceOverview.inputs : [];
+    const bluetooth = sourceOverview.bluetooth || {};
+    const currentSourceInput = sourceOverview.current_input || sourceOverview.default_input || null;
+    const selectedSourceInput = sourceOverview.selected_input || currentSourceInput || null;
+    const currentMode = sourceOverview.mode || 'app-playback';
+    const bluetoothSelectable = !!bluetooth.selectable;
+    const stdin = sourceOverview.stdin || {};
+    const stdinSelectable = !!stdin.selectable;
+
+    if (elements.settingsSourceSelect) {
+        const missingSelection = currentMode === 'external-input' && selectedSourceInput?.available === false
+            && !sourceInputs.some((input) => input.key === selectedSourceInput.key);
+        const missingLabel = missingSelection
+            ? `External input: ${selectedSourceInput.label || selectedSourceInput.key}${selectedSourceInput.availability === 'unavailable' ? ' (unavailable)' : ''}`
+            : '';
+        const inputOptions = [
+            '<option value="app-playback">App playback</option>',
+            ...(missingSelection
+                ? [`<option value="external-input::${escapeHtml(selectedSourceInput.key)}" disabled>${escapeHtml(missingLabel)}</option>`]
+                : []),
+            ...sourceInputs.map((input) => `<option value="external-input::${escapeHtml(input.key || '')}">External input: ${escapeHtml(input.label || input.name || 'Unknown input')}</option>`),
+            `<option value="bluetooth-input"${bluetoothSelectable || currentMode === 'bluetooth-input' ? '' : ' disabled'}>Bluetooth input</option>`,
+            `<option value="stdin-input"${stdinSelectable || currentMode === 'stdin-input' ? '' : ' disabled'}>STDIN</option>`,
+            '<option value="custom-mapping">Custom Mapping…</option>',
+        ];
+        elements.settingsSourceSelect.innerHTML = inputOptions.join('');
+        if (currentMode === 'external-input') {
+            elements.settingsSourceSelect.value = `external-input::${selectedSourceInput?.key || currentSourceInput?.key || ''}`;
+        } else if (currentMode === 'bluetooth-input') {
+            elements.settingsSourceSelect.value = 'bluetooth-input';
+        } else if (currentMode === 'stdin-input') {
+            elements.settingsSourceSelect.value = 'stdin-input';
+        } else {
+            elements.settingsSourceSelect.value = 'app-playback';
+        }
+        elements.settingsSourceSelect.disabled = !!sourceOverview.pending;
+    }
+    if (elements.settingsSourceStatus) {
+        const fetchError = sourceOverview.fetch_error || '';
+        elements.settingsSourceStatus.textContent = fetchError
+            ? `Could not refresh the source status: ${fetchError}`
+            : '';
+        elements.settingsSourceStatus.classList.toggle('hidden', !fetchError);
+    }
+    if (elements.settingsBluetoothStatus) {
+        const bluetoothNote = Array.isArray(bluetooth.notes) && bluetooth.notes.length ? ` · ${bluetooth.notes[0]}` : '';
+        elements.settingsBluetoothStatus.textContent = `Bluetooth: ${formatBluetoothModeStatus(bluetooth)}${bluetoothNote}`;
+    }
+    if (elements.settingsStdinStatus) {
+        const details = stdin.channels
+            ? `${stdin.format} · ${formatSampleRateKhz(stdin.rate)} · ${stdin.channels} ch · ${formatStdinRouting(stdin)}`
+            : '';
+        const labels = {
+            unavailable: 'Unavailable', waiting: 'Waiting for PCM',
+            connected: 'Connected · select STDIN to play', ready: 'Ready for PCM',
+            streaming: 'Streaming', draining: 'Finishing stream', error: 'Input error',
+        };
+        const label = stdin.measurement_active ? 'Waiting for measurement to finish'
+            : (labels[stdin.state] || 'Waiting for PCM');
+        elements.settingsStdinStatus.textContent =
+            ['STDIN: ' + label, details, stdin.error?.message].filter(Boolean).join(' · ');
+        elements.settingsStdinStatus.classList.toggle('hidden',
+            currentMode !== 'stdin-input' && !stdin.session_id);
+    }
+}
+
 // Select-model for the Music Library selector in Technical settings.
 // While a discovery fetch is in flight and no list is cached yet, the
 // selector shows an explicit disabled loading state instead of a bare
@@ -2658,22 +2899,24 @@ function renderSettingsPanel() {
 // "Scanning network shares…" placeholder instead of the local-only list;
 // already-cached SMB entries keep rendering immediately.
 
-function externalInputModeActive() {
-    return state.settings?.sourceMode?.mode === 'external-input';
-}
-
 function nonAppSourceModeActive() {
-    return ['external-input', 'bluetooth-input'].includes(state.settings?.sourceMode?.mode);
+    return ['external-input', 'bluetooth-input', 'stdin-input'].includes(state.settings?.sourceMode?.mode);
 }
 
 // The footer meter/badge show the live post-DSP output level. App playback
 // pauses when a line source takes over, but the DSP path stays live then,
-// so source modes count as active signal too.
+// so source modes count as active signal too. A waiting STDIN input without
+// a routed stream is selected but silent.
 function isFooterSignalActive() {
     if (PlaybackCore.isStreamingFooterSource(window.__footerSource)) {
         return PlaybackCore.streamingFooterData()?.status === 'Playing';
     }
     if (!!state.playback.playing && !state.playback.paused) return true;
+    const sourceMode = state.settings?.sourceMode || {};
+    if (sourceMode.mode === 'stdin-input') {
+        const stdin = sourceMode.stdin || {};
+        return !!stdin.routed && ['streaming', 'draining'].includes(stdin.state);
+    }
     return nonAppSourceModeActive();
 }
 
@@ -2681,7 +2924,9 @@ function isFooterSignalActive() {
 // Entries reuse the audio source overview, so only real, selectable sources
 // appear: Bluetooth first (when available), then every external stereo pair
 // in overview order. Labels stay short ("Input 1/2"); the human device name
-// is option text only, never a PipeWire/ALSA node name.
+// is option text only, never a PipeWire/ALSA node name. The overview's
+// bluetooth.source_name is such a node name (backend routing only, carries
+// the device MAC): never render it.
 function shortSourcePairLabel(pairLabel) {
     const text = String(pairLabel || '').trim();
     const match = /^Input\s+(\d+)\s*[–—-]\s*(\d+)$/.exec(text);
@@ -2693,24 +2938,36 @@ function buildSourceSwitcherEntries(sourceMode) {
     const mode = sourceMode || {};
     const entries = [];
     const bluetooth = mode.bluetooth || {};
-    if (bluetooth.selectable) {
-        const session = bluetooth.active_session || {};
-        const detail = [session.device_name, session.active_codec].filter(Boolean).join(' · ');
+    if (bluetooth.selectable || mode.mode === 'bluetooth-input') {
+        const detail = [bluetooth.connected_device, bluetooth.active_codec].filter(Boolean).join(' · ');
         entries.push({ kind: 'bluetooth', key: 'bluetooth-input', label: 'Bluetooth', sub: detail, optionLabel: detail ? `Bluetooth — ${detail}` : 'Bluetooth' });
     }
     const inputs = Array.isArray(mode.inputs) ? mode.inputs : [];
-    inputs.forEach((input) => {
+    // A saved external input the backend no longer reports stays listed and
+    // selected instead of yielding to another input; marked once confirmed.
+    const selected = mode.selected_input;
+    const missingSelection = mode.mode === 'external-input' && !!selected?.key
+        && selected.available === false && !inputs.some((input) => input?.key === selected.key);
+    (missingSelection ? [selected, ...inputs] : inputs).forEach((input) => {
         if (!input || !input.key) return;
         const label = shortSourcePairLabel(input.pair_label) || shortSourcePairLabel(input.label) || 'Input';
         const sub = String(input.device_label || input.label || '');
+        const optionLabel = (sub && sub !== label) ? `${label} — ${sub}` : label;
+        const unavailable = input.availability === 'unavailable';
         entries.push({
             kind: 'external',
             key: String(input.key),
             label,
             sub,
-            optionLabel: (sub && sub !== label) ? `${label} — ${sub}` : label,
+            optionLabel: unavailable ? `${optionLabel} — unavailable` : optionLabel,
+            unavailable,
         });
     });
+    const stdin = mode.stdin || {};
+    if (stdin.selectable || mode.mode === 'stdin-input') {
+        const detail = stdin.channels ? `${stdin.channels} ch` : (stdin.state || 'waiting');
+        entries.push({ kind: 'stdin', key: 'stdin-input', label: 'STDIN', sub: String(detail || ''), optionLabel: detail ? `STDIN — ${detail}` : 'STDIN' });
+    }
     return entries;
 }
 
@@ -2719,6 +2976,10 @@ function findSourceSwitcherIndex(entries, sourceMode) {
     if (!Array.isArray(entries) || entries.length === 0) return -1;
     if ((mode.mode || '') === 'bluetooth-input') {
         return entries.findIndex((entry) => entry.kind === 'bluetooth');
+    }
+    if ((mode.mode || '') === 'stdin-input') {
+        const index = entries.findIndex((entry) => entry.kind === 'stdin');
+        return index >= 0 ? index : -1;
     }
     const key = mode.selected_input?.key || mode.current_input?.key || '';
     if (!key) return -1;
@@ -2736,9 +2997,17 @@ function activateSourceSwitcherEntry(entry) {
     if (!entry) return;
     if (entry.kind === 'bluetooth') {
         void saveAudioSourceSelection('bluetooth-input');
+    } else if (entry.kind === 'stdin') {
+        void saveAudioSourceSelection('stdin-input');
     } else {
         void saveAudioSourceSelection('external-input', entry.key);
     }
+}
+
+// Footer shortcut back to app playback; the switcher only lists line sources.
+function selectAppPlaybackSource() {
+    if (sourceSwitcherGuardReason()) return;
+    void saveAudioSourceSelection('app-playback');
 }
 
 function stepSourceSwitcher(delta) {
@@ -2749,6 +3018,62 @@ function stepSourceSwitcher(delta) {
     const next = cycleSourceSwitcherIndex(entries, current, delta);
     if (next < 0 || next === current) return;
     activateSourceSwitcherEntry(entries[next]);
+}
+
+const SOURCE_AUTO_FORMAT_LABELS = {
+    pcm: 'PCM', ac3: 'Dolby Digital', eac3: 'Dolby Digital Plus', dts: 'DTS',
+    truehd: 'Dolby TrueHD', aac: 'AAC', mpeg: 'MPEG audio', encoded: 'Bitstream',
+};
+
+// Footer Auto toggle model for the shown entry. Line inputs and STDIN can
+// be armed; Bluetooth has no signal probe.
+function sourceAutoModel(sourceMode, entry) {
+    const auto = sourceMode?.auto_select || {};
+    const supported = !!entry && (entry.kind === 'external' || entry.kind === 'stdin') && !entry.unavailable;
+    const armed = supported && Array.isArray(auto.armed) && auto.armed.includes(entry.key);
+    const engaged = armed && auto.engaged?.key === entry.key;
+    const activity = (armed && auto.inputs && auto.inputs[entry.key]) || {};
+    const active = !!activity.active;
+    const format = SOURCE_AUTO_FORMAT_LABELS[activity.format] || '';
+    let tooltip;
+    if (!supported) {
+        tooltip = 'Auto-select is available for line inputs and STDIN';
+    } else if (armed && auto.paused) {
+        tooltip = 'Auto-select is paused while a measurement owns the inputs';
+    } else if (armed && active) {
+        tooltip = `Auto · signal detected${format ? ` (${format})` : ''}`;
+    } else if (armed && activity.lock === false) {
+        tooltip = 'Auto · no digital lock · switches here when a signal is detected';
+    } else if (armed) {
+        tooltip = 'Auto · switches here when a signal is detected';
+    } else {
+        tooltip = 'Auto-select this input on signal';
+    }
+    return { supported, armed, engaged, active, format, tooltip };
+}
+
+async function toggleSourceAuto() {
+    if (sourceSwitcherGuardReason()) return;
+    const sourceMode = state.settings?.sourceMode || {};
+    const entries = buildSourceSwitcherEntries(sourceMode);
+    const current = findSourceSwitcherIndex(entries, sourceMode);
+    const entry = current >= 0 ? entries[current] : null;
+    const model = sourceAutoModel(sourceMode, entry);
+    if (!model.supported) return;
+    const enabled = !model.armed;
+    try {
+        const resp = await fetch('/api/audio/source-auto', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ inputKey: entry.key, enabled }),
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(data.detail || 'Failed to update auto-select');
+        if (applySourceOverview(data)) renderSourceState();
+        showToast(`Auto-select ${enabled ? 'on' : 'off'} for ${entry.label}`, 'success');
+    } catch (error) {
+        showToast(error.message || 'Failed to update auto-select', 'error');
+    }
 }
 
 // Measurement and AutoSub capture own their signal path: while a job is
@@ -2797,7 +3122,7 @@ function renderSourceModeFooter() {
     if (elements.sourceSelect && signature !== _sourceSelectSignature
         && document.activeElement !== elements.sourceSelect) {
         elements.sourceSelect.innerHTML = entries.map((entry) =>
-            `<option value="${escapeHtml(entry.key)}">${escapeHtml(entry.optionLabel)}</option>`).join('');
+            `<option value="${escapeHtml(entry.key)}"${entry.unavailable ? ' disabled' : ''}>${escapeHtml(entry.optionLabel)}</option>`).join('');
         elements.sourceSelect.value = currentEntry ? currentEntry.key : '';
         _sourceSelectSignature = signature;
     }
@@ -2805,11 +3130,24 @@ function renderSourceModeFooter() {
         elements.sourceSelect.disabled = !!guard || entries.length === 0;
         elements.sourceSelect.title = guard || 'Choose audio source';
     }
+    if (elements.sourceApp) {
+        elements.sourceApp.disabled = !!guard;
+        elements.sourceApp.setAttribute('data-tooltip', guard || 'Back to app playback');
+    }
     const arrowsDisabled = !!guard || entries.length < 2;
     for (const button of [elements.sourcePrev, elements.sourceNext]) {
         if (!button) continue;
         button.disabled = arrowsDisabled;
         button.setAttribute('data-tooltip', guard || button.getAttribute('aria-label') || '');
+    }
+    if (elements.sourceAuto) {
+        const auto = sourceAutoModel(sourceMode, currentEntry);
+        elements.sourceAuto.disabled = !!guard || !auto.supported;
+        elements.sourceAuto.setAttribute('aria-pressed', auto.armed ? 'true' : 'false');
+        elements.sourceAuto.classList.toggle('is-armed', auto.armed);
+        elements.sourceAuto.classList.toggle('is-engaged', auto.engaged);
+        elements.sourceAuto.classList.toggle('has-signal', auto.armed && auto.active);
+        elements.sourceAuto.setAttribute('data-tooltip', guard || auto.tooltip);
     }
 }
 
@@ -2937,21 +3275,6 @@ async function saveSampleRatePolicy(value) {
     }
 }
 
-function applyAudioOutputOverview(data) {
-    state.settings.audioOutputs = {
-        loaded: true,
-        available: !!data.available,
-        default_output: data.default_output || null,
-        selected_output: data.selected_output || null,
-        current_output: data.current_output || null,
-        outputs: Array.isArray(data.outputs) ? data.outputs : [],
-        notes: Array.isArray(data.notes) ? data.notes : [],
-        pendingSelectionKey: null,
-        output_mode: data.output_mode || state.settings.audioOutputs.output_mode,
-    };
-    renderSettingsPanel();
-}
-
 function outputSystemModule() {
     return (typeof window !== 'undefined' && window.FXRouteOutputState) || null;
 }
@@ -2978,13 +3301,52 @@ async function fetchOutputSystemCatalog(force = false) {
     return mod.fetchOutputSystemCatalog(force);
 }
 
-function measurementAreaFromCatalog() {
+function measurementAreaFromCatalog(group) {
     /* Read-only measurement area: the single A/B selector owns the scope, so
-     * the sweep menu shows it instead of offering its own channel chips. */
+     * the sweep menu shows it instead of offering its own channel chips.
+     * `group` names another speaker group of the Surround Global area (the
+     * Advanced series measures them all); omitted, the selected one. */
     const mod = outputSystemModule();
     const catalog = (state.outputSystem || {}).catalog;
     if (!mod || !catalog || typeof mod.measurementArea !== 'function') return null;
-    return mod.measurementArea(catalog);
+    const allBanks = catalog.modes?.[catalog.active_mode]?.selected_bank === 'all';
+    if (group) return mod.measurementArea(catalog, 'global', group);
+    return mod.measurementArea(catalog, undefined,
+        allBanks ? state.measurement.allBanksGroup : state.measurement.globalGroup);
+}
+
+function adoptSelectedMeasurementGroup() {
+    /* Saved results all measured for one speaker group select that group, so
+     * a filter made from them is bound to the group they were measured for.
+     * Mixed, ungrouped or unrouted selections leave the selection alone. */
+    if (state.measurement.startInFlight || window.FXRouteMeasurementJob?.hasActiveMeasurementJob()) return;
+    const mod = outputSystemModule();
+    const catalog = (state.outputSystem || {}).catalog;
+    if (!mod || catalog?.active_mode !== 'surround' || catalog.modes?.surround?.selected_bank !== 'global') return;
+    const selected = (state.measurement.measurements || [])
+        .filter(measurement => state.measurement.visibilityById?.[measurement.id]);
+    const groups = new Set(selected.map(measurement => measurement.measurement_target?.global_group || ''));
+    if (!selected.length || groups.size !== 1) return;
+    const [group] = [...groups];
+    const choice = group ? mod.globalGroupChoice(catalog, state.measurement.globalGroup) : null;
+    if (choice?.options.some(option => option.id === group)) window.FXRouteBankUI.selectEffectsGroup(group);
+}
+
+function selectMeasurementSpeakerGroup(group) {
+    /* The Effects speaker row owns the choice; the sweep menu and the Advanced
+     * dialog set the same one. */
+    window.FXRouteBankUI.selectEffectsGroup(group);
+    renderMeasurementPanel();
+}
+
+function measurementGroupChoiceFromCatalog() {
+    /* Routed speaker groups when the selection is Surround Global (not All
+     * Banks, which has no Advanced); null elsewhere. */
+    const mod = outputSystemModule();
+    const catalog = (state.outputSystem || {}).catalog;
+    if (!mod || !catalog || typeof mod.globalGroupChoice !== 'function') return null;
+    if (catalog.modes?.[catalog.active_mode]?.selected_bank === 'all') return null;
+    return mod.globalGroupChoice(catalog, state.measurement.globalGroup);
 }
 
 function measurementRepeatBlockedReason() {
@@ -2999,6 +3361,7 @@ function measurementRepeatBlockedReason() {
 function syncMeasurementRepeatNote(lrActive, blockedReason) {
     /* A running repeat stays cancellable, so its reason never disables it. */
     if (elements.measurementRepeatStartBtn) {
+        elements.measurementRepeatStartBtn.closest('.measurement-workflow-menu-choice')?.classList.toggle('hidden', !!blockedReason && !lrActive);
         elements.measurementRepeatStartBtn.title = lrActive ? '' : blockedReason;
     }
     if (elements.measurementRepeatNote) {
@@ -3030,9 +3393,28 @@ function renderMeasurementArea() {
             : 'Whole system; all area banks active.';
     }
     if (elements.measurementSweepStartBtn) {
+        elements.measurementSweepStartBtn.classList?.toggle('hidden', area?.available === false);
         elements.measurementSweepStartBtn.disabled = !!state.measurement.startInFlight || area?.available === false;
     }
+    if (elements.measurementHybridOpenBtn) {
+        // Advanced ends in a correction model, which Ind. Banks cannot take.
+        const blocked = area?.available === false || area?.importable === false
+            || !!outputSystemModule()?.isSubwooferBank?.(area?.bank_id);
+        elements.measurementHybridOpenBtn.closest('.measurement-workflow-menu-choice')?.classList.toggle('hidden', blocked);
+        elements.measurementHybridOpenBtn.disabled = !!state.measurement.startInFlight;
+        elements.measurementHybridOpenBtn.title = '';
+    }
+    window.FXRouteBankUI.renderSweepGroupRow();
     syncSweepSideRow(area);
+    syncMeasurementCalibrationMenu(area);
+    syncMeasurementRepeatNote(window.FXRouteMeasurementJob?.getActiveMeasurementKind() === 'lr_repeat',
+        area?.repeat_supported === false ? area.repeat_note || 'Use a single sweep.' : '');
+}
+
+function syncMeasurementCalibrationMenu(area) {
+    // Matching owns the mode, polarity only a concrete speaker bank (or implicit Stereo).
+    elements.levelMatchOpen?.closest('.measurement-workflow-menu-choice')?.classList.toggle('hidden', area?.available === false);
+    elements.polarityCheckOpen?.closest('.measurement-workflow-menu-choice')?.classList.toggle('hidden', !area?.polarity_supported);
 }
 
 function syncSweepSideRow(area) {
@@ -3048,8 +3430,12 @@ function syncSweepSideRow(area) {
         state.measurement.sweepSide = 'stereo';
     }
     const active = state.measurement.sweepSide || 'stereo';
+    const plainLabels = { left: 'Left', stereo: 'Stereo', right: 'Right' };
     row.querySelectorAll('[data-sweep-side]').forEach((button) => {
-        const selected = button.getAttribute('data-sweep-side') === active;
+        const side = button.getAttribute('data-sweep-side');
+        // A speaker-group area names the speaker each chip sweeps ("Rear L").
+        button.textContent = resolved?.side_labels?.[side] || plainLabels[side] || button.textContent;
+        const selected = side === active;
         button.classList.toggle('is-active', selected);
         button.setAttribute('aria-pressed', selected ? 'true' : 'false');
         button.disabled = !!state.measurement.startInFlight;
@@ -3071,6 +3457,7 @@ function renderOutputSystemSection() {
         if (elements.settingsOutputModeSelect) elements.settingsOutputModeSelect.disabled = true;
         if (elements.settingsModeGroup) elements.settingsModeGroup.classList.add('hidden');
         if (elements.settingsCrossoverGroup) elements.settingsCrossoverGroup.classList.add('hidden');
+        if (elements.settingsRoutingGroup) elements.settingsRoutingGroup.classList.add('hidden');
         if (elements.settingsCrossoverSelect) elements.settingsCrossoverSelect.disabled = true;
         if (elements.settingsRoutingGrid) elements.settingsRoutingGrid.innerHTML = '';
         if (elements.osTopology) elements.osTopology.textContent = '';
@@ -3081,11 +3468,18 @@ function renderOutputSystemSection() {
     const mode = catalog.active_mode || 'stereo';
     const modeConfig = catalog.modes[mode] || {};
     const busy = state.outputSystem.busy;
+    const channelCount = device.channels || 0;
+    const showRouting = typeof mod.routingVisible === 'function'
+        ? mod.routingVisible(channelCount)
+        : mod.modeSelectorVisible(channelCount);
     if (elements.settingsModeGroup) {
-        elements.settingsModeGroup.classList.toggle('hidden', !mod.modeSelectorVisible(device.channels || 0));
+        elements.settingsModeGroup.classList.toggle('hidden', !mod.modeSelectorVisible(channelCount));
     }
     if (elements.settingsCrossoverGroup) {
-        elements.settingsCrossoverGroup.classList.toggle('hidden', !mod.modeSelectorVisible(device.channels || 0));
+        elements.settingsCrossoverGroup.classList.toggle('hidden', !mod.modeSelectorVisible(channelCount));
+    }
+    if (elements.settingsRoutingGroup) {
+        elements.settingsRoutingGroup.classList.toggle('hidden', !showRouting);
     }
     mod.renderModeSelect(elements.settingsOutputModeSelect, catalog, mode);
     if (elements.settingsOutputModeSelect) elements.settingsOutputModeSelect.disabled = busy;
@@ -3094,13 +3488,13 @@ function renderOutputSystemSection() {
         elements.settingsCrossoverSelect.disabled = busy;
     }
     const assignments = (device.routing && device.routing[mode]) || [];
-    mod.renderRoutingGrid(elements.settingsRoutingGrid, catalog, mode, assignments, device.channels || 0, busy);
+    mod.renderRoutingGrid(elements.settingsRoutingGrid, catalog, mode, assignments, channelCount, busy);
     const topology = modeConfig.topology || {};
     if (elements.osTopology) {
         elements.osTopology.textContent = mod.topologySummary(topology);
     }
     if (elements.settingsOutputModeHint) {
-        elements.settingsOutputModeHint.textContent = `${mod.modeLabel(mode)} · ${device.channels || 0} hardware outputs`;
+        elements.settingsOutputModeHint.textContent = mod.modeHint(mode, topology, channelCount);
     }
     if (elements.settingsRoutingHint) {
         elements.settingsRoutingHint.textContent = 'Assign a role to each hardware output. Off leaves an output silent.';
@@ -3115,10 +3509,6 @@ async function applyOutputSystemMutation(kind, fields, successMessage, options =
     return mod.applyOutputSystemMutation(kind, fields, successMessage, options);
 }
 
-
-function crossoverModule() {
-    return (typeof window !== 'undefined' && window.FXRouteCrossover) || null;
-}
 
 async function fetchCrossoverResponse() {
     // Crossover tile UI lives in static/crossover_ui.js
@@ -3142,6 +3532,12 @@ function familyLabel(family) {
     // call sites unchanged.
     const mod = (typeof window !== 'undefined' && window.FXRouteCrossoverUI) || (typeof globalThis !== 'undefined' && globalThis.FXRouteCrossoverUI) || null;
     return mod.familyLabel(family);
+}
+
+function polarityLabel(value) {
+    // Crossover tile UI owns the polarity names next to the Type names.
+    const mod = (typeof window !== 'undefined' && window.FXRouteCrossoverUI) || (typeof globalThis !== 'undefined' && globalThis.FXRouteCrossoverUI) || null;
+    return mod.polarityLabel(value);
 }
 
 function collectCrossoverWayMutation() {
@@ -3169,10 +3565,15 @@ async function maybeApplyCrossoverStarters() {
 }
 
 async function saveAudioSourceSelection(mode, inputKey = '') {
-    const nextMode = ['external-input', 'bluetooth-input'].includes(mode) ? mode : 'app-playback';
-    state.settings.sourceMode.pending = true;
-    state.settings.sourceMode.mode = nextMode;
-    renderSettingsPanel();
+    const nextMode = ['external-input', 'bluetooth-input', 'stdin-input'].includes(mode) ? mode : 'app-playback';
+    const sync = state.settings.sourceSync;
+    const serial = ++sync.saveSerial;
+    sync.saveMode = nextMode;
+    composeSourceModeState();
+    renderSourceState();
+    const settleSave = () => {
+        if (serial === sync.saveSerial) sync.saveMode = null;
+    };
     try {
         const resp = await fetch('/api/audio/source-mode', {
             method: 'POST',
@@ -3181,61 +3582,94 @@ async function saveAudioSourceSelection(mode, inputKey = '') {
         });
         const data = await resp.json().catch(() => ({}));
         if (!resp.ok) throw new Error(data.detail || 'Failed to save source mode');
-        state.settings.sourceMode = {
-            mode: data.mode || 'app-playback',
-            modes: Array.isArray(data.modes) ? data.modes : [],
-            default_input: data.default_input || null,
-            selected_input: data.selected_input || null,
-            current_input: data.current_input || null,
-            inputs: Array.isArray(data.inputs) ? data.inputs : [],
-            bluetooth: data.bluetooth || {},
-            notes: Array.isArray(data.notes) ? data.notes : [],
-            pending: false,
-        };
-        renderSettingsPanel();
+        settleSave();
+        // A newer push may already have landed; then it stays authoritative.
+        if (!applySourceOverview(data)) composeSourceModeState();
+        renderSourceState();
         const successMessage = nextMode === 'external-input'
             ? 'External input mode enabled'
-            : (nextMode === 'bluetooth-input' ? 'Bluetooth input mode enabled' : 'App playback mode enabled');
+            : (nextMode === 'bluetooth-input' ? 'Bluetooth input mode enabled'
+                : (nextMode === 'stdin-input' ? 'STDIN input mode enabled' : 'App playback mode enabled'));
         showToast(successMessage, 'success');
     } catch (error) {
-        state.settings.sourceMode.pending = false;
-        renderSettingsPanel();
+        settleSave();
+        composeSourceModeState();
+        renderSourceState();
         showToast(error.message || 'Failed to save source mode', 'error');
         void fetchAudioSourceOverview();
     }
 }
 
 
+const SOURCE_RETIRED_EPOCH_LIMIT = 8;
+
+// Accept a server overview unless a newer revision already landed. Pushes,
+// polls and save responses travel on different connections; the backend
+// stamps them in commit order. A new epoch is a restarted backend whose
+// counter starts over, so the revision base resets instead of rejecting it;
+// the replaced epoch is retired, so a straggler from it can never re-base
+// the client backwards. The save state is left alone: only the save request
+// releases its mode.
+function applySourceOverview(data) {
+    if (!data || typeof data !== 'object') return false;
+    const sync = state.settings.sourceSync;
+    const epoch = typeof data.epoch === 'string' ? data.epoch : null;
+    if (epoch !== null && epoch !== sync.epoch) {
+        if (sync.retiredEpochs.includes(epoch)) return false;
+        if (sync.epoch !== null) {
+            sync.retiredEpochs = [...sync.retiredEpochs, sync.epoch].slice(-SOURCE_RETIRED_EPOCH_LIMIT);
+        }
+        sync.epoch = epoch;
+        sync.revision = -1;
+    }
+    const revision = Number.isFinite(data.revision) ? data.revision : null;
+    if (revision !== null && revision < sync.revision) return false;
+    if (revision !== null) sync.revision = revision;
+    sync.overview = data;
+    sync.fetchError = null;
+    composeSourceModeState();
+    return true;
+}
+
+
+// Single writer of state.settings.sourceMode: the newest server overview
+// (always a full payload), shown with the mode of an in-flight save. Before
+// any snapshot arrived (first fetch failed) only App playback is known.
+function composeSourceModeState() {
+    const sync = state.settings.sourceSync;
+    const data = sync.overview || {
+        modes: [{ key: 'app-playback', label: 'App playback', selectable: true }],
+    };
+    state.settings.sourceMode = {
+        mode: sync.saveMode || data.mode || 'app-playback',
+        modes: Array.isArray(data.modes) ? data.modes : [],
+        default_input: data.default_input || null,
+        selected_input: data.selected_input || null,
+        current_input: data.current_input || null,
+        inputs: Array.isArray(data.inputs) ? data.inputs : [],
+        bluetooth: data.bluetooth || {},
+        stdin: data.stdin || {},
+        auto_select: data.auto_select || null,
+        notes: Array.isArray(data.notes) ? data.notes : [],
+        fetch_error: sync.fetchError,
+        pending: !!sync.saveMode,
+    };
+}
+
+
 async function fetchAudioSourceOverview() {
+    const sync = state.settings.sourceSync;
     try {
         const resp = await fetch('/api/audio/source-mode');
         if (!resp.ok) throw new Error('Failed to fetch source mode');
         const data = await resp.json();
-        state.settings.sourceMode = {
-            mode: data.mode || 'app-playback',
-            modes: Array.isArray(data.modes) ? data.modes : [],
-            default_input: data.default_input || null,
-            selected_input: data.selected_input || null,
-            current_input: data.current_input || null,
-            inputs: Array.isArray(data.inputs) ? data.inputs : [],
-            bluetooth: data.bluetooth || {},
-            notes: Array.isArray(data.notes) ? data.notes : [],
-            pending: false,
-        };
-        renderSettingsPanel();
+        if (applySourceOverview(data)) renderSourceState();
     } catch (e) {
-        state.settings.sourceMode = {
-            mode: 'app-playback',
-            modes: [{ key: 'app-playback', label: 'App playback', selectable: true }],
-            default_input: null,
-            selected_input: null,
-            current_input: null,
-            inputs: [],
-            bluetooth: {},
-            notes: [e.message || 'Failed to fetch source mode'],
-            pending: false,
-        };
-        renderSettingsPanel();
+        // A failed fetch says nothing about the source state: keep the last
+        // good snapshot and only record the failure.
+        sync.fetchError = e.message || 'Failed to fetch source mode';
+        composeSourceModeState();
+        renderSourceState();
     }
 }
 
@@ -3268,6 +3702,7 @@ function switchTab(tabId) {
     window.FXRouteStreaming?.onTabVisible(tabId);
     if (tabId === 'effects') {
         requestSubwooferPreviewRedrawFromState();
+        window.FXRouteCalibrationOverview.refresh();
     }
     if (tabId !== 'measurement') {
         void postRuntimeDebugSnapshot('ui-after-click-playback', { clickedTab: tabId });
@@ -3488,12 +3923,14 @@ function getMeasurementTargetCurvePreview() {
 
 
 function resetMeasurementGraph() {
-    if (getMeasurementGraphView() !== 'freq' || state.measurement.startInFlight || state.measurement.activeJobId) return;
+    if (getMeasurementGraphView() !== 'freq' || state.measurement.startInFlight || state.measurement.saveInFlight
+        || window.FXRouteMeasurementJob.hasActiveMeasurementJob()) return;
     const peq = window.FXRouteMeasurementPeqEditor.ensureMeasurementPeqState();
     const conv = window.FXRouteMeasurementConvolverEditor.ensureMeasurementConvolverState();
     const defaults = window.FXRouteMeasurementConvolverEditor.getDefaultMeasurementConvolverState();
     const assistMode = state.measurement.assistMode;
-    if (!MeasurementUI.hasResettableMeasurementSettings(assistMode, peq, conv, defaults)) return;
+    const hasUnsavedContent = MeasurementUI.hasUnsavedMeasurementContent(state.measurement);
+    if (!hasUnsavedContent && !MeasurementUI.hasResettableMeasurementSettings(assistMode, peq, conv, defaults)) return;
     setMeasurementActiveEditor(assistMode === 'peq' ? 'peq' : 'none');
     if (assistMode === 'peq') {
         peq.filters = [];
@@ -3506,6 +3943,13 @@ function resetMeasurementGraph() {
     } else {
         Object.assign(conv, defaults);
     }
+    if (hasUnsavedContent) {
+        state.measurement.currentMeasurement = null;
+        state.measurement.pendingRepeatMeasurements = [];
+        state.measurement.autoSubMeasurements = [];
+        state.measurement.currentMeasurementSaved = false;
+        state.measurement.currentMeasurementName = '';
+    }
     renderMeasurementPanel();
     MeasurementGraph.scheduleMeasurementGraphRender();
 }
@@ -3516,13 +3960,16 @@ function waitForNextAnimationFrame() {
 }
 
 
-function measurementCommitSourceId() {
-    /* The stored measurement a generated PEQ/FIR is derived from.  The commit
-     * gate rejects a preset whose source measurement area or the processing it
-     * ran through has moved since the sweep; an unsaved measurement sends no
-     * id and keeps the pre-gate behaviour. */
-    const current = state.measurement?.currentMeasurement;
-    return String(current?.id || '');
+function measurementImportBlockedReason() {
+    /* A result measured through Ind. Banks has no bank to commit into: it can be
+     * saved and inspected, but it never becomes a filter. */
+    const visibleSaved = (state.measurement.measurements || [])
+        .filter(measurement => state.measurement.visibilityById?.[measurement.id]);
+    const throughAllBanks = [...getCurrentMeasurementEntries(), ...visibleSaved]
+        .some(measurement => measurement?.measurement_target?.bank_id === 'all');
+    return throughAllBanks
+        ? 'This result was measured through Ind. Banks; it can be saved and inspected but not imported into a bank.'
+        : '';
 }
 
 
@@ -3700,7 +4147,7 @@ function drawMeasurementTargetCurve(ctx, bounds, range) {
     ctx.stroke();
     ctx.setLineDash([]);
     ctx.fillStyle = '#a7f3d0';
-    ctx.font = '12px sans-serif';
+    ctx.font = '12px Geist, sans-serif';
     ctx.textAlign = 'left';
     ctx.textBaseline = 'bottom';
     ctx.fillText(`${curve.shortLabel || curve.label} target`, bounds.left + 8, bounds.top + bounds.height - 8);
@@ -3726,7 +4173,7 @@ function drawMeasurementConvolverRangeOverlay(ctx, bounds) {
     });
     ctx.setLineDash([]);
     ctx.fillStyle = 'rgba(191, 219, 254, 0.95)';
-    ctx.font = '12px sans-serif';
+    ctx.font = '12px Geist, sans-serif';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'top';
     ctx.fillText(`${Math.round(conv.rangeStartHz)}–${Math.round(conv.rangeEndHz)} Hz`, (startX + endX) / 2, bounds.top + 8);
@@ -3812,7 +4259,7 @@ function getMeasurementIrLayout(graphEntries = [], bounds) {
 }
 
 function drawSpeakerAlignTimelineLabel(ctx, text, x, y, color, align = 'left') {
-    ctx.font = '11px sans-serif';
+    ctx.font = '11px Geist, sans-serif';
     const width = ctx.measureText(text).width + 8;
     const left = align === 'right' ? x - width : x;
     ctx.fillStyle = 'rgba(12,18,28,0.82)';
@@ -3844,7 +4291,7 @@ function drawSpeakerAlignTimeline(ctx, bounds, view) {
         ctx.stroke();
         ctx.setLineDash([]);
         ctx.fillStyle = 'rgba(236,236,240,0.72)';
-        ctx.font = '12px sans-serif';
+        ctx.font = '12px Geist, sans-serif';
         ctx.textAlign = 'center';
         ctx.textBaseline = 'top';
         ctx.fillText(`${tickText(timeMs)} ms`, x, bounds.top + bounds.height + 10);
@@ -3907,7 +4354,7 @@ function drawSpeakerAlignTimeline(ctx, bounds, view) {
             const text = `${way.label}${reference} ${SpeakerAlign.signedMs(way.arrivalMs)} ms`;
             const x = toX(way.arrivalMs);
             const y = top + laneHeight - 11 - (wayIndex * 17);
-            ctx.font = '11px sans-serif';
+            ctx.font = '11px Geist, sans-serif';
             const fitsRight = x + 4 + ctx.measureText(text).width + 8 <= bounds.left + bounds.width;
             drawSpeakerAlignTimelineLabel(ctx, text, fitsRight ? x + 4 : x - 4, y, way.color,
                 fitsRight ? 'left' : 'right');
@@ -3941,7 +4388,7 @@ function drawMeasurementIrOverlay(ctx, bounds, graphEntries) {
         ctx.lineTo(bounds.left + bounds.width, y);
         ctx.stroke();
         ctx.fillStyle = amplitude === 0 ? '#d1fae5' : 'rgba(236,236,240,0.72)';
-        ctx.font = '12px sans-serif';
+        ctx.font = '12px Geist, sans-serif';
         ctx.textAlign = 'right';
         ctx.textBaseline = 'middle';
         ctx.fillText(amplitude === 0 ? '0' : amplitude.toFixed(1), bounds.left - 10, y);
@@ -3955,7 +4402,7 @@ function drawMeasurementIrOverlay(ctx, bounds, graphEntries) {
         ctx.lineTo(x, bounds.top + bounds.height);
         ctx.stroke();
         ctx.fillStyle = 'rgba(236,236,240,0.72)';
-        ctx.font = '12px sans-serif';
+        ctx.font = '12px Geist, sans-serif';
         ctx.textAlign = 'center';
         ctx.textBaseline = 'top';
         ctx.fillText(`${timeMs} ms`, x, bounds.top + bounds.height + 10);
@@ -4264,6 +4711,10 @@ function toggleMeasurementPanel(forceOpen = null) {
         window.FXRouteModal?.open(elements.measurementPanel, {
             initialFocus: elements.measurementCloseBtn,
             onEscape: () => {
+                if (elements.measurementCalibrationMenu && !elements.measurementCalibrationMenu.classList.contains('hidden')) {
+                    setMeasurementCalibrationMenuOpen(false);
+                    return;
+                }
                 if (elements.measurementSweepMenu && !elements.measurementSweepMenu.classList.contains('hidden')) {
                     setMeasurementSweepMenuOpen(false);
                     return;
@@ -4446,6 +4897,26 @@ function setupMeasurementActions() {
             }
         });
     }
+    if (elements.measurementCalibrationToggleBtn) {
+        elements.measurementCalibrationToggleBtn.addEventListener('click', () => {
+            const shouldOpen = elements.measurementCalibrationMenu?.classList.contains('hidden');
+            setMeasurementSweepMenuOpen(false);
+            setMeasurementCalibrationMenuOpen(!!shouldOpen);
+        });
+    }
+    if (elements.measurementCalibrationMenu) {
+        elements.measurementCalibrationMenu.addEventListener('click', (event) => {
+            if (event.target.closest('#measurement-spl-calibration-open, #measurement-level-match-open, #measurement-polarity-check-open')) setMeasurementCalibrationMenuOpen(false);
+        });
+        document.addEventListener('click', (event) => {
+            if (!elements.measurementCalibrationMenu.classList.contains('hidden')
+                    && !event.target.closest('.measurement-workflow-menu')) {
+                setMeasurementCalibrationMenuOpen(false);
+            }
+        });
+    }
+    window.FXRouteMeasurementLevelMatch?.bindEvents();
+    window.FXRouteMeasurementPolarityCheck?.bindEvents();
     const smoothingChipsRow = document.getElementById('measurement-smoothing-chips');
     if (smoothingChipsRow) window.FXRouteMeasurementPanelUI.bindChipArrowKeyNavigation(smoothingChipsRow, '[data-measurement-smoothing]');
     const measurementViewToggle = document.querySelector('.measurement-view-toggle');
@@ -4502,6 +4973,27 @@ function setupMeasurementActions() {
             void window.FXRouteMeasurementCapture.startMeasurement();
         });
     }
+    elements.measurementSweepGroupRow?.addEventListener('click', (event) => {
+        const button = event.target.closest?.('[data-sweep-group]');
+        if (!button || state.measurement.startInFlight || window.FXRouteMeasurementJob.hasActiveMeasurementJob()) return;
+        selectMeasurementSpeakerGroup(button.getAttribute('data-sweep-group') || '');
+    });
+    // The import panel chips choose the same speaker group for an imported filter.
+    elements.effectsImportGroupRow?.addEventListener('click', (event) => {
+        const button = event.target.closest?.('[data-import-group]');
+        if (!button || state.measurement.startInFlight || window.FXRouteMeasurementJob.hasActiveMeasurementJob()) return;
+        selectMeasurementSpeakerGroup(button.getAttribute('data-import-group') || '');
+    });
+    elements.effectsPeqGroupRow?.addEventListener('click', (event) => {
+        const button = event.target.closest?.('[data-peq-group]');
+        if (!button || state.measurement.startInFlight || window.FXRouteMeasurementJob.hasActiveMeasurementJob()) return;
+        selectMeasurementSpeakerGroup(button.getAttribute('data-peq-group') || '');
+    });
+    elements.effectsCombineGroupRow?.addEventListener('click', (event) => {
+        const button = event.target.closest?.('[data-combine-group]');
+        if (!button || state.measurement.startInFlight || window.FXRouteMeasurementJob.hasActiveMeasurementJob()) return;
+        selectMeasurementSpeakerGroup(button.getAttribute('data-combine-group') || '');
+    });
     document.querySelectorAll('#measurement-sweep-side-row [data-sweep-side]').forEach((button) => {
         button.addEventListener('click', () => {
             if (state.measurement.startInFlight || window.FXRouteMeasurementJob.hasActiveMeasurementJob()) return;
@@ -4584,6 +5076,7 @@ function setupMeasurementActions() {
     if (elements.measurementNameInput) {
         elements.measurementNameInput.addEventListener('input', (event) => {
             state.measurement.currentMeasurementName = event.target.value || '';
+            state.measurement.typedMeasurementName = state.measurement.currentMeasurementName;
         });
     }
     if (elements.measurementRepeatStartBtn) {
@@ -4654,7 +5147,7 @@ function setupMeasurementActions() {
     if (elements.measurementCustomHouseCurveCreateBtn) {
         elements.measurementCustomHouseCurveCreateBtn.addEventListener('click', () => { void window.FXRouteMeasurementCalibration.createCustomHouseCurve(); });
     }
-    [elements.measurementConvolverTarget, elements.measurementConvolverRangeStart, elements.measurementConvolverRangeEnd, elements.measurementConvolverMaxBoost, elements.measurementConvolverMaxCut, elements.measurementConvolverDipGuard, elements.measurementConvolverSampleRate, elements.measurementConvolverPhaseMode, elements.measurementConvolverIrLength].forEach((input) => {
+    [elements.measurementConvolverTarget, elements.measurementConvolverRangeStart, elements.measurementConvolverRangeEnd, elements.measurementConvolverMaxBoost, elements.measurementConvolverMaxCut, elements.measurementConvolverDipGuard, elements.measurementConvolverPhaseMode, elements.measurementConvolverIrLength].forEach((input) => {
         if (!input) return;
         const commit = () => {
             setMeasurementActiveEditor('none');

@@ -221,7 +221,7 @@ function drawCrossoverResponse(canvas, ways, activeRole, preview) {
         ctx.stroke();
     });
     ctx.fillStyle = 'rgba(229,231,235,0.54)';
-    ctx.font = '500 10px system-ui, sans-serif';
+    ctx.font = '500 10px Geist, system-ui, sans-serif';
     ctx.textAlign = 'right';
     ctx.textBaseline = 'middle';
     dbLabels.forEach((db) => {
@@ -270,7 +270,7 @@ function drawCrossoverResponse(canvas, ways, activeRole, preview) {
     const activeEntry = (ways || {})[activeRole] || {};
     const previewPoints = preview ? previewWayPoints(activeEntry, preview) : null;
     drawWay(activeRole, '#60a5fa', 3, previewPoints);
-    ctx.font = '600 10px system-ui, sans-serif';
+    ctx.font = '600 10px Geist, system-ui, sans-serif';
     ctx.textBaseline = 'middle';
     for (const marker of crossoverMarkers(ways, activeRole, { frequency: preview })) {
         const hz = marker.frequency_hz;

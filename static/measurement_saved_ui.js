@@ -20,6 +20,7 @@
         renderMeasurementPanel: () => {},
         mergeSelectedMeasurements: () => {},
         deleteSelectedMeasurements: () => {},
+        adoptSelectedMeasurementGroup: () => {},
     };
 
     function init(overrides) {
@@ -33,17 +34,20 @@
         const target = measurement?.measurement_target;
         if (!target || target.legacy || target.schema !== 'fxroute.measurement-target') return null;
         const mod = deps.getOutputSystemModule();
-        const label = (mod && typeof mod.roleLabel === 'function')
+        const bankLabel = (mod && typeof mod.roleLabel === 'function')
             ? mod.roleLabel(String(target.bank_id || 'global'))
             : String(target.bank_id || 'global');
+        // Surround Global and grouped All Banks measure speakers with the subs.
+        const groupLabel = target.global_group ? mod?.SURROUND_GROUP_LABELS?.[target.global_group] : '';
+        // All Banks records the joint A/B side it was heard on.
+        const sideLabel = target.bank_id === 'all' && target.active_side ? target.active_side : '';
+        const label = [bankLabel, sideLabel, groupLabel].filter(Boolean).join(' · ');
         const mode = String(target.mode || '');
-        const stale = !!measurement.measurement_target_stale;
         return {
             label,
             mode,
-            stale,
             title: mode
-                ? `${label} · ${(mod && typeof mod.modeLabel === 'function' ? mod.modeLabel(mode) : mode)} · measured ${label === 'Global' ? 'whole system' : 'area only'}`
+                ? `${label} · ${(mod && typeof mod.modeLabel === 'function' ? mod.modeLabel(mode) : mode)} · measured ${groupLabel ? 'with the subs' + (target.bank_id === 'all' ? ' as listened' : '') : label === 'Global' ? 'whole system' : target.bank_id === 'all' ? 'whole system as listened' : 'area only'}`
                 : label,
         };
     }
@@ -65,7 +69,7 @@
             const referenceInputChannel = measurement.input_channels?.electrical_reference ? ` · Ref In ${measurement.input_channels.electrical_reference}` : '';
             const areaBadge = measurementAreaBadge(measurement);
             const areaBadgeHtml = areaBadge
-                ? `<span class="measurement-area-badge${areaBadge.stale ? ' is-stale' : ''}" data-tooltip="${deps.escapeHtml(areaBadge.title)}">${deps.escapeHtml(areaBadge.label)}</span>`
+                ? `<span class="measurement-area-badge" data-tooltip="${deps.escapeHtml(areaBadge.title)}">${deps.escapeHtml(areaBadge.label)}</span>`
                 : '';
             return `
                 <div class="measurement-list-item" style="${isVisibleInGraph ? `border-color:${traceColor}; box-shadow: inset 0 0 0 1px ${traceColor}33; background: linear-gradient(180deg, rgba(255,255,255,0.03), ${traceColor}12);` : ''}">
@@ -139,6 +143,7 @@
             if (input.matches('[data-measurement-toggle]')) {
                 deps.getState().measurement.visibilityById[input.dataset.measurementToggle] = !!input.checked;
                 deps.getState().measurement.savedGroupOpen = true;
+                deps.adoptSelectedMeasurementGroup();
                 deps.renderMeasurementPanel();
                 return;
             }
@@ -147,6 +152,7 @@
                     deps.getState().measurement.visibilityById[measurement.id] = !!input.checked;
                 });
                 deps.getState().measurement.savedGroupOpen = true;
+                deps.adoptSelectedMeasurementGroup();
                 deps.renderMeasurementPanel();
             }
         });

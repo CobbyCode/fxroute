@@ -25,7 +25,11 @@
     // the tab transport and the incoming-state/poll paths use one state
     // machine instead of two copies that can drift apart.
     let maybeShowStreamingQueueCue = function () { return false; };
-    let escapeHtml = function (v) { return String(v == null ? '' : v); };
+    let escapeHtml = function (v) {
+        return String(v == null ? '' : v).replace(/[&<>"']/g, character => ({
+            '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;',
+        })[character]);
+    };
     // Shared transition-error formatter injected by app.js. The local default
     // mirrors the canonical app.js implementation so this module never renders
     // "[object Object]" standalone: structured {message, stage} payloads keep
@@ -108,6 +112,8 @@
     const state = {
         providers: {},          // id -> { descriptor, root, els, tabBtn, tabPanel }
         lastData: {},           // id -> last normalized status payload
+        refreshSerials: {},     // id -> latest status request or external frame
+        appliedSerials: {},     // id -> latest applied response or external frame
         polls: {},              // id -> interval timer
         enabled: {},            // id -> boolean (Settings -> Providers choice)
         lastPlaybackSource: null,
@@ -117,7 +123,7 @@
             viewStack: [],      // previous detail views so Back returns through nested details
             searchQuery: '',
             searchExecuted: false,
-            searchResultType: 'tracks',
+            searchResultType: 'albums',
             searchResults: null,
             searchRequestId: 0,
             searchDebounceTimer: null,
@@ -165,7 +171,6 @@
     // -----------------------------------------------------------------------
     function init(interfaceApi) {
         if (initialized) return;
-        initialized = true;
         api = interfaceApi || {};
         if (typeof api.showToast === 'function') showToast = api.showToast;
         if (typeof api.maybeShowNativeTrackCue === 'function') maybeShowNativeTrackCue = api.maybeShowNativeTrackCue;
@@ -179,12 +184,20 @@
         if (typeof api.factsHtml === 'function') factsHtml = api.factsHtml;
         if (typeof api.aboutHtml === 'function') aboutHtml = api.aboutHtml;
         buildProviderDom();
+        initialized = true;
         void loadProviders();
     }
 
     // Render one provider from a normalized status payload. Used by app.js for
     // Spotify and by this module's own refresh loop for Qobuz/TIDAL.
     function renderProvider(providerId, data) {
+        if (!data) return;
+        state.refreshSerials[providerId] = (state.refreshSerials[providerId] || 0) + 1;
+        state.appliedSerials[providerId] = state.refreshSerials[providerId];
+        renderProviderData(providerId, data);
+    }
+
+    function renderProviderData(providerId, data) {
         if (!data) return;
         state.lastData[providerId] = data;
         const entry = state.providers[providerId];
@@ -801,10 +814,15 @@
     // Status refresh / polling
     // -----------------------------------------------------------------------
     async function refreshProvider(providerId) {
+        const serial = (state.refreshSerials[providerId] || 0) + 1;
+        state.refreshSerials[providerId] = serial;
         try {
             const resp = await fetch('/api/streaming/' + providerId + '/status');
             if (!resp.ok) return;
-            renderProvider(providerId, await resp.json());
+            const data = await resp.json();
+            if (serial <= (state.appliedSerials[providerId] || 0)) return;
+            state.appliedSerials[providerId] = serial;
+            renderProviderData(providerId, data);
         } catch (err) {
             // ignore transient fetch failures; the next poll retries
         }
@@ -1245,8 +1263,8 @@
                         '</div>' +
                     '</div>' +
                 '</div>' +
+                tidalPlaylistSaveRowHtml('album') +
                 '<div class="streaming-browse-body" id="tidal-browse-body"></div>' +
-                tidalPlaylistSaveRowHtml() +
             '</div>';
         const actions = content.querySelector('.tidal-toolbar-actions');
         if (actions && entry.els.statusLine) actions.prepend(entry.els.statusLine);
@@ -1336,17 +1354,18 @@
             state.tidal.searchRequestId += 1;
             state.tidal.searchQuery = query;
             state.tidal.searchExecuted = true;
+            state.tidal.searchResultType = 'albums';
             state.tidal.searchResults = null;
             state.tidal.searchInFlight = false;
             const body = root.querySelector('#tidal-browse-body');
             if (body) body.innerHTML = contentState('loading', immediate ? 'Searching…' : 'Waiting to search…');
             if (immediate) {
-                void executeTidalSearch(state.tidal.searchResultType);
+                void executeTidalSearch('albums');
                 return;
             }
             state.tidal.searchDebounceTimer = setTimeout(() => {
                 state.tidal.searchDebounceTimer = null;
-                void executeTidalSearch(state.tidal.searchResultType);
+                void executeTidalSearch('albums');
             }, TIDAL_SEARCH_DEBOUNCE_MS);
         };
         input.addEventListener('input', () => { syncClear(); startSearch(false); });
@@ -1435,7 +1454,7 @@
         renderTidalBrowseSection(state.tidal.browseCategory);
     }
 
-    const TIDAL_SEARCH_TYPES = ['artists', 'tracks', 'albums', 'playlists'];
+    const TIDAL_SEARCH_TYPES = ['albums', 'tracks', 'artists', 'playlists'];
     const TIDAL_SEARCH_TYPE_LABELS = { artists: 'Artists', tracks: 'Tracks', albums: 'Albums', playlists: 'Playlists' };
 
     async function executeTidalSearch(type) {
@@ -2170,17 +2189,22 @@
     // Detail views replace the browse content in place and share the window
     // scroll (no inner scroll container), so every detail open resets it to
     // the top instead of inheriting the browse position.
-    function openTidalDetail(view, id, title, artUrl) {
+    function openTidalDetail(view, id, title, artUrl, options) {
         // Push the full current detail state so Back returns exactly through
         // nested details (browse -> artist -> album) with the previous view's
         // own id/title/art restored, instead of jumping straight to browse.
+        // Callers pass { replace: true } to swap the current detail without
+        // growing history (used by Discover Similar navigation).
+        const replace = Boolean(options && options.replace);
         state.tidal.detailRequestId += 1;
-        state.tidal.viewStack.push({
-            view: state.tidal.view,
-            detailId: state.tidal.detailId,
-            detailTitle: state.tidal.detailTitle,
-            detailArt: state.tidal.detailArt,
-        });
+        if (!replace) {
+            state.tidal.viewStack.push({
+                view: state.tidal.view,
+                detailId: state.tidal.detailId,
+                detailTitle: state.tidal.detailTitle,
+                detailArt: state.tidal.detailArt,
+            });
+        }
         state.tidal.view = view;
         state.tidal.detailId = id;
         state.tidal.detailTitle = title;
@@ -2198,9 +2222,9 @@
         openTidalDetail('playlist', id, title, artUrl);
     }
 
-    function openTidalArtist(id, name, artUrl) {
+    function openTidalArtist(id, name, artUrl, options) {
         rememberTidalArtist({ id: id, name: name, art_url: artUrl });
-        openTidalDetail('artist', id, name, artUrl);
+        openTidalDetail('artist', id, name, artUrl, options);
     }
 
     function closeTidalDetail() {
@@ -2365,7 +2389,7 @@
                     '</div>' +
                     '<button type="button" class="album-detail-back" id="tidal-detail-back">← Back</button>' +
                 '</div>' +
-                tidalPlaylistSaveRowHtml() +
+                tidalPlaylistSaveRowHtml('album') +
                 '<div class="streaming-results" id="tidal-detail-results">' + contentState('loading', 'Loading…') + '</div>' +
             '</div>';
         content.querySelector('#tidal-detail-back').addEventListener('click', closeTidalDetail);
@@ -2375,8 +2399,16 @@
         loadTidalArtist(content, requestId);
     }
 
-    // Directly-visible artist about, compact in the hero. Long bios are clamped
-    // to a few lines with a subtle More/Less toggle instead of an accordion.
+    // Short bios render fully in the hero without any toggle; only longer
+    // texts start clamped (the clamp budget matches the hero text column, so
+    // the available hero space is used before truncating).
+    const ARTIST_ABOUT_INLINE_LIMIT = 500;
+
+    // Directly-visible artist about, compact in the hero. Long bios are
+    // clamped with a subtle More/Less toggle instead of an accordion — but
+    // the toggle only stays when the text is actually truncated: after
+    // layout, an untruncated clamp loses the toggle again, so short bios
+    // (2Pac, The Prodigy, …) show fully without More/Less.
     function renderArtistAbout(element, about) {
         if (!element) return;
         const text = (about || '').trim();
@@ -2385,19 +2417,39 @@
             element.innerHTML = '';
             return;
         }
-        const long = text.length > 200;
         element.hidden = false;
+        if (text.length <= ARTIST_ABOUT_INLINE_LIMIT) {
+            element.innerHTML =
+                '<p class="streaming-about-text">' + escapeHtml(text) + '</p>';
+            return;
+        }
         element.innerHTML =
-            '<p class="streaming-about-text' + (long ? ' is-clamped' : '') + '">' + escapeHtml(text) + '</p>' +
-            (long ? '<button type="button" class="about-more-toggle" aria-expanded="false">More</button>' : '');
-        if (long) {
-            const bio = element.querySelector('.streaming-about-text');
-            const toggle = element.querySelector('.about-more-toggle');
-            toggle.addEventListener('click', () => {
-                const clamped = bio.classList.toggle('is-clamped');
-                toggle.setAttribute('aria-expanded', clamped ? 'false' : 'true');
-                toggle.textContent = clamped ? 'More' : 'Less';
-            });
+            '<p class="streaming-about-text is-clamped">' + escapeHtml(text) + '</p>' +
+            '<button type="button" class="about-more-toggle" aria-expanded="false">More</button>';
+        const bio = element.querySelector('.streaming-about-text');
+        const toggle = element.querySelector('.about-more-toggle');
+        if (!bio || !toggle) return;
+        toggle.addEventListener('click', () => {
+            const clamped = bio.classList.toggle('is-clamped');
+            toggle.setAttribute('aria-expanded', clamped ? 'false' : 'true');
+            toggle.textContent = clamped ? 'More' : 'Less';
+        });
+        // Drop the toggle again when the clamped text is not actually
+        // truncated (the bio fits the hero budget). Runs after layout so the
+        // heights reflect the clamped render; contexts without layout keep
+        // the toggle via the length gate above.
+        const dropToggleWhenUntruncated = () => {
+            try {
+                if (!bio.isConnected) return;
+                if (bio.scrollHeight > bio.clientHeight + 1) return;
+            } catch (err) { return; }
+            bio.classList.remove('is-clamped');
+            toggle.remove();
+        };
+        if (typeof window !== 'undefined' && typeof window.requestAnimationFrame === 'function') {
+            window.requestAnimationFrame(dropToggleWhenUntruncated);
+        } else {
+            dropToggleWhenUntruncated();
         }
     }
 
@@ -2595,7 +2647,7 @@
     // existing TIDAL search-result flow. Never a live per-keystroke search.
     function openTidalSimilarArtist(item) {
         if (item && item.provider_artist_id) {
-            openTidalArtist(item.provider_artist_id, item.artist || '', item.art_url || '');
+            openTidalSimilarArtistDetail(item.provider_artist_id, item.artist || '', item.art_url || '');
             return;
         }
         const name = (item && item.artist) || '';
@@ -2603,12 +2655,24 @@
         void resolveTidalArtistByName(name, state.tidal.detailRequestId);
     }
 
+    // Discover Similar is lateral navigation, not drill-down: any open detail
+    // chain collapses back to the entry context, and the new artist replaces
+    // the current detail on top of it. Back therefore always returns to the
+    // entry context in one step (Albums -> album -> Similar -> artists ->
+    // one Back -> Albums) instead of stepping through intermediate artists.
+    function openTidalSimilarArtistDetail(id, name, artUrl) {
+        if (state.tidal.viewStack.length > 1) {
+            state.tidal.viewStack = state.tidal.viewStack.slice(0, 1);
+        }
+        openTidalArtist(id, name, artUrl, { replace: true });
+    }
+
     async function resolveTidalArtistByName(name, detailRequestId) {
         try {
             const match = await resolveTidalArtistMatch(name);
             if (detailRequestId !== state.tidal.detailRequestId || !isTidalDetailView()) return;
             if (match && !match.ambiguous) {
-                openTidalArtist(match.id, match.name || name, match.art_url || '');
+                openTidalSimilarArtistDetail(match.id, match.name || name, match.art_url || '');
                 return;
             }
             throw new Error('no unique artist match');
@@ -2664,7 +2728,7 @@
                     '</div>' +
                     '<button type="button" class="album-detail-back" id="tidal-detail-back">← Back</button>' +
                 '</div>' +
-                tidalPlaylistSaveRowHtml() +
+                tidalPlaylistSaveRowHtml('album') +
                 '<div class="streaming-results" id="tidal-detail-results">' + contentState('loading', 'Loading…') + '</div>' +
             '</div>';
         content.querySelector('#tidal-detail-back').addEventListener('click', closeTidalDetail);
@@ -2672,20 +2736,6 @@
         bindTidalPlaylistSaveRow(content);
         updateTidalPlaylistSaveRow();
         loadTidalPlaylistTracks(content, requestId);
-    }
-
-    async function loadTidalAlbumTracks(content, requestId = state.tidal.detailRequestId) {
-        const results = content.querySelector('#tidal-detail-results');
-        try {
-            const resp = await fetch('/api/streaming/tidal/albums/' + encodeURIComponent(state.tidal.detailId) + '/tracks');
-            if (!resp.ok) throw new Error(await errorDetail(resp));
-            const items = await resp.json();
-            if (requestId !== state.tidal.detailRequestId || state.tidal.view !== 'album') return;
-            renderDetailTracks(results, items);
-        } catch (err) {
-            if (requestId !== state.tidal.detailRequestId || state.tidal.view !== 'album') return;
-            results.innerHTML = contentState('error', friendlyError(err?.message || err));
-        }
     }
 
     async function loadTidalPlaylistTracks(content, requestId) {

@@ -209,6 +209,7 @@
         #playback-bar .samplerate-status,
         #playback-bar .queue-status { font-size: 0.67rem; }
         #playback-bar .meter-channel { font-size: 0.57rem; }
+        #playback-bar .meter-col-label { font-size: 0.54rem; }
         #playback-bar .output-level-badge { font-size: 0.65rem; }
         .tab-btn { font-size: 0.94rem; }
         .section-title { font-size: 1.12rem; }
@@ -325,6 +326,12 @@
         gap: 1.7px;
     }
     .meter-segments i { height: 4px; }
+    /* Multichannel bars sit centred in the meter row; the stereo rows'
+       bottom alignment would push the labels into the volume row. */
+    .playback-meter.is-multichannel {
+        align-self: center;
+        margin: 0;
+    }
     .playback-bar .controls {
         width: min(100%, 235px);
         max-width: 235px;
@@ -462,6 +469,17 @@
         height: 40px;
         font-size: .92rem;
     }
+    /* Phone source switcher: the select shrinks to the row instead of
+       its longest option, so App, the arrows and Auto always stay on screen. */
+    .source-switcher {
+        min-width: 0;
+        min-height: 40px;
+        gap: .4rem;
+    }
+    .source-select {
+        padding-block: .4rem;
+        font-size: .84rem;
+    }
     .control-btn-secondary {
         width: 29px;
         height: 29px;
@@ -517,6 +535,16 @@
         height: 4px;
         border-radius: 999px;
     }
+    /* Multichannel on a phone: up to eight slim bars in the 84px meter slot,
+       positions told apart by order only (labels stay in the tooltips). */
+    .playback-meter.is-multichannel {
+        width: auto;
+        max-width: 84px;
+        min-height: 0;
+    }
+    .meter-col { width: 10px; }
+    .meter-col-label { display: none; }
+    .meter-bar { gap: 1.4px; }
     .output-level-badge { display: none; }
     /* Phone: volume percent shares the seek duration right value column. */
     .playback-bar .controls {
@@ -561,14 +589,15 @@
         font-size: .64rem;
         line-height: 1;
     }
-    /* Phone: no-media fallback keeps track + volume only. */
-    .playback-bar:not(.has-media) {
+    /* Phone: no-media fallback keeps track + volume only. Line sources
+       never carry app media; they keep their switcher and meter. */
+    .playback-bar:not(.has-media):not(.source-mode) {
         grid-template-areas:
             "track track"
             "volume volume";
     }
-    .playback-bar:not(.has-media) .playback-center,
-    .playback-bar:not(.has-media) .playback-meter { display: none; }
+    .playback-bar:not(.has-media):not(.source-mode) .playback-center,
+    .playback-bar:not(.has-media):not(.source-mode) .playback-meter { display: none; }
     /* Phone slider paint and thumb geometry. */
     .seek-slider::-webkit-slider-runnable-track,
     .volume-slider::-webkit-slider-runnable-track {
@@ -610,6 +639,11 @@
             max-width: 78px;
             grid-template-columns: .5rem 57px;
         }
+        .playback-meter.is-multichannel {
+            width: auto;
+            max-width: 78px;
+        }
+        .meter-col { width: 9px; }
         .meter-segments {
             width: 57px;
             min-width: 57px;
@@ -629,6 +663,11 @@
     @media (max-width: 390px) {
         .playback-bar {
             grid-template-areas: "track track" "transport transport" "volume volume";
+        }
+        /* The meter row would stay empty: switcher and volume only. */
+        .playback-bar.source-mode {
+            grid-template-rows: auto auto;
+            grid-template-areas: "transport transport" "volume volume";
         }
         .playback-meter { display: none; }
     }
@@ -1015,7 +1054,7 @@
         #measurement-repeat-start,
         #measurement-hybrid-open,
     #measurement-auto-sub-start,
-    #measurement-spl-calibration-open {
+    #measurement-calibration-toggle {
         width: 100%;
         min-width: 0;
     }
@@ -1038,18 +1077,27 @@
        width here and dragged the room view and the action row out of the
        panel on a 320px screen. */
     .hybrid-wizard-grid { grid-template-columns: minmax(0, 1fr); }
-    .hybrid-room-view { min-height: 300px; }
+    .hybrid-room-view { min-height: 320px; }
+    /* A phone-wide room: a smaller seat leaves the side and rear speakers
+       their own space instead of sitting on its arms (the front group keeps
+       the full seat). */
+    .hybrid-room-view[data-hybrid-group="side"] .hybrid-seat,
+    .hybrid-room-view[data-hybrid-group="rear"] .hybrid-seat { transform: translate(-50%, -50%) scale(0.8); }
+    /* Rear: seat, 1 m microphones and speakers stack in the 320px room
+       without touching (the room is too short for the wide-room positions). */
+    .hybrid-room-view[data-hybrid-group="rear"] {
+        --hybrid-listen-shift: -33%;
+        --hybrid-direct-y: 66%;
+        --hybrid-speaker-y: 85%;
+    }
+    /* The subwoofers stand above the moved-up listening area. */
+    .hybrid-room-view[data-hybrid-group="rear"] .hybrid-sub { top: 15%; }
     .hybrid-step-card { min-height: 390px; }
     .hybrid-action-row { position: sticky; bottom: -0.85rem; margin-inline: -0.85rem; padding: 0.75rem 0.85rem; background: var(--bg-surface); }
 
-        .measurement-channel-chip-row,
     .measurement-smoothing-chips {
         width: 100%;
         justify-content: flex-start;
-    }
-
-    .measurement-channel-chip-row {
-        justify-content: center;
     }
 
         .measurement-card-setup,
@@ -1139,7 +1187,6 @@
         flex-direction: column;
         align-items: stretch;
         gap: 0.5rem;
-        margin-bottom: 0.7rem;
     }
     .playlist-save-controls {
         width: 100%;
@@ -1310,7 +1357,6 @@
     .playlist-save-row {
         flex-wrap: nowrap;
         align-items: stretch;
-        margin-bottom: 0.7rem;
     }
     .playlist-save-controls {
         width: 100%;
@@ -1410,7 +1456,6 @@
     }
 
     /* Touch targets that can grow without moving surrounding layout. */
-    .catalog-station-action { min-height: 44px; }
     .dialog-header-corner-close .btn-close-manage { width: 44px; height: 44px; min-height: 44px; }
     .measurement-chip { min-height: 44px; }
     .measurement-view-toggle .measurement-chip { min-height: 44px; }
@@ -1568,11 +1613,9 @@
     }
 
     /* Sub trim cards mirror the speaker Trim block: Level + Align share
-       one row, Polarity sits centered below instead of dangling alone
-       in an empty second column. */
+       one row, Polarity sits below Level in the first column. */
     .effects-subwoofer-channel-group .effects-subwoofer-polarity-field {
-        grid-column: 1 / -1;
-        justify-self: center;
+        grid-column: 1;
     }
 
     /* Mobile: both crossover blocks wrap into two columns, so the single
@@ -1615,41 +1658,6 @@
         width: auto;
         min-width: 96px;
         flex: 0 0 auto;
-    }
-
-    /* The row wraps on its own once the card is too narrow; on a phone the
-       Add button drops to its own line and starts at the leading edge. */
-    .effects-peq-add-row .btn-inline {
-        margin-right: auto;
-    }
-
-    .effects-peq-mode-field {
-        max-width: none;
-    }
-
-    .effects-loudness-row {
-        display: grid;
-        grid-template-columns: minmax(0, 1fr);
-        align-items: center;
-    }
-
-    .effects-loudness-controls {
-        display: inline-flex;
-        width: max-content;
-        max-width: 100%;
-        gap: 0.65rem;
-    }
-
-    .effects-loudness-controls .effects-inline-control {
-        flex-wrap: nowrap;
-    }
-
-        .effects-bass-row,
-    .effects-bass-controls {
-        display: flex;
-        align-items: center;
-        gap: 0.65rem;
-        flex-wrap: wrap;
     }
 
     .effects-extras-inner {
@@ -1695,6 +1703,18 @@
 
     .effects-subwoofer-derived-delays {
         grid-column: 1 / -1;
+    }
+
+    /* Combine keeps its three preset columns inside the two-column card
+       grid, where they are too narrow for "Preset 3 optional" on one line.
+       The wrapped label raises the row and the Preset 1 and 2 selects grew
+       into it (.url-input carries flex: 1). Labels stay on the top line,
+       the selects keep their natural height on a shared bottom line. */
+    .effects-combine-grid .field-group {
+        justify-content: space-between;
+    }
+    .effects-combine-grid .compare-select {
+        flex: 0 0 auto;
     }
 }
 
@@ -1945,15 +1965,23 @@
        (long preset names cut after ~25 characters) and the tile ended
        ~110px above the card bottom. Stacked, each select gets the full tile
        width and the tile fills the card; height the neighbour adds (enabled
-       extras) is spread between the tile's sections instead of collecting
-       under it. The one-column grid below 768px keeps the natural height
-       and the side-by-side slots. */
+       extras) is spread evenly between the tile's sections (status, preset
+       pair, actions, info line) instead of collecting under the actions.
+       The info line's own auto margin would take all of it, and an empty
+       status line must not claim a gap of its own. The one-column grid
+       below 768px keeps the natural height and the side-by-side slots. */
     .effects-card-manage-order .effects-stack,
     .effects-card-manage-order .effects-compare-row {
         flex: 1 1 auto;
     }
     .effects-card-manage-order .effects-compare-row {
         justify-content: space-between;
+    }
+    .effects-card-manage-order .effects-info {
+        margin-top: 0;
+    }
+    .effects-card-manage-order .effects-status:empty {
+        display: none;
     }
     .effects-card-manage-order .effects-compare-fields {
         grid-template-columns: 1fr;
@@ -1977,9 +2005,10 @@
    shared control column. Both cards then read the same, and a setting costs
    one row instead of a label line plus a centered control of its own width.
    The label column keeps 4.5rem for the longest single word ("Frequency");
-   the control column holds a digit-safe stepper (9rem) and grows to 10rem
-   where the card allows it, so every control in every group ends up equally
-   wide. Longer labels ("Main highpass") wrap inside their column. */
+   the control column holds a digit-safe stepper (9rem) and grows to 10.5rem
+   (two 38px buttons, the value field and the unit) where the card allows it,
+   so every control in every group ends up equally wide. Longer labels
+   ("Main highpass") wrap inside their column. */
 @media (max-width: 520px) {
     .effects-subwoofer-global-group {
         grid-template-columns: minmax(0, 1fr);
@@ -1990,7 +2019,7 @@
     .effects-subwoofer-crossover-block,
     .effects-subwoofer-channel-group {
         display: grid;
-        grid-template-columns: minmax(4.5rem, 1fr) minmax(9rem, 10rem);
+        grid-template-columns: minmax(4.5rem, 1fr) minmax(9rem, 10.5rem);
         align-items: center;
         gap: 0.5rem 0.75rem;
     }
@@ -2006,20 +2035,22 @@
         min-height: 0;
         font-weight: 500;
     }
-    /* Short select values (LR, 24, On, N) sit centered in the control: the
+    /* Short select values (LR, 24, On, N/I) sit centered in the control: the
        left padding mirrors the chevron reserve, so the text box is
-       symmetric. Stepper values keep their own layout. */
+       symmetric. Polarity keeps N/I here through the compact labels while
+       wider screens spell out Normal/Inverted. Stepper values keep their
+       own layout. */
     #tab-effects .effects-subwoofer-control-group select {
         width: 100%;
         padding-left: var(--arrow-reserve);
         text-align: center;
         text-align-last: center;
     }
-    /* Between 9rem and 10rem the stepper buttons give up the difference
-       (34px preferred, 26px minimum); the value field keeps its digit floor. */
+    /* Between 9rem and 10.5rem the stepper buttons give up the difference
+       (38px preferred, 26px minimum); the value field keeps its digit floor. */
     .effects-subwoofer-control-group .stepper-btn {
         width: auto;
-        flex: 0 1 34px;
+        flex: 0 1 38px;
         min-width: 26px;
     }
 }

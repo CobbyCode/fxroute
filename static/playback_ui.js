@@ -36,6 +36,8 @@
         buildSourceSwitcherEntries: () => [],
         activateSourceSwitcherEntry: () => {},
         stepSourceSwitcher: () => {},
+        toggleSourceAuto: () => {},
+        selectAppPlaybackSource: () => {},
         spotifyCommand: async () => {},
         qobuzCommand: async () => {},
         spotifySeek: async () => {},
@@ -164,8 +166,10 @@ function setupPlaybackControls() {
     if (deps.getElements().btnPrevious) deps.getElements().btnPrevious.addEventListener('click', deps.globalPrevious);
     deps.getElements().btnPlayPause.addEventListener('click', deps.globalTogglePlayback);
     if (deps.getElements().btnNext) deps.getElements().btnNext.addEventListener('click', deps.globalNext);
+    if (deps.getElements().sourceApp) deps.getElements().sourceApp.addEventListener('click', () => deps.selectAppPlaybackSource());
     if (deps.getElements().sourcePrev) deps.getElements().sourcePrev.addEventListener('click', () => deps.stepSourceSwitcher(-1));
     if (deps.getElements().sourceNext) deps.getElements().sourceNext.addEventListener('click', () => deps.stepSourceSwitcher(1));
+    if (deps.getElements().sourceAuto) deps.getElements().sourceAuto.addEventListener('click', () => deps.toggleSourceAuto());
     if (deps.getElements().sourceSelect) deps.getElements().sourceSelect.addEventListener('change', (event) => {
         const key = event.target.value || '';
         const sourceMode = deps.getState().settings?.sourceMode || {};
@@ -512,10 +516,10 @@ function responsiveMeterSegmentCount() {
     return 12;
 }
 
-function renderMeterChannel(container, db, detected) {
+function renderMeterChannel(container, db, detected, segmentBudget = responsiveMeterSegmentCount(), warnCount = 3) {
     if (!container) return;
     const segments = Array.from(container.querySelectorAll('i'));
-    const visibleCount = Math.min(segments.length, responsiveMeterSegmentCount());
+    const visibleCount = Math.min(segments.length, segmentBudget);
     const visibleSegments = segments.slice(0, visibleCount);
     const lit = meterLitCount(db, visibleCount);
     segments.forEach((segment, index) => {
@@ -527,7 +531,7 @@ function renderMeterChannel(container, db, detected) {
         }
         const isLit = index < lit;
         segment.classList.toggle('is-lit', isLit);
-        segment.classList.toggle('is-warn', isLit && index >= Math.max(0, visibleCount - 3));
+        segment.classList.toggle('is-warn', isLit && index >= Math.max(0, visibleCount - warnCount));
         segment.classList.toggle('is-hot', isLit && index >= Math.max(0, visibleCount - 1));
         segment.classList.toggle('is-peak', !!detected && index === visibleSegments.length - 1);
     });
@@ -545,6 +549,7 @@ function rememberValidVu(warning, active) {
         vu_db: Number(warning.vu_db),
         vu_db_l: Number(warning.vu_db_l),
         vu_db_r: Number(warning.vu_db_r),
+        channels: meterChannelLayout(warning),
         at: Date.now(),
     };
 }
@@ -570,10 +575,94 @@ function renderStereoMeter(warning, active) {
     renderMeterChannel(deps.getElements().meterRight, liveFresh ? warning?.vu_db_r : (held ? held.vu_db_r : null), liveFresh && !!warning?.detected_r);
 }
 
+// Multichannel output meter: three or more speaker positions (FL FR C LFE SL
+// SR RL RR) get one vertical bar each; stereo keeps its two horizontal rows.
+const MULTI_METER_LABELS = {
+    l: 'L', r: 'R', fl: 'FL', fr: 'FR', c: 'C', lfe: 'LFE', sl: 'SL', sr: 'SR', rl: 'RL', rr: 'RR',
+    sub: 'SUB', sub1: 'S1', sub2: 'S2', sub_l: 'S1', sub_r: 'S2',
+};
+const MULTI_METER_TITLES = {
+    l: 'Left', r: 'Right', fl: 'Front L', fr: 'Front R', c: 'Center', lfe: 'LFE', sl: 'Side L', sr: 'Side R',
+    rl: 'Rear L', rr: 'Rear R', sub: 'Sub', sub1: 'Sub 1', sub2: 'Sub 2', sub_l: 'Sub L', sub_r: 'Sub R',
+};
+const MULTI_METER_MAX_POSITIONS = 8;
+const MULTI_METER_SEGMENTS = 8;
+
+function responsiveMultiMeterSegmentCount() {
+    if (window.matchMedia('(max-width: 700px)').matches) return 5;
+    if (window.matchMedia('(max-width: 1180px)').matches) return 6;
+    return MULTI_METER_SEGMENTS;
+}
+
+function meterChannelLayout(warning) {
+    // Output positions of a 3+ position layout; null keeps the stereo meter.
+    const channels = warning?.channels;
+    if (!channels || !Array.isArray(channels.keys) || !Array.isArray(channels.vu_db)) return null;
+    const count = channels.keys.length;
+    if (count < 3 || count > MULTI_METER_MAX_POSITIONS || channels.vu_db.length !== count) return null;
+    return channels;
+}
+
+function ensureMultiMeterBars(container, keys) {
+    const signature = keys.join(',');
+    if (container.dataset.layout === signature) return;
+    container.dataset.layout = signature;
+    container.replaceChildren(...keys.map(key => {
+        const column = document.createElement('span');
+        column.className = 'meter-col';
+        column.dataset.channel = key;
+        column.title = MULTI_METER_TITLES[key] || key.toUpperCase();
+        const bar = document.createElement('span');
+        bar.className = 'meter-bar';
+        for (let index = 0; index < MULTI_METER_SEGMENTS; index += 1) bar.appendChild(document.createElement('i'));
+        const label = document.createElement('span');
+        label.className = 'meter-col-label';
+        label.textContent = MULTI_METER_LABELS[key] || key.toUpperCase();
+        column.append(bar, label);
+        return column;
+    }));
+}
+
+function renderMultiMeter(warning, layout, active) {
+    const meter = deps.getElements().playbackMeter;
+    const container = deps.getElements().meterMulti;
+    if (!meter || !container) return;
+    const playbackActive = !!active;
+    rememberValidVu(warning, playbackActive);
+    const liveFresh = !!warning?.available && warning?.vu_fresh === true && playbackActive;
+    const held = !liveFresh && playbackActive ? heldVuSnapshot() : null;
+    const heldLayout = held?.channels;
+    const heldMatches = !!heldLayout && heldLayout.keys.join(',') === layout.keys.join(',');
+    const levels = liveFresh ? layout.vu_db : (heldMatches ? heldLayout.vu_db : null);
+    const detected = liveFresh ? layout.detected : null;
+    meter.classList.toggle('is-active', liveFresh || heldMatches);
+    meter.classList.toggle('is-peak', !!detected && detected.some(Boolean));
+    ensureMultiMeterBars(container, layout.keys);
+    const segmentBudget = responsiveMultiMeterSegmentCount();
+    // Same proportion of amber as the 12-segment stereo rows (top quarter).
+    const warnCount = Math.max(1, Math.round(segmentBudget / 4));
+    container.querySelectorAll('.meter-bar').forEach((bar, index) => {
+        renderMeterChannel(bar, levels ? levels[index] : null, !!(detected && detected[index]), segmentBudget, warnCount);
+    });
+}
+
+function renderOutputMeter(warning, active) {
+    const meter = deps.getElements().playbackMeter;
+    if (!meter) return;
+    const layout = meterChannelLayout(warning);
+    meter.classList.toggle('is-multichannel', !!layout);
+    meter.setAttribute('aria-label', layout
+        ? `Output level, ${layout.keys.map(key => MULTI_METER_TITLES[key] || key).join(', ')}`
+        : 'Stereo output level');
+    if (layout) renderMultiMeter(warning, layout, active);
+    else renderStereoMeter(warning, active);
+}
+
 function formatOutputLevelBadgeDb(level) {
     const rounded = Math.round(Number(level));
     if (!Number.isFinite(rounded)) return '';
-    const sign = rounded < 0 ? '-' : '';
+    // Keep the minus at 0 dB (and -0) so the text width stays constant.
+    const sign = Number(level) <= 0 ? '-' : '';
     const abs = Math.abs(rounded);
     const digits = abs < 10 ? `0${abs}` : String(abs);
     return `${sign}${digits} dB`;
@@ -609,7 +698,7 @@ function renderPeakWarningBadge(activeOverride = null) {
             : (showVu ? `Post-DSP output level (slow VU) on ${title}` : '');
     }
 
-    renderStereoMeter(warning, playbackActive);
+    renderOutputMeter(warning, playbackActive);
 }
 
 function coverDetailSections(playback) {
@@ -1573,6 +1662,10 @@ async function toggleCurrentTrackFavorite() {
         rememberValidVu,
         heldVuSnapshot,
         renderStereoMeter,
+        meterChannelLayout,
+        responsiveMultiMeterSegmentCount,
+        renderMultiMeter,
+        renderOutputMeter,
         formatOutputLevelBadgeDb,
         renderPeakWarningBadge,
         coverDetailSections,

@@ -51,6 +51,7 @@
 
     let _subwooferPreviewDrawFrame = null;
     let _subwooferSelectedSide = 'left';
+    let _subwooferSelectedGroup = 'front';
     let _subwooferSaveTimer = null;
     let _subwooferSavePromise = null;
     let _subwooferPendingSave = null;
@@ -80,8 +81,65 @@
         const shared = normalizeSubCrossoverShape(source, { family: fallback.family,
             slope_db_oct: fallback.slope_db_oct, frequency_hz: fallback.frequency_hz });
         const side = (key) => normalizeSubCrossoverShape(source[key], shared);
+        const groups = (Array.isArray(source.groups) ? source.groups : []).map(group => ({
+            ...normalizeSubCrossoverShape(group, shared), id: group.id, name: group.name || group.id,
+            highpass_enabled: group.highpass_enabled !== false }));
         return { ...shared, link: source.link !== false, stereo: !!source.stereo,
+            surround: !!source.surround && groups.length > 0, groups,
             left: side('left'), right: side('right') };
+    }
+
+    // Surround speaker group served by the single group crossover block.
+    function selectedSurroundGroup(layout) {
+        const groups = layout?.groups || [];
+        return groups.find(group => group.id === _subwooferSelectedGroup) || groups[0] || null;
+    }
+
+    function setSubwooferSelectedGroup(group) {
+        _subwooferSelectedGroup = String(group || 'front');
+    }
+
+    function surroundGroupShortName(group) {
+        return String(group?.name || group?.id || '').replace(/ L\/R$/, '');
+    }
+
+    // Surround save draft. A linked save mirrors the shared crossover into every
+    // configured group, so a later unlink starts from the audible values; an
+    // unlinked save writes only the group the block currently serves.
+    function collectSurroundBassDraft() {
+        const view = routedSubwooferView();
+        const layout = subCrossoverSettings(view);
+        const elements = deps.getElements();
+        const shared = readSubCrossoverShape(elements.effectsSubwooferFrequencyNumber,
+            elements.effectsSubwooferFamily, elements.effectsSubwooferSlope, layout);
+        const linked = elements.effectsSubwooferLink ? !!elements.effectsSubwooferLink.checked : layout.link !== false;
+        if (linked) {
+            const highpass = (elements.effectsSubwooferMainHighpass?.value || 'on') !== 'off';
+            return { ...shared, sub_link: true, main_highpass_enabled: highpass,
+                sub_filters: Object.fromEntries(layout.groups.map(group =>
+                    [group.id, { ...shared, highpass_enabled: highpass }])) };
+        }
+        const group = selectedSurroundGroup(layout);
+        const shape = readSubCrossoverShape(elements.effectsSubwooferLeftFrequency,
+            elements.effectsSubwooferLeftFamily, elements.effectsSubwooferLeftSlope, group || layout);
+        const highpass = (elements.effectsSubwooferLeftMainHighpass?.value || 'on') !== 'off';
+        return { family: layout.family, slope_db_oct: layout.slope_db_oct, frequency_hz: layout.frequency_hz,
+            sub_link: false, main_highpass_enabled: view.subwoofer?.main_highpass_enabled !== false,
+            sub_filters: group ? { [group.id]: { ...shape, highpass_enabled: highpass } } : {} };
+    }
+
+    // Preview curves of an unlinked Surround layout: the served group solid,
+    // the others dimmed, each with its own high-pass switch.
+    function surroundPreviewShapes(layout, draft) {
+        const selected = selectedSurroundGroup(layout);
+        const current = (group) => (draft && group.id === selected?.id
+            ? { ...group, ...draft.sub_filters[group.id] } : group);
+        return layout.groups
+            .slice().sort((a, b) => (b.id === selected?.id) - (a.id === selected?.id))
+            .map(group => {
+                const shape = current(group);
+                return { shape, highpass: shape.highpass_enabled !== false, alpha: group.id === selected?.id ? 1 : 0.42 };
+            });
     }
 
     function normalizeSubwooferSettings(input = {}) {
@@ -265,7 +323,7 @@
 
     function scheduleSubwooferPreviewDraw(subwoofer) {
         if (!deps.getElements().effectsSubwooferPreview) return;
-        const normalized = normalizeSubwooferSettings(subwoofer || {});
+        const normalized = { ...normalizeSubwooferSettings(subwoofer || {}), group_shapes: subwoofer?.group_shapes || null };
         if (_subwooferPreviewDrawFrame) window.cancelAnimationFrame(_subwooferPreviewDrawFrame);
         _subwooferPreviewDrawFrame = window.requestAnimationFrame(() => {
             _subwooferPreviewDrawFrame = null;
@@ -313,27 +371,46 @@
             : normalizeSubwooferSettings(outputMode.subwoofer || {});
         const subwoofers = normalizeSubwoofersSettings(outputMode.subwoofers || {}, subwoofer);
         const crossoverLayout = subCrossoverSettings(outputMode, subwoofer);
-        const splitSides = crossoverLayout.stereo && crossoverLayout.link === false;
+        const surround = crossoverLayout.surround;
+        const splitGroups = surround && crossoverLayout.link === false;
+        const splitSides = !surround && crossoverLayout.stereo && crossoverLayout.link === false;
         const selectedSide = subwooferSelectedSide();
-        deps.getElements().effectsSubwooferCard?.classList.toggle('is-crossover-split', splitSides);
+        const selectedGroup = surround ? selectedSurroundGroup(crossoverLayout) : null;
+        if (selectedGroup) setSubwooferSelectedGroup(selectedGroup.id);
+        deps.getElements().effectsSubwooferCard?.classList.toggle('is-crossover-split', splitSides || splitGroups);
         // Coupled layouts (2.1, Dual-Mono, linked Stereo) share one crossover
         // block. An unlinked Stereo pair serves a single side at a time: the
         // tabs above the graph pick it, the other side's block stays hidden but
         // keeps its stored values for the save.
-        deps.getElements().effectsSubwooferSharedCrossover?.classList.toggle('hidden', splitSides);
-        deps.getElements().effectsSubwooferLeftCrossover?.classList.toggle('hidden', !splitSides || selectedSide !== 'left');
+        // Unlinked Surround groups reuse the left block for the served group.
+        deps.getElements().effectsSubwooferSharedCrossover?.classList.toggle('hidden', splitSides || splitGroups);
+        deps.getElements().effectsSubwooferLeftCrossover?.classList.toggle('hidden', !splitGroups && (!splitSides || selectedSide !== 'left'));
         deps.getElements().effectsSubwooferRightCrossover?.classList.toggle('hidden', !splitSides || selectedSide !== 'right');
         // Crossover card label follows the link state: unlinked names the
         // selected side's crossover (the trim cards below keep "Sub L" /
         // "Sub R"), linked shows Global.
-        if (deps.getElements().effectsSubwooferGlobalLabel) deps.getElements().effectsSubwooferGlobalLabel.textContent = splitSides ? (selectedSide === 'right' ? 'Sub R · Crossover' : 'Sub L · Crossover') : 'Global';
+        if (deps.getElements().effectsSubwooferGlobalLabel) {
+            deps.getElements().effectsSubwooferGlobalLabel.textContent = splitGroups ? `${selectedGroup.name} · Crossover`
+                : splitSides ? (selectedSide === 'right' ? 'Sub R · Crossover' : 'Sub L · Crossover') : 'Global';
+        }
+        // Surround's high-pass switch covers every speaker group (linked) or
+        // the served group only (unlinked).
+        if (deps.getElements().effectsSubwooferMainHighpassLabel) deps.getElements().effectsSubwooferMainHighpassLabel.textContent = surround ? 'Speaker highpass' : 'Main highpass';
+        if (deps.getElements().effectsSubwooferLeftMainHighpassLabel) deps.getElements().effectsSubwooferLeftMainHighpassLabel.textContent = surround ? 'Highpass' : 'Main highpass';
         // The tab row mirrors the speaker tile: Link L/R plus the side tabs sit
         // above the graph instead of inside a card. Linked stereo shows one
         // common Sub L/R tab; unlinked shows Sub L and Sub R separately. The
         // row stays populated either way, so the checkbox never moves.
-        deps.getElements().effectsSubwooferTabRow?.classList.toggle('hidden', !crossoverLayout.stereo);
-        deps.getElements().effectsSubwooferSideTabs?.classList.toggle('hidden', !crossoverLayout.stereo);
-        const showBothSubTab = crossoverLayout.stereo && !splitSides;
+        deps.getElements().effectsSubwooferTabRow?.classList.toggle('hidden', !crossoverLayout.stereo && !surround);
+        deps.getElements().effectsSubwooferSideTabs?.classList.toggle('hidden', !crossoverLayout.stereo && !surround);
+        const showBothSubTab = (crossoverLayout.stereo && !splitSides) || (surround && !splitGroups);
+        const configuredGroups = new Set(crossoverLayout.groups.map(group => group.id));
+        for (const tab of deps.getElements().effectsSubwooferGroupTabs || []) {
+            const active = splitGroups && tab.dataset.subGroup === selectedGroup?.id;
+            tab.classList.toggle('hidden', !splitGroups || !configuredGroups.has(tab.dataset.subGroup));
+            tab.classList.toggle('is-active', active);
+            tab.setAttribute('aria-selected', active ? 'true' : 'false');
+        }
         if (deps.getElements().effectsSubwooferTabLeft) {
             const active = splitSides && selectedSide === 'left';
             deps.getElements().effectsSubwooferTabLeft.classList.toggle('hidden', !splitSides);
@@ -347,15 +424,20 @@
             deps.getElements().effectsSubwooferTabRight.setAttribute('aria-selected', active ? 'true' : 'false');
         }
         if (deps.getElements().effectsSubwooferTabBoth) {
+            deps.getElements().effectsSubwooferTabBoth.textContent = surround ? 'All speakers' : 'Sub L/R';
             deps.getElements().effectsSubwooferTabBoth.classList.toggle('hidden', !showBothSubTab);
             deps.getElements().effectsSubwooferTabBoth.classList.toggle('is-active', showBothSubTab);
             deps.getElements().effectsSubwooferTabBoth.setAttribute('aria-selected', showBothSubTab ? 'true' : 'false');
         }
-        deps.getElements().effectsSubwooferLinkWrap?.classList.toggle('hidden', !crossoverLayout.stereo);
+        deps.getElements().effectsSubwooferLinkWrap?.classList.toggle('hidden', !crossoverLayout.stereo && !surround);
+        if (deps.getElements().effectsSubwooferLinkText) deps.getElements().effectsSubwooferLinkText.textContent = surround ? 'Link groups' : 'Link L/R';
         renderSubwooferCrossover(crossoverLayout);
         if (deps.getElements().effectsSubwooferRouting) {
             const hpf = (subwoofer.main_highpass_enabled ?? true) ? 'on' : 'off';
-            const parts = splitSides
+            const parts = splitGroups
+                ? crossoverLayout.groups.map(group => `${surroundGroupShortName(group)} ${group.frequency_hz} Hz ${subCrossoverLabel(group)} HPF ${group.highpass_enabled ? 'on' : 'off'}`)
+                : surround ? [`Crossover ${crossoverLayout.frequency_hz} Hz`, subCrossoverLabel(crossoverLayout), `Speaker HPF ${hpf}`]
+                : splitSides
                 ? [`Sub L ${subCrossoverLabel(crossoverLayout.left)} @ ${crossoverLayout.left.frequency_hz} Hz`,
                     `Sub R ${subCrossoverLabel(crossoverLayout.right)} @ ${crossoverLayout.right.frequency_hz} Hz`,
                     `Main HPF ${hpf}`]
@@ -383,6 +465,10 @@
         deps.getElements().effectsSubwooferSub2Fields?.forEach(field => field.classList.toggle('hidden', !is22Mode));
         deps.getElements().effectsSubwooferDerivedDelays?.classList.toggle('hidden', !is22Mode);
         applySubMainHighpass(subwoofer.main_highpass_enabled !== false);
+        if (splitGroups && selectedGroup) {
+            const groupHighpass = deps.getElements().effectsSubwooferLeftMainHighpass;
+            if (groupHighpass && !_activeEditing.has(groupHighpass)) groupHighpass.value = selectedGroup.highpass_enabled ? 'on' : 'off';
+        }
         if (deps.getElements().effectsSubwooferLevel && !_activeEditing.has(deps.getElements().effectsSubwooferLevel)) {
             deps.getElements().effectsSubwooferLevel.value = formatSubwooferTrimValue(subwoofer.sub_level_db);
         }
@@ -414,6 +500,7 @@
             sub_link: !splitSides,
             left_crossover: crossoverLayout.left,
             right_crossover: crossoverLayout.right,
+            group_shapes: splitGroups ? surroundPreviewShapes(crossoverLayout) : null,
         });
     }
 
@@ -449,8 +536,9 @@
         const _activeEditing = deps.getActiveEditing();
         applySubCrossoverShape(deps.getElements().effectsSubwooferFrequencyNumber,
             deps.getElements().effectsSubwooferFamily, deps.getElements().effectsSubwooferSlope, layout);
+        const servedGroup = layout.surround ? selectedSurroundGroup(layout) : null;
         applySubCrossoverShape(deps.getElements().effectsSubwooferLeftFrequency,
-            deps.getElements().effectsSubwooferLeftFamily, deps.getElements().effectsSubwooferLeftSlope, layout.left);
+            deps.getElements().effectsSubwooferLeftFamily, deps.getElements().effectsSubwooferLeftSlope, servedGroup || layout.left);
         applySubCrossoverShape(deps.getElements().effectsSubwooferRightFrequency,
             deps.getElements().effectsSubwooferRightFamily, deps.getElements().effectsSubwooferRightSlope, layout.right);
         if (deps.getElements().effectsSubwooferLink && !_activeEditing.has(deps.getElements().effectsSubwooferLink)) {
@@ -533,6 +621,7 @@
         const ctx = canvas.getContext('2d');
         if (!ctx) return;
         const settings = normalizeSubwooferSettings(subwoofer || {});
+        const groupShapes = Array.isArray(subwoofer?.group_shapes) && subwoofer.group_shapes.length ? subwoofer.group_shapes : null;
         const displayWidth = Math.max(320, Math.round(canvas.clientWidth || canvas.width || 560));
         const displayHeight = Math.max(112, Math.round(canvas.clientHeight || canvas.height || 132));
         const dpr = (typeof window !== 'undefined' && window.devicePixelRatio) || 1;
@@ -556,11 +645,11 @@
         // An unlinked Stereo pair paints both sides: the selected one solid, the
         // other one dimmed. Anything coupled, Mono or Dual-Mono paints the shared shape.
         const selectedSide = subwooferSelectedSide();
-        const shapes = settings.sub_link === false
+        const shapes = groupShapes || (settings.sub_link === false
             ? (selectedSide === 'right'
                 ? [{ shape: settings.right_crossover, alpha: 1 }, { shape: settings.left_crossover, alpha: 0.42 }]
                 : [{ shape: settings.left_crossover, alpha: 1 }, { shape: settings.right_crossover, alpha: 0.42 }])
-            : [{ shape: sharedShape, alpha: 1 }];
+            : [{ shape: sharedShape, alpha: 1 }]);
         const xForHz = (hz) => pad.left + ((Math.log10(hz) - Math.log10(minHz)) / (Math.log10(maxHz) - Math.log10(minHz))) * plotW;
         const yForDb = (db) => pad.top + ((maxDb - db) / (maxDb - minDb)) * plotH;
         const responseDb = (shape, hz, highpass) => (mod?.crossoverMagnitudeDb
@@ -590,7 +679,7 @@
             ctx.stroke();
         });
         ctx.fillStyle = 'rgba(229,231,235,0.54)';
-        ctx.font = '500 10px system-ui, sans-serif';
+        ctx.font = '500 10px Geist, system-ui, sans-serif';
         ctx.textAlign = 'right';
         ctx.textBaseline = 'middle';
         dbLabels.forEach((db) => {
@@ -603,13 +692,15 @@
             ctx.fillText(`${hz} Hz`, xForHz(hz), height - 8);
         });
         ctx.textAlign = 'start';
+        // Filter shapes only: the sub trim is a separate control and must not
+        // shift the low-pass, or the curves stop crossing at the marker.
         const drawCurve = (shape, highpass, color, alpha) => {
             ctx.globalAlpha = alpha;
             ctx.beginPath();
             for (let i = 0; i <= 160; i += 1) {
                 const t = i / 160;
                 const hz = Math.pow(10, Math.log10(minHz) + t * (Math.log10(maxHz) - Math.log10(minHz)));
-                const db = responseDb(shape, hz, highpass) + (highpass ? 0 : settings.sub_level_db || 0);
+                const db = responseDb(shape, hz, highpass);
                 const x = xForHz(hz);
                 const y = yForDb(Math.max(minDb, Math.min(maxDb, db)));
                 if (i === 0) ctx.moveTo(x, y);
@@ -620,11 +711,11 @@
             ctx.stroke();
             ctx.globalAlpha = 1;
         };
-        for (const { shape, alpha } of shapes) {
+        for (const { shape, alpha, highpass } of shapes) {
             drawCurve(shape, false, '#6ee7b7', alpha);
-            if (settings.main_highpass_enabled) drawCurve(shape, true, '#93c5fd', alpha);
+            if (highpass ?? settings.main_highpass_enabled) drawCurve(shape, true, '#93c5fd', alpha);
         }
-        ctx.font = '600 11px system-ui, sans-serif';
+        ctx.font = '600 11px Geist, system-ui, sans-serif';
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
         shapes.forEach(({ shape, alpha }, index) => {
@@ -660,8 +751,18 @@
     }
 
     function updateSubwooferDraftFromControls() {
-        const mode = routedSubwooferView().mode;
+        const view = routedSubwooferView();
+        const mode = view.mode;
         const settings = isSubwoofer22Mode(mode) ? collectSubwoofer22Settings() : collectSubwooferSettings();
+        const layout = subCrossoverSettings(view);
+        if (layout.surround) {
+            const draft = collectSurroundBassDraft();
+            scheduleSubwooferPreviewDraw({ ...(settings.subwoofer || settings),
+                crossover_frequency_hz: draft.frequency_hz, family: draft.family, slope_db_oct: draft.slope_db_oct,
+                main_highpass_enabled: draft.main_highpass_enabled, sub_link: true,
+                group_shapes: draft.sub_link ? null : surroundPreviewShapes(layout, draft) });
+            return settings;
+        }
         scheduleSubwooferPreviewDraw(settings.subwoofer || settings);
         return settings;
     }
@@ -754,14 +855,19 @@
         const mode = catalog.active_mode;
         const bass = controls.subwoofer || controls;
         const subs = controls.subwoofers || { sub1: subwoofer21ToSub22Sub(bass) };
-        const settings = { mode, frequency_hz: bass.crossover_frequency_hz,
+        const processing = Object.fromEntries(routedSubwooferView().roles.map((role, index) => [role, subs[`sub${index + 1}`]]));
+        const surround = subCrossoverSettings(routedSubwooferView()).surround ? collectSurroundBassDraft() : null;
+        const settings = surround ? { mode, frequency_hz: surround.frequency_hz,
+            family: surround.family, slope_db_oct: surround.slope_db_oct,
+            sub_link: surround.sub_link, sub_filters: surround.sub_filters,
+            main_highpass_enabled: surround.main_highpass_enabled, processing } : { mode, frequency_hz: bass.crossover_frequency_hz,
             family: bass.family, slope_db_oct: bass.slope_db_oct,
             sub_link: bass.sub_link !== false,
             // Both side overrides always travel along: a coupled save mirrors the
             // shared shape so a later unlink starts from the audible values.
             sub_filters: { left: bass.left_crossover, right: bass.right_crossover },
             main_highpass_enabled: bass.main_highpass_enabled,
-            processing: Object.fromEntries(routedSubwooferView().roles.map((role, index) => [role, subs[`sub${index + 1}`]])) };
+            processing };
         const signature = JSON.stringify(settings);
         if (signature === _subwooferLastRequestedSignature) {
             return _subwooferSavePromise || Promise.resolve(null);
@@ -856,6 +962,13 @@
                     renderSubwooferPanel();
                 });
             }
+            // Unlinked Surround: the group tabs pick which group the block serves.
+            for (const tab of deps.getElements().effectsSubwooferGroupTabs || []) {
+                tab.addEventListener('click', () => {
+                    setSubwooferSelectedGroup(tab.dataset.subGroup);
+                    renderSubwooferPanel();
+                });
+            }
             if (deps.getElements().effectsSubwooferLink) {
                 deps.getElements().effectsSubwooferLink.addEventListener('change', () => {
                     // A checkbox has no blur to end its edit, so the toggle guards
@@ -866,6 +979,17 @@
                     saveSubwooferDebounced(0);
                 });
             }
+            // Polarity names live in the crossover module next to the Type
+            // names: desktop spells them out (Normal/Inverted), phone widths
+            // keep the short names (N/I). Relabel once here so a narrow first
+            // paint is correct even before the crossover tile wires.
+            const crossoverUI = (root && root.FXRouteCrossoverUI) || null;
+            if (crossoverUI && typeof crossoverUI.relabelPolaritySelects === 'function') {
+                crossoverUI.relabelPolaritySelects();
+            }
+            if (crossoverUI && typeof crossoverUI.watchCompactLabels === 'function') {
+                crossoverUI.watchCompactLabels();
+            }
             if (deps.getElements().effectsSubwooferPreview) {
                 let draggingCrossover = false;
                 const splitPreview = () => deps.getElements().effectsSubwooferCard?.classList.contains('is-crossover-split') === true;
@@ -873,6 +997,7 @@
                 // side while a Stereo pair is unlinked.
                 const dragTargetFrequencyInput = () => {
                     if (!splitPreview()) return deps.getElements().effectsSubwooferFrequencyNumber;
+                    if (routedSubwooferView().crossover?.surround) return deps.getElements().effectsSubwooferLeftFrequency;
                     return subwooferSelectedSide() === 'right'
                         ? deps.getElements().effectsSubwooferRightFrequency
                         : deps.getElements().effectsSubwooferLeftFrequency;
@@ -950,6 +1075,10 @@
         formatSubwooferDelayMs,
         subwooferSelectedSide,
         setSubwooferSelectedSide,
+        selectedSurroundGroup,
+        setSubwooferSelectedGroup,
+        collectSurroundBassDraft,
+        surroundPreviewShapes,
         renderSubwooferPanel,
         subCrossoverSlopes,
         applySubCrossoverShape,

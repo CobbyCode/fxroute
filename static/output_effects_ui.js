@@ -25,6 +25,7 @@
         formatTransitionErrorDetail: (detail, fallback) => fallback,
         measurementBankSumsBothInputs: () => false,
         renderCrossoverTile: () => {},
+        refreshCalibrationOverview: () => {},
         repaintCrossoverGraph: () => {},
         setupUploadArea: () => {},
         getActiveEditing: () => new Set(),
@@ -44,10 +45,7 @@ const EFFECTS_EXTRAS_VALUE_DEBOUNCE_MS = 2000;
 
 function updateEffectsPeqDisclosureLabel() {
     if (!deps.getElements().effectsPeqDisclosureMeta || !deps.getElements().effectsPeqDisclosure) return;
-    const leftCount = deps.getState().dsp?.peqDraft?.leftBands?.length || 0;
-    const rightCount = deps.getState().dsp?.peqDraft?.rightBands?.length || 0;
-    const actionLabel = deps.getElements().effectsPeqDisclosure.open ? 'Collapse' : 'Expand';
-    deps.getElements().effectsPeqDisclosureMeta.textContent = `L${leftCount} · R${rightCount} · ${actionLabel}`;
+    deps.getElements().effectsPeqDisclosureMeta.textContent = deps.getElements().effectsPeqDisclosure.open ? 'Collapse' : 'Expand';
     updateEffectsPeqSummary();
 }
 
@@ -76,18 +74,25 @@ function updateEffectsPeqSummary() {
         const shown = items.slice(0, 3).join(' · ');
         return items.length > 3 ? `${shown} · +${items.length - 3}` : shown;
     };
-    const left = formatSide(deps.getState().dsp?.peqDraft?.leftBands);
-    const right = formatSide(deps.getState().dsp?.peqDraft?.rightBands);
-    const lines = [];
-    if (left) lines.push(`L  ${left}`);
-    if (right) lines.push(`R  ${right}`);
-    if (!lines.length) {
-        deps.getElements().effectsPeqSummary.textContent = '';
-        deps.getElements().effectsPeqSummary.hidden = true;
-        return;
-    }
-    deps.getElements().effectsPeqSummary.textContent = lines.join('\n');
-    deps.getElements().effectsPeqSummary.hidden = false;
+    const summaryEl = deps.getElements().effectsPeqSummary;
+    const rows = [
+        ['L', formatSide(deps.getState().dsp?.peqDraft?.leftBands)],
+        ['R', formatSide(deps.getState().dsp?.peqDraft?.rightBands)],
+    ].filter(([, text]) => text);
+    summaryEl.textContent = '';
+    summaryEl.hidden = !rows.length;
+    rows.forEach(([side, text]) => {
+        const row = document.createElement('div');
+        row.className = 'effects-peq-summary-row';
+        const tag = document.createElement('span');
+        tag.className = 'effects-peq-summary-side';
+        tag.textContent = side;
+        const value = document.createElement('span');
+        value.className = 'effects-peq-summary-text';
+        value.textContent = text;
+        row.append(tag, value);
+        summaryEl.appendChild(row);
+    });
 }
 
 function clearEffectsPeqStatusOnCollapse() {
@@ -95,7 +100,69 @@ function clearEffectsPeqStatusOnCollapse() {
     if (deps.getElements().effectsStatus) deps.getElements().effectsStatus.innerHTML = '';
 }
 
+/* Compact − / value / + steppers: nudge the paired number input by its own
+   step/min/max and let the existing input/change listeners apply the value
+   (draft update + debounced save, unchanged semantics). The result keeps the
+   field's decimals: two at most, none for a whole-number field. */
+function nudgeStepperControl(button) {
+    const helpers = root.FXRouteUiHelpers;
+    const control = button.closest('.stepper-control');
+    const input = control ? control.querySelector('input[type="number"]') : null;
+    if (!input || input.disabled) return;
+    const direction = button.dataset.stepper === 'dec' ? -1 : 1;
+    const step = Number(input.step);
+    const stepValue = Number.isFinite(step) && step > 0 ? step : 1;
+    const min = input.min === '' ? -Infinity : Number(input.min);
+    const max = input.max === '' ? Infinity : Number(input.max);
+    const current = Number(input.value);
+    if (input.value === '' || !Number.isFinite(current)) return;
+    let next = helpers.roundToDecimals(current + direction * stepValue, helpers.numberFieldDecimals(input));
+    if (Number.isFinite(min)) next = Math.max(min, next);
+    if (Number.isFinite(max)) next = Math.min(max, next);
+    if (next === current) return;
+    input.focus({ preventScroll: true });
+    input.value = String(next);
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+}
+
+/* One rule for every stepper value field (Tone, Crossover, Subwoofer): at most
+   two decimals, whole numbers only where a field says data-decimals="0" (the
+   digits after a point are not taken), and no exponent or sign characters the
+   field can never use. The listeners sit on the document in the capture phase,
+   so each field's own listeners only ever see a value that already obeys the
+   rule. */
+function stepperValueField(event) {
+    const target = event.target;
+    return target instanceof Element && target.matches('input.stepper-input') ? target : null;
+}
+
+function wireNumberFieldLimits() {
+    document.addEventListener('beforeinput', (event) => {
+        const field = stepperValueField(event);
+        if (!field || typeof event.data !== 'string') return;
+        const nonNegative = field.min !== '' && Number(field.min) >= 0;
+        const rejected = `eE+${nonNegative ? '-' : ''}`;
+        if ([...event.data].some((char) => rejected.includes(char))) event.preventDefault();
+    }, true);
+    document.addEventListener('input', (event) => {
+        const field = stepperValueField(event);
+        if (!field) return;
+        const helpers = root.FXRouteUiHelpers;
+        const limited = helpers.limitDecimalText(field.value, helpers.numberFieldDecimals(field));
+        if (limited !== field.value) field.value = limited;
+    }, true);
+    document.addEventListener('change', (event) => {
+        const field = stepperValueField(event);
+        if (!field || field.value === '') return;
+        const helpers = root.FXRouteUiHelpers;
+        const settled = helpers.roundToDecimals(field.value, helpers.numberFieldDecimals(field));
+        if (Number.isFinite(settled) && settled !== Number(field.value)) field.value = String(settled);
+    }, true);
+}
+
 function setupEffectsActions() {
+    root.FXRouteAvSync?.bindEvents();
     if (deps.getElements().splCalibrationOpen) deps.getElements().splCalibrationOpen.addEventListener('click', () => window.FXRouteMeasurementSplCalibration.openSplCalibration());
     if (deps.getElements().splCalibrationClose) deps.getElements().splCalibrationClose.addEventListener('click', () => window.FXRouteMeasurementSplCalibration.closeSplCalibration());
     if (deps.getElements().splCalibrationPanel?.querySelector('.manage-overlay-backdrop')) {
@@ -115,38 +182,6 @@ function setupEffectsActions() {
     });
     if (deps.getElements().effectsPeqAddBandBtn) deps.getElements().effectsPeqAddBandBtn.addEventListener('click', addPeqBandPair);
     if (deps.getElements().effectsPeqCreatePresetBtn) deps.getElements().effectsPeqCreatePresetBtn.addEventListener('click', createPeqPreset);
-    /* Compact − / value / + steppers: nudge the paired number input by its
-       own step/min/max and let the existing input/change listeners apply
-       the value (draft update + debounced save, unchanged semantics). */
-    function nudgeStepperControl(button) {
-        const control = button.closest('.stepper-control');
-        const input = control ? control.querySelector('input[type="number"]') : null;
-        if (!input || input.disabled) return;
-        const direction = button.dataset.stepper === 'dec' ? -1 : 1;
-        const step = Number(input.step);
-        const stepValue = Number.isFinite(step) && step > 0 ? step : 1;
-        const decimals = Math.min(Math.max((String(input.step).split('.')[1] || '').length,
-            (String(input.value).split('.')[1] || '').length), 4);
-        const min = input.min === '' ? -Infinity : Number(input.min);
-        const max = input.max === '' ? Infinity : Number(input.max);
-        // Crossover trim displays a rounded number while keeping its exact
-        // value for the next nudge. Typed edits invalidate that display match.
-        const precise = input.value === input._fxroutePreciseDisplay
-            ? Number(input._fxroutePreciseValue) : NaN;
-        const hasPreciseValue = Number.isFinite(precise);
-        const current = hasPreciseValue ? precise : Number(input.value);
-        if (!Number.isFinite(current)) return;
-        let next = current + direction * stepValue;
-        if (!hasPreciseValue) next = Number(next.toFixed(decimals));
-        if (Number.isFinite(min)) next = Math.max(min, next);
-        if (Number.isFinite(max)) next = Math.min(max, next);
-        if (next === current) return;
-        input.focus({ preventScroll: true });
-        input.value = String(next);
-        input.dispatchEvent(new Event('input', { bubbles: true }));
-        input.dispatchEvent(new Event('change', { bubbles: true }));
-    }
-
     document.addEventListener('mousedown', (event) => {
         /* Keep focus on the number input when its stepper buttons are
            pressed: losing focus would drop the input from deps.getActiveEditing()
@@ -159,6 +194,7 @@ function setupEffectsActions() {
         const button = event.target instanceof Element ? event.target.closest('.stepper-btn') : null;
         if (button) nudgeStepperControl(button);
     });
+    wireNumberFieldLimits();
 
     root.FXRouteSubwooferUI.wireSubwooferControls();
     if (deps.getElements().effectsSubwooferPreview && deps.getElements().effectsCrossoverGraph) {
@@ -182,6 +218,10 @@ function setupEffectsActions() {
         deps.getElements().effectsAutogainTargetDb,
         deps.getElements().effectsLoudnessStrength,
         deps.getElements().effectsLoudnessFftSize,
+        deps.getElements().effectsUpmixerMode,
+        deps.getElements().effectsUpmixerCenter,
+        deps.getElements().effectsUpmixerSurround,
+        deps.getElements().effectsUpmixerFftSize,
         deps.getElements().effectsBassAmount,
         deps.getElements().effectsToneEffectMode,
     ].forEach(el => {
@@ -215,6 +255,12 @@ function setupEffectsActions() {
         updateEffectsExtrasUi();
         saveEffectsExtrasDebounced(EFFECTS_EXTRAS_TOGGLE_DEBOUNCE_MS);
     });
+    if (deps.getElements().effectsUpmixerEnabled) deps.getElements().effectsUpmixerEnabled.addEventListener('change', () => {
+        updateEffectsExtrasUi();
+        saveEffectsExtrasDebounced(EFFECTS_EXTRAS_TOGGLE_DEBOUNCE_MS);
+    });
+    // The FFT size follows the engine at once; the save itself rides the shared select debounce.
+    if (deps.getElements().effectsUpmixerMode) deps.getElements().effectsUpmixerMode.addEventListener('change', () => updateEffectsExtrasUi());
     if (deps.getElements().effectsToneEffectEnabled) deps.getElements().effectsToneEffectEnabled.addEventListener('change', () => {
         updateEffectsExtrasUi();
         saveEffectsExtrasDebounced(EFFECTS_EXTRAS_TOGGLE_DEBOUNCE_MS);
@@ -250,7 +296,6 @@ async function fetchEffects() {
         const resp = await fetch('/api/dsp/presets');
         if (!resp.ok) throw new Error('Failed to fetch DSP presets');
         const data = await resp.json();
-        const prev = deps.getState().dsp?.compare;
         const presetNames = (data.presets || []).map(p => p.name);
         deps.getState().dsp = {
             ...data,
@@ -258,12 +303,10 @@ async function fetchEffects() {
             peqDraft: deps.getState().dsp?.peqDraft || {
                 presetName: '',
                 eqMode: 'IIR',
-                loadAfterCreate: false,
                 leftBands: [defaultPeqBand()],
                 rightBands: [defaultPeqBand()],
             },
             assistStack: Array.isArray(deps.getState().dsp?.assistStack) ? deps.getState().dsp.assistStack : [],
-            compare: root.FXRouteBankUI.resolveEffectsCompareState(data.compare || prev, presetNames, data.active_preset || ''),
         };
         deps.getState().dsp.combineDraft = root.FXRouteBankUI.normalizeEffectsCombineDraft(deps.getState().dsp.combineDraft, presetNames);
         if (!Array.isArray(deps.getState().dsp.peqDraft?.leftBands) || !deps.getState().dsp.peqDraft.leftBands.length) deps.getState().dsp.peqDraft.leftBands = [defaultPeqBand()];
@@ -287,6 +330,11 @@ async function fetchEffects() {
                 bassAmount: Number(data.global_extras?.bass_enhancer?.params?.amount || 0),
                 toneEffectEnabled: !!data.global_extras?.tone_effect?.enabled,
                 toneEffectMode: String(data.global_extras?.tone_effect?.mode || 'crystalizer'),
+                upmixerEnabled: !!data.global_extras?.upmixer?.enabled,
+                upmixerMode: String(data.global_extras?.upmixer?.params?.mode || 'fast'),
+                upmixerCenter: data.global_extras?.upmixer?.params?.center ?? 6,
+                upmixerSurround: data.global_extras?.upmixer?.params?.surround ?? 6,
+                upmixerFftSize: Number(data.global_extras?.upmixer?.params?.fftSize ?? 2048),
             });
         }
         renderEffects();
@@ -331,7 +379,6 @@ function getDefaultPeqDraft() {
     return {
         presetName: '',
         eqMode: 'IIR',
-        loadAfterCreate: false,
         leftBands: [defaultPeqBand()],
         rightBands: [defaultPeqBand()],
     };
@@ -664,9 +711,8 @@ async function createPeqPreset() {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 presetName,
-                loadAfterCreate: false,
                 ...collectEffectsExtras(),
-                ...bankBindingJson(),
+                ...root.FXRouteBankUI.bankBindingJson(),
                 peq: {
                     enabled: true,
                     params: root.FXRouteBankUI.measurementPeqParams(leftBands, rightBands, eqMode),
@@ -695,13 +741,11 @@ function renderEffects() {
     const fx = deps.getState().dsp;
     const presets = fx.presets || [];
     const presetNames = presets.map(p => p.name);
-    deps.getElements().effectsInfo.textContent = fx.available
-        ? `${fx.preset_count} presets`
-        : 'DSP is not available';
     if (fx.combineDraft) {
         fx.combineDraft = root.FXRouteBankUI.normalizeEffectsCombineDraft(fx.combineDraft, presetNames);
     }
     if (!fx.available) {
+        deps.getElements().effectsInfo.textContent = 'DSP is not available';
         deps.getElements().effectsDeleteBtn.disabled = true;
         if (deps.getElements().effectsToggleImportBtn) deps.getElements().effectsToggleImportBtn.disabled = true;
         if (deps.getElements().effectsRewDualCreatePresetBtn) deps.getElements().effectsRewDualCreatePresetBtn.disabled = true;
@@ -712,11 +756,7 @@ function renderEffects() {
         deps.getElements().effectsStatus.innerHTML = '';
         return;
     }
-    if (presets.length === 0) {
-        deps.getElements().effectsDeleteBtn.disabled = true;
-    } else {
-        deps.getElements().effectsDeleteBtn.disabled = fx.active_preset === 'Direct' || fx.active_preset === 'Neutral';
-    }
+    // renderEffectsCompare below owns the Delete button (selected bank's active preset).
     if (deps.getElements().effectsToggleImportBtn) deps.getElements().effectsToggleImportBtn.disabled = false;
     if (deps.getElements().effectsRewDualCreatePresetBtn) deps.getElements().effectsRewDualCreatePresetBtn.disabled = false;
     if (deps.getElements().effectsPeqAddBandBtn) deps.getElements().effectsPeqAddBandBtn.disabled = false;
@@ -726,6 +766,8 @@ function renderEffects() {
     root.FXRouteBankUI.renderEffectsCompare();
     root.FXRouteBankUI.renderEffectsCombine();
     deps.renderCrossoverTile();
+    // The info line of the A/B card shows the calibration overview.
+    deps.refreshCalibrationOverview();
 }
 
 async function switchEffectsPreset() {
@@ -769,12 +811,35 @@ function normalizeEffectsLoudnessFftSize(value, fallback = 4096) {
     return EFFECTS_LOUDNESS_ALLOWED_FFT_SIZE.has(numeric) ? numeric : fallback;
 }
 
+// Strength is a whole number 0 (no effect) .. 10 (maximum); an empty field is
+// not 0 and keeps the fallback.
 function normalizeEffectsLoudnessStrength(value, fallback = 10) {
     const legacy = EFFECTS_LOUDNESS_LEGACY_STRENGTHS.get(String(value).trim().toLowerCase());
     if (legacy !== undefined) return legacy;
+    if (value === '' || value == null) return fallback;
     const numeric = Number(value);
     if (!Number.isFinite(numeric)) return fallback;
-    return Math.max(1, Math.min(10, Math.round(numeric)));
+    return Math.max(0, Math.min(10, Math.round(numeric)));
+}
+
+// Steering strengths of the Surround upmixer: whole numbers 0 (this share off) .. 10 (strong).
+function normalizeEffectsUpmixerStrength(value, fallback = 6) {
+    if (value === '' || value == null) return fallback;
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) return fallback;
+    return Math.max(0, Math.min(10, Math.round(numeric)));
+}
+
+// Engine of the Surround upmixer: the adaptive matrix or the spectral engine.
+function normalizeEffectsUpmixerMode(value, fallback = 'fast') {
+    const mode = String(value ?? '').trim().toLowerCase();
+    return mode === 'fast' || mode === 'hq' ? mode : fallback;
+}
+
+// Transform size of the HQ engine, in frames.
+function normalizeEffectsUpmixerFftSize(value, fallback = 2048) {
+    const numeric = Number(value);
+    return [1024, 2048, 4096, 8192].includes(numeric) ? numeric : fallback;
 }
 
 function normalizeEffectsToneEffectMode(value, fallback = 'crystalizer') {
@@ -802,7 +867,20 @@ function applyEffectsExtras(extras = {}) {
     if (deps.getElements().effectsBassEnabled) deps.getElements().effectsBassEnabled.checked = !!extras.bassEnabled;
     // Only update amount when bass is enabled — otherwise keep field value (user may re-enable)
     if (deps.getElements().effectsBassAmount && !!extras.bassEnabled && !deps.getActiveEditing().has(deps.getElements().effectsBassAmount)) {
-        deps.getElements().effectsBassAmount.value = String(Number(extras.bassAmount || 0));
+        deps.getElements().effectsBassAmount.value = String(root.FXRouteUiHelpers.roundToDecimals(Number(extras.bassAmount || 0), 2));
+    }
+    if (deps.getElements().effectsUpmixerEnabled) deps.getElements().effectsUpmixerEnabled.checked = !!extras.upmixerEnabled;
+    if (deps.getElements().effectsUpmixerMode && !deps.getActiveEditing().has(deps.getElements().effectsUpmixerMode)) {
+        deps.getElements().effectsUpmixerMode.value = normalizeEffectsUpmixerMode(extras.upmixerMode, 'fast');
+    }
+    if (deps.getElements().effectsUpmixerFftSize && !deps.getActiveEditing().has(deps.getElements().effectsUpmixerFftSize)) {
+        deps.getElements().effectsUpmixerFftSize.value = String(normalizeEffectsUpmixerFftSize(extras.upmixerFftSize, 2048));
+    }
+    if (deps.getElements().effectsUpmixerCenter && !deps.getActiveEditing().has(deps.getElements().effectsUpmixerCenter)) {
+        deps.getElements().effectsUpmixerCenter.value = normalizeEffectsUpmixerStrength(extras.upmixerCenter, 6);
+    }
+    if (deps.getElements().effectsUpmixerSurround && !deps.getActiveEditing().has(deps.getElements().effectsUpmixerSurround)) {
+        deps.getElements().effectsUpmixerSurround.value = normalizeEffectsUpmixerStrength(extras.upmixerSurround, 6);
     }
     if (deps.getElements().effectsToneEffectEnabled) deps.getElements().effectsToneEffectEnabled.checked = !!extras.toneEffectEnabled;
     if (deps.getElements().effectsToneEffectMode && !deps.getActiveEditing().has(deps.getElements().effectsToneEffectMode)) {
@@ -818,17 +896,37 @@ function updateEffectsExtrasUi() {
     if (deps.getElements().effectsAutogainTargetWrap) {
         deps.getElements().effectsAutogainTargetWrap.classList.toggle('hidden', !deps.getElements().effectsAutogainEnabled?.checked);
     }
-    if (deps.getElements().effectsLoudnessFftWrap) {
-        deps.getElements().effectsLoudnessFftWrap.classList.toggle('hidden', !deps.getElements().effectsLoudnessEnabled?.checked);
+    // Tone effects: header (checkbox + name) plus one details block with every
+    // parameter. The block exists only while the effect is on.
+    setEffectDetailsVisible(deps.getElements().effectsLoudnessDetails, deps.getElements().effectsLoudnessEnabled?.checked);
+    setEffectDetailsVisible(deps.getElements().effectsBassDetails, deps.getElements().effectsBassEnabled?.checked);
+    setEffectDetailsVisible(deps.getElements().effectsToneEffectDetails, deps.getElements().effectsToneEffectEnabled?.checked);
+    updateEffectsUpmixerUi();
+}
+
+function setEffectDetailsVisible(details, enabled) {
+    if (details) details.classList.toggle('hidden', !enabled);
+}
+
+// The upmixer exists in Surround only. Inside its details a missing Center
+// speaker removes just the Center control (the Surround extraction does not
+// depend on it), and the FFT size belongs to the HQ engine and shows only for it.
+function updateEffectsUpmixerUi() {
+    const catalog = deps.getState().outputSystem?.catalog;
+    const surround = catalog?.active_mode === 'surround';
+    const roles = catalog?.modes?.[catalog?.active_mode]?.topology?.roles;
+    const hasCenter = Array.isArray(roles) && roles.includes('center');
+    const enabled = !!deps.getElements().effectsUpmixerEnabled?.checked;
+    if (deps.getElements().effectsUpmixerRow) {
+        deps.getElements().effectsUpmixerRow.classList.toggle('hidden', !surround);
     }
-    if (deps.getElements().effectsLoudnessStrengthWrap) {
-        deps.getElements().effectsLoudnessStrengthWrap.classList.toggle('hidden', !deps.getElements().effectsLoudnessEnabled?.checked);
+    setEffectDetailsVisible(deps.getElements().effectsUpmixerDetails, enabled);
+    if (deps.getElements().effectsUpmixerCenterWrap) {
+        deps.getElements().effectsUpmixerCenterWrap.classList.toggle('hidden', !hasCenter);
     }
-    if (deps.getElements().effectsBassControlsWrap) {
-        deps.getElements().effectsBassControlsWrap.classList.toggle('hidden', !deps.getElements().effectsBassEnabled?.checked);
-    }
-    if (deps.getElements().effectsToneEffectWrap) {
-        deps.getElements().effectsToneEffectWrap.classList.toggle('hidden', !deps.getElements().effectsToneEffectEnabled?.checked);
+    if (deps.getElements().effectsUpmixerFftWrap) {
+        const hq = normalizeEffectsUpmixerMode(deps.getElements().effectsUpmixerMode?.value, 'fast') === 'hq';
+        deps.getElements().effectsUpmixerFftWrap.classList.toggle('hidden', !hq);
     }
 }
 
@@ -852,6 +950,11 @@ function loadSavedEffectsExtras() {
         bassAmount: Number(fx.global_extras?.bass_enhancer?.params?.amount || 0),
         toneEffectEnabled: !!fx.global_extras?.tone_effect?.enabled,
         toneEffectMode: String(fx.global_extras?.tone_effect?.mode || 'crystalizer'),
+        upmixerEnabled: !!fx.global_extras?.upmixer?.enabled,
+        upmixerMode: String(fx.global_extras?.upmixer?.params?.mode || 'fast'),
+        upmixerCenter: fx.global_extras?.upmixer?.params?.center ?? 6,
+        upmixerSurround: fx.global_extras?.upmixer?.params?.surround ?? 6,
+        upmixerFftSize: Number(fx.global_extras?.upmixer?.params?.fftSize ?? 2048),
     });
 }
 
@@ -894,6 +997,11 @@ function collectEffectsExtras() {
         bassAmount: parseFloat(deps.getElements().effectsBassAmount?.value || '0'),
         toneEffectEnabled: deps.getElements().effectsToneEffectEnabled?.checked || false,
         toneEffectMode: normalizeEffectsToneEffectMode(deps.getElements().effectsToneEffectMode?.value, 'crystalizer'),
+        upmixerEnabled: deps.getElements().effectsUpmixerEnabled?.checked || false,
+        upmixerMode: normalizeEffectsUpmixerMode(deps.getElements().effectsUpmixerMode?.value, 'fast'),
+        upmixerCenter: normalizeEffectsUpmixerStrength(deps.getElements().effectsUpmixerCenter?.value, 6),
+        upmixerSurround: normalizeEffectsUpmixerStrength(deps.getElements().effectsUpmixerSurround?.value, 6),
+        upmixerFftSize: normalizeEffectsUpmixerFftSize(deps.getElements().effectsUpmixerFftSize?.value, 2048),
     };
 }
 
@@ -946,6 +1054,16 @@ async function _doSaveEffectsExtras() {
             delay: { enabled: !!extras.delayEnabled, params: { leftMs: extras.delayLeftMs, rightMs: extras.delayRightMs } },
             bass_enhancer: { enabled: !!extras.bassEnabled, params: { amount: extras.bassAmount, harmonics: 8.5, scope: 100.0, blend: 0.0 } },
             tone_effect: { enabled: !!extras.toneEffectEnabled, mode: extras.toneEffectMode },
+            upmixer: {
+                enabled: !!extras.upmixerEnabled,
+                params: {
+                    ...(deps.getState().dsp?.global_extras?.upmixer?.params || {}),
+                    mode: extras.upmixerMode,
+                    center: extras.upmixerCenter,
+                    surround: extras.upmixerSurround,
+                    fftSize: extras.upmixerFftSize,
+                },
+            },
         };
         renderEffects();
         // Success clears a previous failure label: the tile must never keep
@@ -993,11 +1111,15 @@ function setEffectsExtrasFeedback(message, cls) {
         isPeqDelayBand,
         isPeqGainBand,
         loadSavedEffectsExtras,
+        nudgeStepperControl,
         normalizeEffectsAutogainTargetDb,
         normalizeEffectsHeadroomGainDb,
         normalizeEffectsLoudnessFftSize,
         normalizeEffectsLoudnessStrength,
         normalizeEffectsToneEffectMode,
+        normalizeEffectsUpmixerStrength,
+        normalizeEffectsUpmixerMode,
+        normalizeEffectsUpmixerFftSize,
         normalizeLinkedPeqSpecialBands,
         normalizePeqEqMode,
         readPeqNumberInput,
@@ -1009,11 +1131,13 @@ function setEffectsExtrasFeedback(message, cls) {
         saveEffectsExtrasDebounced,
         setEffectsExtrasFeedback,
         setupEffectsActions,
+        wireNumberFieldLimits,
         switchEffectsPreset,
         syncLinkedPeqSpecialBand,
         syncLinkedPeqSpecialBandValueInDom,
         updateEffectsExtrasUi,
         updateEffectsPeqDisclosureLabel,
+        updateEffectsUpmixerUi,
         updateEffectsPeqSummary,
         updatePeqBand,
         validatePeqBands,

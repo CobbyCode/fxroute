@@ -12,8 +12,8 @@
     <link rel="apple-touch-icon" sizes="180x180" href="/fxroute/static/apple-touch-icon.png?v=0.9.12">
     <link rel="manifest" href="/fxroute/static/site.webmanifest?v=0.9.12">
     <meta name="theme-color" content="#0b1120">
-    <link rel="stylesheet" href="/fxroute/static/style.css?v=0.9.279">
-    <link rel="stylesheet" href="./demo/demo.css?v=8">
+    <link rel="stylesheet" href="/fxroute/static/style.css?v=0.9.322">
+    <link rel="stylesheet" href="./demo/demo.css?v=10">
 </head>
 <body>
     <!-- Demo transport: must load before the real app scripts -->
@@ -23,12 +23,13 @@
     <script src="./demo/data/radio.js?v=3"></script>
     <script src="./demo/data/measurements.js?v=1"></script>
     <script src="./demo/data/alignment.js?v=3"></script>
-    <script src="./demo/state.js?v=18"></script>
-    <script src="./demo/routes.js?v=25"></script>
+    <script src="./demo/state.js?v=21"></script>
+    <script src="./demo/routes.js?v=33"></script>
+    <script src="./demo/xhr.js?v=1"></script>
     <script src="./demo/streaming.js?v=1"></script>
-    <script src="./demo/ws.js?v=1"></script>
-    <script src="./demo/boot.js?v=8"></script>
-    <script src="./demo/tour.js?v=17"></script>
+    <script src="./demo/ws.js?v=3"></script>
+    <script src="./demo/boot.js?v=10"></script>
+    <script src="./demo/tour.js?v=18"></script>
 
     <h1 class="visually-hidden">FXRoute</h1>
     <a class="skip-link" href="#tab-content">Skip to content</a>
@@ -97,7 +98,7 @@
                 </div>
 
                 <div class="effects-stack settings-stack">
-                    <section class="radio-manage-section settings-section" id="settings-providers-section">
+                    <section class="radio-manage-section settings-section">
                         <div class="radio-manage-section-header">
                             <h3>Providers</h3>
                             <p id="settings-providers-summary">Installed providers can be connected, hidden, or removed.</p>
@@ -124,7 +125,16 @@
                             <select id="settings-samplerate-select" class="url-input">
                                 <option value="auto">Auto</option>
                             </select>
-                            <p id="settings-samplerate-hint" class="settings-inline-note">Follows the effective playback sample rate.</p>
+                            <p id="settings-samplerate-hint" class="settings-inline-note">Follows playback sample rate.</p>
+                        </div>
+                        <div class="field-group settings-field-group">
+                            <label for="settings-src-select">SRC Quality</label>
+                            <select id="settings-src-select" class="url-input" disabled>
+                                <option value="low">Low</option>
+                                <option value="standard" selected>Standard</option>
+                                <option value="high">High</option>
+                            </select>
+                            <p id="settings-src-hint" class="settings-inline-note">Low: ~70% / 0.45× CPU · Standard: ~81,9% / 1.0× CPU · High: ~99.6% / 1.5× CPU</p>
                         </div>
                         <div class="field-group settings-field-group" id="settings-mode-group">
                             <label for="settings-output-mode-select">Mode</label>
@@ -153,14 +163,15 @@
                     <section class="radio-manage-section settings-section">
                         <div class="radio-manage-section-header">
                             <h3>Source</h3>
-                            <p id="settings-source-mode-hint">Loading sources…</p>
                         </div>
                         <div class="field-group settings-field-group">
                             <label for="settings-source-select">Input</label>
                             <select id="settings-source-select" class="url-input" disabled>
                                 <option value="app-playback" selected>Loading…</option>
                             </select>
+                            <p id="settings-source-status" class="settings-inline-note hidden" role="status" aria-live="polite"></p>
                             <p id="settings-bluetooth-status" class="settings-inline-note">Bluetooth: loading…</p>
+                            <p id="settings-stdin-status" class="settings-inline-note hidden" aria-live="polite"></p>
                         </div>
                     </section>
 
@@ -305,7 +316,7 @@
                                     </svg>
                                 </span>
                             </summary>
-                            <div id="station-catalog-content" class="station-catalog-content" aria-labelledby="station-catalog-title">
+                            <div class="station-catalog-content" aria-labelledby="station-catalog-title">
                                 <div id="station-catalog-loading" class="content-state content-state--loading">Loading catalog…</div>
                                 <div id="station-catalog-grid" class="station-catalog-groups"></div>
                                 <div id="station-catalog-empty-search" class="content-state content-state--empty hidden">All curated stations are already in My Stations</div>
@@ -418,7 +429,7 @@
                                 <div id="upload-track-area" class="upload-area upload-area-import">
                                     <span class="upload-area-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg></span>
                                     <span class="upload-area-text">Drop audio file or ZIP, or&nbsp;<u>browse</u></span>
-                                    <span id="upload-track-filename" class="upload-area-filename">Upload MP3, FLAC, WAV, OGG/Opus/WebM, M4A, M3U/M3U8, or ZIP.</span>
+                                    <span class="upload-area-filename">Upload MP3, FLAC, WAV, OGG/Opus/WebM, M4A, M3U/M3U8, or ZIP.</span>
                                     <input type="file" id="upload-track-file" class="upload-area-input" accept=".mp3,.flac,.ogg,.oga,.opus,.m4a,.aac,.wav,.wma,.webm,.weba,.m3u,.m3u8,.zip,audio/*,application/zip,audio/x-mpegurl,application/vnd.apple.mpegurl">
                                 </div>
                             </div>
@@ -459,10 +470,24 @@
                 </div>
                 <div id="library-folder-path" class="library-folder-path hidden"></div>
                 <div class="content-state content-state--loading">Loading library…</div>
+                <div id="playlist-save-row" class="playlist-save-row hidden">
+                    <div class="playlist-save-controls">
+                        <input
+                            type="text"
+                            id="playlist-name"
+                            class="url-input"
+                            placeholder="Save as playlist…"
+                            aria-label="Save as playlist"
+                            autocomplete="off"
+                        >
+                        <button id="save-playlist" class="btn-secondary">Save</button>
+                        <button id="cancel-playlist-selection" class="btn-secondary" type="button">Cancel</button>
+                    </div>
+                </div>
                 <div id="tracks-list" class="tracks-list"></div>
                 <div id="albums-grid" class="albums-grid hidden"></div>
                 <div id="album-detail" class="album-detail album-detail--hero hidden">
-                    <div id="album-detail-header" class="album-detail-header detail-hero-header detail-hero-header--album">
+                    <div class="album-detail-header detail-hero-header detail-hero-header--album">
                         <div class="detail-header-backdrop" aria-hidden="true" hidden>
                             <img id="album-detail-backdrop" src="" alt="" />
                         </div>
@@ -490,28 +515,13 @@
                             <div class="album-detail-title-row detail-hero-title-row">
                                 <h2 id="playlist-detail-name" class="album-detail-name detail-hero-title"></h2>
                             </div>
-                            <p id="playlist-detail-artist" class="album-detail-artist">Playlist</p>
+                            <p class="album-detail-artist">Playlist</p>
                             <p id="playlist-detail-count" class="album-detail-count"></p>
                             <div id="playlist-detail-info" class="album-detail-facts playlist-detail-info"></div>
                         </div>
                         <button id="playlist-detail-back" class="album-detail-back" type="button" aria-label="Back">← Back</button>
                     </div>
                     <div id="playlist-detail-tracks" class="album-detail-tracks tracks-list"></div>
-                </div>
-                <div id="playlist-save-row" class="playlist-save-row hidden">
-                    <div class="playlist-save-controls">
-                        <input
-                            type="text"
-                            id="playlist-name"
-                            class="url-input"
-                            placeholder="Save as playlist…"
-                            aria-label="Save as playlist"
-                            autocomplete="off"
-                        >
-                        <button id="save-playlist" class="btn-secondary">Save</button>
-                        <button id="delete-playlist" class="btn-secondary" type="button">Delete</button>
-                        <button id="cancel-playlist-selection" class="btn-secondary" type="button">Cancel</button>
-                    </div>
                 </div>
                 <div id="library-info"></div>
             </div>
@@ -532,12 +542,13 @@
                             <div>
                                 <h3>Import filter</h3>
                                 <p id="effects-import-bank-target">Target: Global · Stereo L/R</p>
+                                <div id="effects-import-group-row" class="effects-import-group-row hidden" role="group" aria-label="Speaker group of the imported filter"></div>
                             </div>
                         </div>
                         <div class="effects-stack">
                             <div id="effects-import-file-head" class="effects-import-section-head">
-                                <span id="effects-import-file-title" class="effects-import-section-title">Stereo file</span>
-                                <span id="effects-import-file-meta" class="effects-import-section-meta">One file for both channels</span>
+                                <span class="effects-import-section-title">Stereo file</span>
+                                <span class="effects-import-section-meta">One file for both channels</span>
                             </div>
                             <div id="effects-import-area" class="upload-area upload-area-file-primary effects-filter-import-area">
                                 <span class="upload-area-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg></span>
@@ -545,7 +556,7 @@
                                 <span id="effects-import-filename" class="upload-area-filename">Stereo .irs/.wav IR · preset .json · bundle .zip</span>
                                 <input type="file" id="effects-import-file" class="upload-area-input" accept=".irs,.wav,.json,.zip,audio/wav,application/json,application/zip">
                             </div>
-                            <div id="effects-import-split-head" class="effects-import-section-head effects-import-section-head-secondary">
+                            <div class="effects-import-section-head effects-import-section-head-secondary">
                                 <span id="effects-import-split-title" class="effects-import-section-title">Left / Right</span>
                                 <span id="effects-import-split-meta" class="effects-import-section-meta">Mono .irs/.wav or REW .txt per side</span>
                             </div>
@@ -664,8 +675,8 @@
                                         <div class="field-group">
                                             <label for="effects-crossover-polarity">Polarity</label>
                                             <select id="effects-crossover-polarity" class="url-input effects-headroom-select effects-subwoofer-polarity-select">
-                                                <option value="normal">N</option>
-                                                <option value="invert">I</option>
+                                                <option value="normal">Normal</option>
+                                                <option value="invert">Inverted</option>
                                             </select>
                                         </div>
                                     </div>
@@ -687,9 +698,13 @@
                                         <button type="button" class="sub-side-tab is-active" id="effects-subwoofer-tab-left" data-sub-side="left" role="tab" aria-selected="true">Sub L</button>
                                         <button type="button" class="sub-side-tab" id="effects-subwoofer-tab-right" data-sub-side="right" role="tab" aria-selected="false">Sub R</button>
                                         <button type="button" class="sub-side-tab hidden" id="effects-subwoofer-tab-both" role="tab" aria-selected="false">Sub L/R</button>
+                                        <button type="button" class="sub-side-tab hidden" data-sub-group="front" role="tab" aria-selected="false">Front L/R</button>
+                                        <button type="button" class="sub-side-tab hidden" data-sub-group="center" role="tab" aria-selected="false">Center</button>
+                                        <button type="button" class="sub-side-tab hidden" data-sub-group="side" role="tab" aria-selected="false">Side L/R</button>
+                                        <button type="button" class="sub-side-tab hidden" data-sub-group="rear" role="tab" aria-selected="false">Rear L/R</button>
                                     </div>
                                     <label class="crossover-link-label hidden" id="effects-subwoofer-link-wrap" for="effects-subwoofer-link">
-                                        <input type="checkbox" id="effects-subwoofer-link" checked> Link L/R
+                                        <input type="checkbox" id="effects-subwoofer-link" checked> <span id="effects-subwoofer-link-text">Link L/R</span>
                                     </label>
                                 </div>
                                 <div class="effects-subwoofer-preview-wrap">
@@ -810,8 +825,8 @@
                                         <div class="field-group effects-subwoofer-polarity-field">
                                             <label id="effects-subwoofer-polarity-label" for="effects-subwoofer-polarity">Polarity</label>
                                             <select id="effects-subwoofer-polarity" class="url-input effects-headroom-select effects-subwoofer-polarity-select">
-                                                <option value="normal">N</option>
-                                                <option value="invert">I</option>
+                                                <option value="normal">Normal</option>
+                                                <option value="invert">Inverted</option>
                                             </select>
                                         </div>
                                     </div>
@@ -842,8 +857,8 @@
                                         <div class="field-group effects-subwoofer-polarity-field">
                                             <label for="effects-subwoofer-sub2-polarity">Polarity</label>
                                             <select id="effects-subwoofer-sub2-polarity" class="url-input effects-headroom-select effects-subwoofer-polarity-select">
-                                                <option value="normal">N</option>
-                                                <option value="invert">I</option>
+                                                <option value="normal">Normal</option>
+                                                <option value="invert">Inverted</option>
                                             </select>
                                         </div>
                                     </div>
@@ -863,9 +878,14 @@
                                     <h3>A/B compare</h3>
                                     <p>Compare two presets.</p>
                                 </div>
-                                <div class="effects-bank-row hidden">
-                                    <label for="effects-bank-select">Bank</label>
-                                    <select id="effects-bank-select" class="url-input" aria-label="Filter bank"></select>
+                                <div class="effects-compare-header-tools">
+                                    <div class="effects-bank-row hidden">
+                                        <label for="effects-bank-select">Bank</label>
+                                        <select id="effects-bank-select" class="url-input" aria-label="Filter bank"></select>
+                                    </div>
+                                    <label class="crossover-link-label effects-expert-toggle hidden" for="effects-expert-toggle">
+                                        <input type="checkbox" id="effects-expert-toggle"> Expert
+                                    </label>
                                 </div>
                             </div>
                             <div class="effects-stack">
@@ -873,6 +893,7 @@
                                     <div id="effects-compare-active-badge" class="effects-compare-active-badge">
                                         <span id="effects-compare-active" class="effects-compare-active">Listening: —</span>
                                         <span id="effects-compare-chain" class="effects-compare-chain">Chain: —</span>
+                                        <div id="effects-compare-banks" class="effects-compare-banks" role="group" aria-label="Active preset of each bank"></div>
                                     </div>
                                     <div class="effects-compare-fields">
                                         <div class="field-group effects-compare-slot" data-compare-slot="A">
@@ -880,19 +901,21 @@
                                             <div class="select-tooltip-wrap" data-tooltip-wrap-for="effects-compare-a" data-tooltip-prefix="Preset A">
                                                 <select id="effects-compare-a" class="url-input compare-select"></select>
                                             </div>
+                                            <ul id="effects-compare-a-banks" class="effects-compare-slot-banks hidden" aria-label="Preset A of each bank"></ul>
                                         </div>
                                         <div class="field-group effects-compare-slot" data-compare-slot="B">
                                             <label for="effects-compare-b">Preset B</label>
                                             <div class="select-tooltip-wrap" data-tooltip-wrap-for="effects-compare-b" data-tooltip-prefix="Preset B">
                                                 <select id="effects-compare-b" class="url-input compare-select"></select>
                                             </div>
+                                            <ul id="effects-compare-b-banks" class="effects-compare-slot-banks hidden" aria-label="Preset B of each bank"></ul>
                                         </div>
                                     </div>
                                     <div class="effects-compare-actions">
                                         <button id="effects-compare-toggle" class="btn-primary">Compare A/B</button>
                                         <button id="effects-delete" class="btn-danger" data-tooltip="Delete active preset" aria-label="Delete active preset">Delete active</button>
                                     </div>
-                                    <div id="effects-info" class="effects-info"></div>
+                                    <div id="effects-info" class="effects-info effects-cal" role="group" aria-label="Calibration overview"></div>
                                     <div id="effects-status" class="effects-status"></div>
                                 </div>
                             </div>
@@ -901,7 +924,7 @@
                         <section class="effects-card effects-card-create effects-card-extras">
                             <div class="effects-card-header">
                                 <h3>Output extras</h3>
-                                <p>Global helpers. Applied automatically, except Direct.</p>
+                                <p>Applied globally, except Direct.</p>
                             </div>
                             <div class="effects-stack effects-extras-stack">
                                 <div class="effects-extras-inner">
@@ -944,55 +967,103 @@
                                         <div class="effects-extras-group-header">
                                             <h4>Tone</h4>
                                         </div>
-                                        <div class="effects-extras-row effects-extras-row-helpers effects-loudness-row">
-                                            <label class="checkbox-row"><input type="checkbox" id="effects-loudness-enabled"> Loudness</label>
-                                            <div class="effects-loudness-controls">
-                                                <label for="effects-loudness-strength" id="effects-loudness-strength-wrap" class="effects-inline-control hidden">
-                                                    <span class="effects-inline-control-label">Strength</span>
-                                                    <div class="stepper-control">
-                                                        <button type="button" class="stepper-btn" data-stepper="dec" aria-label="Decrease loudness strength">&minus;</button>
-                                                        <input type="number" id="effects-loudness-strength" class="url-input delay-number-input stepper-input" min="1" max="10" step="1" value="10" aria-label="Strength">
-                                                        <button type="button" class="stepper-btn" data-stepper="inc" aria-label="Increase loudness strength">+</button>
-                                                    </div>
-                                                </label>
-                                                <label for="effects-loudness-fft-size" id="effects-loudness-fft-wrap" class="effects-inline-control hidden">
-                                                    <span class="effects-inline-control-label">FFT</span>
-                                                    <select id="effects-loudness-fft-size" class="url-input effects-compact-control">
-                                                        <option value="256">256</option>
-                                                        <option value="512">512</option>
-                                                        <option value="1024">1024</option>
-                                                        <option value="2048">2048</option>
-                                                        <option value="4096" selected>4096</option>
-                                                        <option value="8192">8192</option>
-                                                        <option value="16384">16384</option>
-                                                    </select>
-                                                </label>
+                                        <div class="effects-effect hidden" id="effects-upmixer-row">
+                                            <label class="checkbox-row effects-effect-header"><input type="checkbox" id="effects-upmixer-enabled"> Upmixer</label>
+                                            <div class="effects-effect-details hidden" id="effects-upmixer-details">
+                                                <div class="effects-effect-line">
+                                                    <label for="effects-upmixer-mode" id="effects-upmixer-mode-wrap" class="effects-inline-control">
+                                                        <span class="effects-inline-control-label">Mode</span>
+                                                        <select id="effects-upmixer-mode" class="url-input effects-compact-control">
+                                                            <option value="fast" selected>Fast</option>
+                                                            <option value="hq">HQ</option>
+                                                        </select>
+                                                    </label>
+                                                    <label for="effects-upmixer-fft-size" id="effects-upmixer-fft-wrap" class="effects-inline-control hidden">
+                                                        <span class="effects-inline-control-label">FFT</span>
+                                                        <select id="effects-upmixer-fft-size" class="url-input effects-compact-control">
+                                                            <option value="1024">1024</option>
+                                                            <option value="2048" selected>2048</option>
+                                                            <option value="4096">4096</option>
+                                                            <option value="8192">8192</option>
+                                                        </select>
+                                                    </label>
+                                                </div>
+                                                <div class="effects-effect-line">
+                                                    <label for="effects-upmixer-center" id="effects-upmixer-center-wrap" class="effects-inline-control hidden">
+                                                        <span class="effects-inline-control-label">Center</span>
+                                                        <div class="stepper-control">
+                                                            <button type="button" class="stepper-btn" data-stepper="dec" aria-label="Decrease upmixer center">&minus;</button>
+                                                            <input type="number" id="effects-upmixer-center" class="url-input delay-number-input stepper-input effects-stepper-compact" min="0" max="10" step="1" data-decimals="0" inputmode="numeric" value="6" aria-label="Center">
+                                                            <button type="button" class="stepper-btn" data-stepper="inc" aria-label="Increase upmixer center">+</button>
+                                                        </div>
+                                                    </label>
+                                                    <label for="effects-upmixer-surround" id="effects-upmixer-surround-wrap" class="effects-inline-control">
+                                                        <span class="effects-inline-control-label">Surround</span>
+                                                        <div class="stepper-control">
+                                                            <button type="button" class="stepper-btn" data-stepper="dec" aria-label="Decrease upmixer surround">&minus;</button>
+                                                            <input type="number" id="effects-upmixer-surround" class="url-input delay-number-input stepper-input effects-stepper-compact" min="0" max="10" step="1" data-decimals="0" inputmode="numeric" value="6" aria-label="Surround">
+                                                            <button type="button" class="stepper-btn" data-stepper="inc" aria-label="Increase upmixer surround">+</button>
+                                                        </div>
+                                                    </label>
+                                                </div>
                                             </div>
                                         </div>
-                                        <div class="effects-extras-row effects-bass-row">
-                                            <label class="checkbox-row"><input type="checkbox" id="effects-bass-enabled"> Bass enhancer</label>
-                                            <div id="effects-bass-controls-wrap" class="effects-bass-controls hidden">
-                                                <span class="effects-inline-control-label">Amount:</span>
-                                                <div class="delay-field delay-field-compact">
-                                                    <div class="delay-input-wrap">
+                                        <div class="effects-effect" id="effects-loudness-row">
+                                            <label class="checkbox-row effects-effect-header"><input type="checkbox" id="effects-loudness-enabled"> Loudness</label>
+                                            <div class="effects-effect-details hidden" id="effects-loudness-details">
+                                                <div class="effects-effect-line">
+                                                    <label for="effects-loudness-strength" class="effects-inline-control">
+                                                        <span class="effects-inline-control-label">Strength</span>
+                                                        <div class="stepper-control">
+                                                            <button type="button" class="stepper-btn" data-stepper="dec" aria-label="Decrease loudness strength">&minus;</button>
+                                                            <input type="number" id="effects-loudness-strength" class="url-input delay-number-input stepper-input effects-stepper-compact" min="0" max="10" step="1" data-decimals="0" inputmode="numeric" value="10" aria-label="Strength">
+                                                            <button type="button" class="stepper-btn" data-stepper="inc" aria-label="Increase loudness strength">+</button>
+                                                        </div>
+                                                    </label>
+                                                    <label for="effects-loudness-fft-size" class="effects-inline-control">
+                                                        <span class="effects-inline-control-label">FFT</span>
+                                                        <select id="effects-loudness-fft-size" class="url-input effects-compact-control">
+                                                            <option value="256">256</option>
+                                                            <option value="512">512</option>
+                                                            <option value="1024">1024</option>
+                                                            <option value="2048">2048</option>
+                                                            <option value="4096" selected>4096</option>
+                                                            <option value="8192">8192</option>
+                                                            <option value="16384">16384</option>
+                                                        </select>
+                                                    </label>
+                                                </div>
+                                            </div>
+                                        </div>
+                                        <div class="effects-effect" id="effects-bass-row">
+                                            <label class="checkbox-row effects-effect-header"><input type="checkbox" id="effects-bass-enabled"> Bass enhancer</label>
+                                            <div class="effects-effect-details hidden" id="effects-bass-details">
+                                                <div class="effects-effect-line">
+                                                    <label for="effects-bass-amount" class="effects-inline-control">
+                                                        <span class="effects-inline-control-label">Amount</span>
                                                         <div class="stepper-control">
                                                             <button type="button" class="stepper-btn" data-stepper="dec" aria-label="Decrease bass amount">&minus;</button>
                                                             <input type="number" id="effects-bass-amount" class="url-input delay-number-input stepper-input" min="-20" max="20" step="0.5" value="0">
                                                             <span class="stepper-unit" aria-hidden="true">dB</span>
                                                             <button type="button" class="stepper-btn" data-stepper="inc" aria-label="Increase bass amount">+</button>
                                                         </div>
-                                                    </div>
+                                                    </label>
                                                 </div>
                                             </div>
                                         </div>
-                                        <div class="effects-extras-row effects-extras-row-helpers">
-                                            <label class="checkbox-row"><input type="checkbox" id="effects-tone-effect-enabled"> Tone effect</label>
-                                            <label for="effects-tone-effect-mode" id="effects-tone-effect-wrap" class="effects-inline-control hidden">
-                                                <select id="effects-tone-effect-mode" class="url-input effects-compact-control">
-                                                    <option value="crystalizer" selected>Crystalizer</option>
-                                                    <option value="maximizer">Maximizer</option>
-                                                </select>
-                                            </label>
+                                        <div class="effects-effect" id="effects-tone-effect-row">
+                                            <label class="checkbox-row effects-effect-header"><input type="checkbox" id="effects-tone-effect-enabled"> Tone effect</label>
+                                            <div class="effects-effect-details hidden" id="effects-tone-effect-details">
+                                                <div class="effects-effect-line">
+                                                    <label for="effects-tone-effect-mode" class="effects-inline-control">
+                                                        <span class="effects-inline-control-label">Mode</span>
+                                                        <select id="effects-tone-effect-mode" class="url-input effects-compact-control">
+                                                            <option value="crystalizer" selected>Crystalizer</option>
+                                                            <option value="maximizer">Maximizer</option>
+                                                        </select>
+                                                    </label>
+                                                </div>
+                                            </div>
                                         </div>
                                     </section>
                                 </div>
@@ -1006,6 +1077,7 @@
                                 <p>Combine up to three presets in order.</p>
                             </div>
                             <div class="effects-stack">
+                                <div id="effects-combine-group-row" class="effects-import-group-row hidden" role="group" aria-label="Speaker group of the combined preset"></div>
                                 <div class="effects-combine-grid">
                                     <div class="field-group">
                                         <label for="effects-combine-preset-1">Preset 1</label>
@@ -1033,12 +1105,12 @@
                                     <div>
                                         <h3>Create PEQ preset</h3>
                                         <p>Build paired Left/Right PEQ bands.</p>
-                                        <p id="effects-peq-summary" class="effects-peq-summary" hidden></p>
-                                        <span class="effects-peq-summary-hint">Expand to edit bands</span>
+                                        <div id="effects-peq-summary" class="effects-peq-summary" hidden></div>
                                     </div>
                                     <span class="effects-disclosure-meta">Expand</span>
                                 </summary>
                                 <div class="effects-stack effects-disclosure-body">
+                                    <div id="effects-peq-group-row" class="effects-import-group-row hidden" role="group" aria-label="Speaker group of the PEQ preset"></div>
                                     <div class="effects-peq-add-row">
                                         <div class="field-group effects-peq-mode-field">
                                             <label for="effects-peq-mode-select">EQ mode</label>
@@ -1096,13 +1168,29 @@
             </div>
         </section>
 
+        <div id="effects-delete-panel" class="manage-overlay hidden">
+            <div class="manage-overlay-backdrop"></div>
+            <section class="manage-dialog effects-delete-dialog" role="dialog" aria-modal="true" aria-labelledby="effects-delete-title" aria-describedby="effects-delete-description">
+                <div class="manage-dialog-header">
+                    <div>
+                        <h2 id="effects-delete-title" class="section-title">Delete active presets</h2>
+                        <p id="effects-delete-description" class="section-subtitle"></p>
+                    </div>
+                </div>
+                <div id="effects-delete-list" class="effects-delete-list"></div>
+                <div class="effects-delete-actions">
+                    <button id="effects-delete-cancel" class="btn-secondary" type="button">Cancel</button>
+                    <button id="effects-delete-confirm" class="btn-danger" type="button">Delete</button>
+                </div>
+            </section>
+        </div>
+
         <div id="measurement-panel" class="manage-overlay measurement-overlay hidden">
             <div class="manage-overlay-backdrop"></div>
             <section class="manage-dialog measurement-dialog" role="dialog" aria-modal="true" aria-labelledby="measurement-title">
                 <div class="manage-dialog-header dialog-header-corner-close">
                     <div>
                         <h2 id="measurement-title" class="section-title">Measurement assistant</h2>
-                        <p class="section-subtitle">Run a sweep, review it, then save the measurements you want to keep.</p>
                     </div>
                     <button id="measurement-close" class="btn-ghost btn-close-manage" type="button" aria-label="Close measurement assistant">
                         <span class="btn-ghost-icon">✕</span>
@@ -1129,12 +1217,13 @@
                                                             <span class="measurement-area-label">Measuring area</span>
                                                             <span id="measurement-area-indicator" class="measurement-area-indicator" aria-live="polite">Global</span>
                                                         </div>
+                                                        <div class="measurement-sweep-side-row measurement-sweep-group-row hidden" id="measurement-sweep-group-row" role="group" aria-label="Speaker group"></div>
                                                         <div class="measurement-sweep-side-row hidden" id="measurement-sweep-side-row" role="group" aria-label="Single sweep side">
                                                             <button type="button" class="measurement-chip" data-sweep-side="left" aria-pressed="false">Left</button>
                                                             <button type="button" class="measurement-chip" data-sweep-side="stereo" aria-pressed="true">Stereo</button>
                                                             <button type="button" class="measurement-chip" data-sweep-side="right" aria-pressed="false">Right</button>
                                                         </div>
-                                                        <button id="measurement-sweep-start" class="btn-secondary" type="button">Run Single Sweep</button>
+                                                        <button id="measurement-sweep-start" class="btn-secondary" type="button">Single Sweep</button>
                                                         <span id="measurement-area-note" class="measurement-repeat-help">Whole system; all area banks active.</span>
                                                     </div>
                                                     <div class="measurement-workflow-menu-choice">
@@ -1171,9 +1260,29 @@
                                     </div>
                                     <div class="measurement-workflow-section">
                                         <h4 class="measurement-workflow-label">Calibration</h4>
-                                        <div class="measurement-workflow-group">
-                                            <button id="measurement-spl-calibration-open" class="btn-secondary" type="button">SPL Calibration</button>
-                                            <span class="measurement-repeat-help">Calibrate your loudness reference.</span>
+                                        <div class="measurement-workflow-group measurement-workflow-menu-group">
+                                            <div class="measurement-workflow-menu">
+                                                <button id="measurement-calibration-toggle" class="btn-secondary" type="button" aria-haspopup="true" aria-expanded="false" aria-controls="measurement-calibration-menu">Calibration</button>
+                                                <div id="measurement-calibration-menu" class="measurement-workflow-menu-panel hidden" tabindex="-1" aria-labelledby="measurement-calibration-toggle">
+                                                    <div class="measurement-workflow-menu-choice">
+                                                        <button id="measurement-av-sync-open" class="btn-secondary" type="button">AV Sync</button>
+                                                        <span class="measurement-repeat-help">Set total audio delay.</span>
+                                                    </div>
+                                                    <div class="measurement-workflow-menu-choice">
+                                                        <button id="measurement-spl-calibration-open" class="btn-secondary" type="button">SPL Calibration</button>
+                                                        <span class="measurement-repeat-help">Calibrate reference level.</span>
+                                                    </div>
+                                                    <div class="measurement-workflow-menu-choice">
+                                                        <button id="measurement-level-match-open" class="btn-secondary" type="button">Level Matching</button>
+                                                        <span class="measurement-repeat-help">Match speaker levels (cut only).</span>
+                                                    </div>
+                                                    <div class="measurement-workflow-menu-choice">
+                                                        <button id="measurement-polarity-check-open" class="btn-secondary" type="button">Polarity Check</button>
+                                                        <span class="measurement-repeat-help">Check each speaker's polarity. Changes nothing.</span>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                            <span id="measurement-calibration-status" class="measurement-repeat-help" aria-live="polite">Adjust audio levels and timing.</span>
                                         </div>
                                     </div>
                                 </div>
@@ -1231,7 +1340,7 @@
                                         <button id="measurement-calibration-export" class="btn-secondary" type="button">Export</button>
                                         <button id="measurement-calibration-delete" class="btn-danger" type="button">Delete</button>
                                     </div>
-                                    <label for="measurement-calibration-file" id="measurement-calibration-upload" class="upload-area upload-area-file-primary measurement-calibration-upload-area">
+                                    <label for="measurement-calibration-file" class="upload-area upload-area-file-primary measurement-calibration-upload-area">
                                         <span class="upload-area-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg></span>
                                         <span class="upload-area-text">Drop calibration file or <u>upload</u></span>
                                         <span id="measurement-calibration-upload-name" class="upload-area-filename">No calibration file selected.</span>
@@ -1248,7 +1357,7 @@
                                         <button id="measurement-house-curve-export" class="btn-secondary" type="button">Export</button>
                                         <button id="measurement-house-curve-delete" class="btn-danger" type="button">Delete</button>
                                     </div>
-                                    <label for="measurement-house-curve-file" id="measurement-house-curve-upload" class="upload-area upload-area-file-primary measurement-calibration-upload-area">
+                                    <label for="measurement-house-curve-file" class="upload-area upload-area-file-primary measurement-calibration-upload-area">
                                         <span class="upload-area-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg></span>
                                         <span class="upload-area-text">Drop REW house curve file or <u>upload</u></span>
                                         <span id="measurement-house-curve-upload-name" class="upload-area-filename">No house curve file selected.</span>
@@ -1288,6 +1397,7 @@
                             <div class="measurement-graph-wrap">
                                 <canvas id="measurement-graph" class="measurement-graph" width="960" height="420" role="img" aria-label="Measurement frequency response graph"></canvas>
                             </div>
+                            <div id="measurement-current-key" class="measurement-current-key hidden" role="list" aria-label="Current results"></div>
                             <div id="measurement-empty" class="measurement-empty hidden">No current or saved measurements yet.</div>
                             <div class="measurement-save-row">
                                 <div id="measurement-smoothing-chips" class="measurement-smoothing-chips" role="group" aria-label="Graph smoothing">
@@ -1387,17 +1497,6 @@
                                         </select>
                                     </div>
                                     <div class="field-group">
-                                        <label for="measurement-convolver-sample-rate">Sample Rate</label>
-                                        <select id="measurement-convolver-sample-rate" class="url-input" data-measurement-convolver-field="sampleRate">
-                                            <option value="44100">44.1 kHz</option>
-                                            <option value="48000">48 kHz</option>
-                                            <option value="88200">88.2 kHz</option>
-                                            <option value="96000">96 kHz</option>
-                                            <option value="176400">176.4 kHz</option>
-                                            <option value="192000">192 kHz</option>
-                                        </select>
-                                    </div>
-                                    <div class="field-group">
                                         <label for="measurement-convolver-phase-mode">Type</label>
                                         <select id="measurement-convolver-phase-mode" class="url-input" data-measurement-convolver-field="phaseMode">
                                             <option value="linear">Linear phase</option>
@@ -1443,6 +1542,39 @@
             </section>
         </div>
 
+        <div id="av-sync-panel" class="manage-overlay measurement-overlay hidden">
+            <div class="manage-overlay-backdrop"></div>
+            <section class="manage-dialog av-sync-dialog" role="dialog" aria-modal="true" aria-labelledby="av-sync-title">
+                <div class="manage-dialog-header dialog-header-corner-close">
+                    <div>
+                        <h2 id="av-sync-title" class="section-title">AV Sync</h2>
+                        <p class="section-subtitle">Total electronic audio delay · <span id="av-sync-mode"></span></p>
+                    </div>
+                    <button id="av-sync-close" class="btn-ghost btn-close-manage" type="button" aria-label="Close AV Sync"><span class="btn-ghost-icon">✕</span></button>
+                </div>
+                <div class="effects-stack av-sync-stack">
+                    <div class="av-sync-values">
+                        <div class="field-group av-sync-target-group">
+                            <label for="av-sync-target">Target delay</label>
+                            <div class="stepper-control av-sync-stepper">
+                                <button type="button" class="stepper-btn" data-stepper="dec" aria-label="Decrease target delay">&minus;</button>
+                                <input id="av-sync-target" class="url-input delay-number-input stepper-input av-sync-target-input" type="number" min="0" max="20000" step="0.1" inputmode="decimal" aria-describedby="av-sync-limits">
+                                <span class="stepper-unit" aria-hidden="true">ms</span>
+                                <button type="button" class="stepper-btn" data-stepper="inc" aria-label="Increase target delay">+</button>
+                            </div>
+                        </div>
+                        <div class="av-sync-effective">
+                            <span class="av-sync-effective-label">Effective delay</span>
+                            <strong id="av-sync-actual" aria-live="polite">Waiting for audio engine…</strong>
+                        </div>
+                    </div>
+                    <p id="av-sync-limits" class="av-sync-range"></p>
+                    <div id="av-sync-status" class="effects-info" role="status"></div>
+                    <div class="effects-actions-row effects-actions-right"><button id="av-sync-save" class="btn-primary" type="button">Save / Apply</button></div>
+                    <details class="av-sync-details"><summary>Timing details</summary><div id="av-sync-details"></div><p id="av-sync-basis" class="av-sync-note"></p><p class="av-sync-note">Excludes device buffering, acoustic travel and variable input resampling. Alignment and automatic compensation share a 500 ms delay capacity.</p></details>
+                </div>
+            </section>
+        </div>
         <div id="spl-calibration-panel" class="manage-overlay measurement-overlay hidden">
             <div class="manage-overlay-backdrop"></div>
             <section class="manage-dialog spl-calibration-dialog" role="dialog" aria-modal="true" aria-labelledby="spl-calibration-title">
@@ -1474,6 +1606,59 @@
                 </div>
             </section>
         </div>
+        <div id="level-match-panel" class="manage-overlay measurement-overlay hidden">
+            <div class="manage-overlay-backdrop"></div>
+            <section class="manage-dialog level-match-dialog" role="dialog" aria-modal="true" aria-labelledby="level-match-title">
+                <div class="manage-dialog-header dialog-header-corner-close">
+                    <div>
+                        <h2 id="level-match-title" class="section-title">Level Matching</h2>
+                        <p class="section-subtitle">Stored per output mode · all crossover ways of a speaker stay together · never boosts</p>
+                    </div>
+                    <button id="level-match-close" class="btn-ghost btn-close-manage" type="button" aria-label="Close level matching">
+                        <span class="btn-ghost-icon">✕</span>
+                    </button>
+                </div>
+                <div class="effects-stack">
+                    <div class="measurement-area-row" role="group" aria-label="Selected measurement area">
+                        <span class="measurement-area-label">Measuring area</span>
+                        <span id="level-match-area" class="measurement-area-indicator" aria-live="polite">Output mode</span>
+                    </div>
+                    <div class="effects-actions-row level-match-action-row">
+                        <button id="level-match-start" class="btn-primary" type="button">Match levels</button>
+                        <button id="level-match-reset" class="btn-secondary" type="button">Reset to 0 dB</button>
+                        <span id="level-match-action-status" class="measurement-repeat-help" aria-live="polite"></span>
+                    </div>
+                    <div id="level-match-results" class="level-match-results" aria-live="polite"></div>
+                    <div id="level-match-status" class="effects-info"></div>
+                </div>
+            </section>
+        </div>
+        <div id="polarity-check-panel" class="manage-overlay measurement-overlay hidden">
+            <div class="manage-overlay-backdrop"></div>
+            <section class="manage-dialog polarity-check-dialog" role="dialog" aria-modal="true" aria-labelledby="polarity-check-title">
+                <div class="manage-dialog-header dialog-header-corner-close">
+                    <div>
+                        <h2 id="polarity-check-title" class="section-title">Polarity Check</h2>
+                        <p class="section-subtitle">Polarity of each speaker's direct sound · changes nothing</p>
+                    </div>
+                    <button id="polarity-check-close" class="btn-ghost btn-close-manage" type="button" aria-label="Close polarity check">
+                        <span class="btn-ghost-icon">✕</span>
+                    </button>
+                </div>
+                <div class="effects-stack">
+                    <div class="measurement-area-row" role="group" aria-label="Selected measurement area">
+                        <span class="measurement-area-label">Measuring area</span>
+                        <span id="polarity-check-area" class="measurement-area-indicator" aria-live="polite">Global</span>
+                    </div>
+                    <div class="effects-actions-row polarity-check-action-row">
+                        <button id="polarity-check-start" class="btn-primary" type="button">Check polarity</button>
+                        <span id="polarity-check-action-status" class="measurement-repeat-help" aria-live="polite"></span>
+                    </div>
+                    <div id="polarity-check-results" class="polarity-check-results" aria-live="polite"></div>
+                    <div id="polarity-check-status" class="effects-info"></div>
+                </div>
+            </section>
+        </div>
         <div id="measurement-hybrid-panel" class="manage-overlay measurement-overlay hybrid-measurement-overlay hidden">
             <div class="manage-overlay-backdrop"></div>
             <section class="manage-dialog hybrid-measurement-dialog" role="dialog" aria-modal="true" aria-labelledby="measurement-hybrid-title">
@@ -1492,6 +1677,7 @@
                     <div class="hybrid-room-view" role="group" aria-label="Top view of speakers and listening positions">
                         <div class="hybrid-speaker hybrid-speaker-left" data-hybrid-speaker="left">L</div>
                         <div class="hybrid-speaker hybrid-speaker-right" data-hybrid-speaker="right">R</div>
+                        <div class="hybrid-speaker hybrid-speaker-center" data-hybrid-speaker="stereo">C</div>
                         <div class="hybrid-sub hybrid-sub-left" data-hybrid-sub="left">SUB 1</div>
                         <div class="hybrid-sub hybrid-sub-right" data-hybrid-sub="right">SUB 2</div>
                         <div class="hybrid-seat" aria-hidden="true">
@@ -1503,12 +1689,14 @@
                         </div>
                         <div class="hybrid-mic hybrid-mic-direct-left" data-hybrid-position="direct-left">Mic</div>
                         <div class="hybrid-mic hybrid-mic-direct-right" data-hybrid-position="direct-right">Mic</div>
+                        <div class="hybrid-mic hybrid-mic-direct-center" data-hybrid-position="direct-stereo">Mic</div>
                         <div class="hybrid-mic hybrid-mic-left" data-hybrid-position="left">Left</div>
                         <div class="hybrid-mic hybrid-mic-mlp" data-hybrid-position="mlp">Main</div>
                         <div class="hybrid-mic hybrid-mic-right" data-hybrid-position="right">Right</div>
                     </div>
                     <div class="hybrid-step-card">
                         <div class="hybrid-progress-row"><span>Progress</span><strong id="measurement-hybrid-progress">0 / 0</strong></div>
+                        <div id="measurement-hybrid-scope-row" class="hybrid-scope-row hidden" role="group" aria-label="Speakers to measure"></div>
                         <h3 id="measurement-hybrid-step-title">Advanced</h3>
                         <p id="measurement-hybrid-instruction" class="hybrid-instruction"></p>
                         <p id="measurement-hybrid-active" class="hybrid-active"></p>
@@ -1561,9 +1749,11 @@
                 <button id="btn-clear-queue" class="control-btn control-btn-clear hidden" disabled data-tooltip-anchor="end" data-tooltip="Clear queue" aria-label="Clear queue">✕</button>
             </div>
             <div id="source-switcher" class="source-switcher hidden">
+                <button id="source-app" class="source-app-btn" type="button" aria-label="Switch to app playback" data-tooltip-anchor="end" data-tooltip="Back to app playback">App</button>
                 <button id="source-prev" class="control-btn control-btn-secondary" type="button" aria-label="Previous source" data-tooltip-anchor="end" data-tooltip="Previous source">‹</button>
                 <select id="source-select" class="source-select" aria-label="Audio source"></select>
                 <button id="source-next" class="control-btn control-btn-secondary" type="button" aria-label="Next source" data-tooltip-anchor="end" data-tooltip="Next source">›</button>
+                <button id="source-auto" class="source-auto-btn" type="button" aria-pressed="false" aria-label="Auto-select this input on signal" data-tooltip-anchor="end" data-tooltip="Auto-select this input on signal">Auto</button>
             </div>
             <div class="seek-row hidden">
                 <span id="seek-current" class="seek-time">0:00</span>
@@ -1595,6 +1785,7 @@
                     <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
                 </span>
             </div>
+            <div id="meter-multi" class="meter-multi" aria-hidden="true"></div>
         </div>
 
         <div class="controls">
@@ -1622,7 +1813,7 @@
     <!-- Cover detail card (shared radio/library) -->
     <div id="cover-detail-backdrop" class="cover-detail-backdrop hidden"></div>
     <div id="cover-detail-card" class="cover-detail-card hidden" role="dialog" aria-modal="true" aria-label="Cover details" tabindex="-1">
-        <div id="cover-detail-cover-col" class="cover-detail-cover-col">
+        <div class="cover-detail-cover-col">
             <img id="cover-detail-cover" class="cover-detail-cover" alt="" />
             <div id="cover-detail-extra" class="cover-detail-extra hidden">
                 <div id="cover-detail-extra-line1" class="cover-detail-extra-line hidden"></div>
@@ -1643,6 +1834,46 @@
         <section id="cover-detail-queue" class="cover-detail-section hidden">
             <h3 class="cover-detail-heading">Queue</h3>
             <ol id="cover-detail-queue-list" class="cover-detail-list"></ol>
+        </section>
+    </div>
+
+    <!-- Custom input mapping: stacked above the settings dialog it is opened from -->
+    <div id="custom-mapping-panel" class="manage-overlay custom-mapping-overlay hidden">
+        <div class="manage-overlay-backdrop"></div>
+        <section class="manage-dialog" role="dialog" aria-modal="true" aria-labelledby="custom-mapping-title">
+            <div class="manage-dialog-header dialog-header-corner-close">
+                <div>
+                    <h2 id="custom-mapping-title" class="section-title">Custom Mapping</h2>
+                    <p id="custom-mapping-subtitle" class="section-subtitle">Route the input channels of an audio device to FXRoute channels.</p>
+                </div>
+                <button id="custom-mapping-close" class="btn-ghost btn-close-manage" type="button" aria-label="Close custom mapping">
+                    <span class="btn-ghost-icon">✕</span>
+                    <span class="dialog-close-label">Close</span>
+                </button>
+            </div>
+
+            <div class="effects-stack">
+                <section class="radio-manage-section">
+                    <div class="field-group">
+                        <label for="custom-mapping-device">Device</label>
+                        <select id="custom-mapping-device" class="url-input"></select>
+                    </div>
+                    <div class="field-group">
+                        <label for="custom-mapping-name">Name (optional)</label>
+                        <input type="text" id="custom-mapping-name" class="url-input" placeholder="External Upmixer" maxlength="40" autocomplete="off" spellcheck="false">
+                    </div>
+                    <div class="field-group">
+                        <span class="settings-routing-label">Input for each channel</span>
+                        <div id="custom-mapping-grid" class="settings-routing-grid"></div>
+                        <p class="settings-inline-note">Channels beyond Front L/R are used in Surround output mode only.</p>
+                    </div>
+                    <div class="radio-manage-submit-row radio-manage-submit-row-station-manage">
+                        <button id="custom-mapping-save" class="btn-primary" type="button">Save</button>
+                        <button id="custom-mapping-delete" class="btn-danger hidden" type="button">Delete</button>
+                    </div>
+                    <p id="custom-mapping-status" class="settings-inline-note" role="status" aria-live="polite"></p>
+                </section>
+            </div>
         </section>
     </div>
 
@@ -1745,44 +1976,50 @@
 
     <!-- Toast notifications -->
     <div id="toast-container" class="toast-container"></div>
-    <script src="/fxroute/static/measurement_dsp.js?v=0.9.17"></script>
+    <script src="/fxroute/static/measurement_dsp.js?v=0.9.18"></script>
     <script src="/fxroute/static/autosub_target.js?v=0.9.18"></script>
-    <script src="/fxroute/static/hybrid_measurement.js?v=0.9.17"></script>
-    <script src="/fxroute/static/measurement_ui.js?v=0.9.22"></script>
+    <script src="/fxroute/static/hybrid_measurement.js?v=0.9.22"></script>
+    <script src="/fxroute/static/measurement_ui.js?v=0.9.27"></script>
     <script src="/fxroute/static/measurement_graph.js?v=0.9.16"></script>
-    <script src="/fxroute/static/speaker_align.js?v=0.9.18"></script>
-    <script src="/fxroute/static/measurement_flows.js?v=0.9.41"></script>
-    <script src="/fxroute/static/ui_helpers.js?v=0.9.1"></script>
+    <script src="/fxroute/static/speaker_align.js?v=0.9.19"></script>
+    <script src="/fxroute/static/measurement_flows.js?v=0.9.48"></script>
+    <script src="/fxroute/static/ui_helpers.js?v=0.9.3"></script>
     <script src="/fxroute/static/tooltip.js?v=0.9.2"></script>
-    <script src="/fxroute/static/output_state.js?v=0.9.14"></script>
+    <script src="/fxroute/static/output_state.js?v=0.9.39"></script>
     <script src="/fxroute/static/crossover.js?v=0.9.7"></script>
-    <script src="/fxroute/static/crossover_view.js?v=0.9.2"></script>
-    <script src="/fxroute/static/crossover_ui.js?v=0.9.4"></script>
-    <script src="/fxroute/static/radio.js?v=0.9.21"></script>
+    <script src="/fxroute/static/crossover_view.js?v=0.9.3"></script>
+    <script src="/fxroute/static/crossover_ui.js?v=0.9.6"></script>
+    <script src="/fxroute/static/radio.js?v=0.9.22"></script>
     <script src="/fxroute/static/api.js?v=0.9.1"></script>
     <script src="/fxroute/static/modal.js?v=0.9.1"></script>
     <script src="/fxroute/static/provider_settings.js?v=0.9.2"></script>
-    <script src="/fxroute/static/settings_system.js?v=0.9.2"></script>
-    <script src="/fxroute/static/subwoofer_ui.js?v=0.9.5"></script>
-    <script src="/fxroute/static/output_system_controller.js?v=0.9.1"></script>
-    <script src="/fxroute/static/output_bank_ui.js?v=0.9.5"></script>
-    <script src="/fxroute/static/output_effects_ui.js?v=0.9.4"></script>
-    <script src="/fxroute/static/measurement_panel_ui.js?v=0.9.8"></script>
-    <script src="/fxroute/static/measurement_saved_ui.js?v=0.9.6"></script>
-    <script src="/fxroute/static/measurement_editors_ui.js?v=0.9.2"></script>
-    <script src="/fxroute/static/measurement_setup.js?v=0.9.2"></script>
+    <script src="/fxroute/static/settings_system.js?v=0.9.3"></script>
+    <script src="/fxroute/static/src_settings.js?v=0.1.6"></script>
+    <script src="/fxroute/static/custom_mapping_ui.js?v=0.1.2"></script>
+    <script src="/fxroute/static/subwoofer_ui.js?v=0.9.9"></script>
+    <script src="/fxroute/static/output_system_controller.js?v=0.9.3"></script>
+    <script src="/fxroute/static/output_bank_ui.js?v=0.9.27"></script>
+    <script src="/fxroute/static/output_effects_ui.js?v=0.9.15"></script>
+    <script src="/fxroute/static/measurement_panel_ui.js?v=0.9.13"></script>
+    <script src="/fxroute/static/measurement_saved_ui.js?v=0.9.10"></script>
+    <script src="/fxroute/static/measurement_editors_ui.js?v=0.9.3"></script>
+    <script src="/fxroute/static/measurement_setup.js?v=0.9.3"></script>
     <script src="/fxroute/static/measurement_calibration.js?v=0.9.1"></script>
-    <script src="/fxroute/static/measurement_peq_editor.js?v=0.9.1"></script>
-    <script src="/fxroute/static/measurement_convolver_editor.js?v=0.9.1"></script>
-    <script src="/fxroute/static/measurement_capture.js?v=0.9.2"></script>
-    <script src="/fxroute/static/measurement_job.js?v=0.9.4"></script>
-    <script src="/fxroute/static/measurement_saved_actions.js?v=0.9.3"></script>
-    <script src="/fxroute/static/measurement_spl_calibration.js?v=0.9.2"></script>
-    <script src="/fxroute/static/library_ui.js?v=0.9.5"></script>
+    <script src="/fxroute/static/measurement_peq_editor.js?v=0.9.6"></script>
+    <script src="/fxroute/static/measurement_convolver_editor.js?v=0.9.8"></script>
+    <script src="/fxroute/static/measurement_capture.js?v=0.9.3"></script>
+    <script src="/fxroute/static/measurement_job.js?v=0.9.6"></script>
+    <script src="/fxroute/static/measurement_saved_actions.js?v=0.9.4"></script>
+    <script src="/fxroute/static/measurement_spl_calibration.js?v=0.9.5"></script>
+    <script src="/fxroute/static/measurement_level_match.js?v=0.9.6"></script>
+    <script src="/fxroute/static/measurement_polarity_check.js?v=0.9.5"></script>
+    <script src="/fxroute/static/library_ui.js?v=0.9.9"></script>
     <script src="/fxroute/static/playback_core.js?v=0.9.8"></script>
-    <script src="/fxroute/static/playback_ui.js?v=0.9.4"></script>
+    <script src="/fxroute/static/playback_ui.js?v=0.9.8"></script>
     <script src="/fxroute/static/streaming_runtime.js?v=0.9.2"></script>
-    <script src="/fxroute/static/app.js?v=0.9.255"></script>
-    <script src="/fxroute/static/streaming.js?v=0.9.76"></script>
+    <script src="/fxroute/static/av_sync.js?v=0.9.2"></script>
+    <script src="/fxroute/static/calibration_overview.js?v=0.9.2"></script>
+    <script src="/fxroute/static/app.js?v=0.9.312"></script>
+    <script src="/fxroute/static/streaming.js?v=0.9.81"></script>
 </body>
 </html>

@@ -13,6 +13,11 @@
     max-height: calc(100dvh - 2rem);
     overflow: auto;
 }
+/* The generic .manage-dialog width steps (up to 900px and from 2560px, in
+   _responsive.css) come later in the cascade and cap this dialog at 620px.
+   Two classes win; the steps of this dialog below 980px resolve to the full
+   overlay width. */
+.manage-dialog.measurement-dialog { width: min(1240px, 100%); }
 
 
 .measurement-layout {
@@ -200,7 +205,7 @@
 
 #measurement-sweep-toggle,
 #measurement-auto-sub-start,
-#measurement-spl-calibration-open {
+#measurement-calibration-toggle {
     width: 190px;
     min-width: 190px;
     min-height: 44px;
@@ -306,6 +311,16 @@
     font-size: 0.78rem;
 }
 
+/* Surround Global speaker choice: up to four group chips (Front, Center,
+   Side, Rear), wrapped so they fit the menu panel. */
+.measurement-sweep-group-row {
+    flex-wrap: wrap;
+}
+
+.measurement-sweep-group-row .measurement-chip {
+    flex: 1 1 auto;
+}
+
 /* Read-only measurement area: the A/B selector owns the scope, so the sweep
    menu shows the selected area; the side chips only narrow a stereo area to
    one side for the single sweep. */
@@ -344,11 +359,6 @@
     /* Stays whole; the title truncates around it. */
     flex: 0 0 auto;
     max-width: 100%;
-}
-
-.measurement-area-badge.is-stale {
-    border-color: var(--warning);
-    color: var(--warning);
 }
 
 .speaker-align-table-wrap {
@@ -517,6 +527,70 @@
     justify-content: flex-start;
 }
 
+.level-match-dialog,
+.polarity-check-dialog {
+    position: relative;
+    width: min(560px, 100%);
+    max-height: calc(100dvh - 2rem);
+    overflow-y: auto;
+}
+
+#level-match-panel,
+#polarity-check-panel {
+    align-items: center;
+}
+
+.level-match-dialog .effects-stack,
+.polarity-check-dialog .effects-stack {
+    gap: 0.85rem;
+}
+
+.level-match-dialog #level-match-status,
+.polarity-check-dialog #polarity-check-status {
+    margin-top: 0.35rem;
+}
+
+.level-match-dialog .level-match-action-row,
+.polarity-check-dialog .polarity-check-action-row {
+    justify-content: flex-start;
+}
+
+.level-match-results,
+.polarity-check-results {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+}
+
+.level-match-row,
+.polarity-check-row {
+    display: flex;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: 0.3rem 0;
+    border-bottom: 1px solid var(--border);
+    font-variant-numeric: tabular-nums;
+}
+
+.level-match-outdated,
+.polarity-check-note {
+    margin-left: 0.4rem;
+    color: var(--text-muted);
+    font-size: 0.8em;
+}
+
+.polarity-check-verdict-correct {
+    color: var(--success);
+}
+
+.polarity-check-verdict-reversed {
+    color: var(--danger);
+}
+
+.polarity-check-verdict-inconclusive {
+    color: var(--text-muted);
+}
+
 .hybrid-measurement-overlay {
     z-index: var(--z-measurement-hybrid);
     align-items: center;
@@ -528,6 +602,10 @@
     max-height: calc(100dvh - 2rem);
     overflow-y: auto;
 }
+/* The generic .manage-dialog width steps (up to 900px and from 2560px, in
+   _responsive.css) come later in the cascade and cap this dialog at 620px,
+   which left the room view 253px wide on a tablet.  Two classes win. */
+.manage-dialog.hybrid-measurement-dialog { width: min(980px, 100%); }
 
 .hybrid-mode-label {
     margin: 0 0 0.25rem;
@@ -547,8 +625,23 @@
 }
 
 .hybrid-room-view {
+    /* Where the speakers, their 1 m microphones and the listening area sit.
+       The front wall is the default; side and rear groups override below. */
+    --hybrid-speaker-y: 16%;
+    --hybrid-speaker-left: 23%;
+    --hybrid-speaker-right: 77%;
+    --hybrid-direct-y: 38%;
+    --hybrid-direct-left: 23%;
+    --hybrid-direct-right: 77%;
+    --hybrid-listen-shift: 0%;
+    /* Distance of the Left and Right listening pills from the Main pill: a
+       sixth of a wide room, never closer than a pill plus a gap (48 + 6px). */
+    --hybrid-listen-spread: max(13%, 54px);
     position: relative;
     min-height: 470px;
+    /* The room is its own query container: the pills and speakers answer to
+       the room's width, which is not the viewport's (the wizard stacks). */
+    container: hybrid-room / inline-size;
     overflow: hidden;
     border: 1px solid var(--border);
     border-radius: var(--radius-xl);
@@ -568,7 +661,7 @@
 }
 
 .hybrid-speaker {
-    top: 16%;
+    top: var(--hybrid-speaker-y);
     width: 58px;
     height: 74px;
     border: 2px solid var(--border);
@@ -580,8 +673,9 @@
     transition: 180ms ease;
 }
 
-.hybrid-speaker-left { left: 23%; }
-.hybrid-speaker-right { left: 77%; }
+.hybrid-speaker-left { left: var(--hybrid-speaker-left); }
+.hybrid-speaker-right { left: var(--hybrid-speaker-right); }
+.hybrid-speaker-center { left: 50%; }
 .hybrid-speaker.is-active {
     border-color: var(--accent);
     box-shadow: 0 0 0 5px color-mix(in srgb, var(--accent) 14%, transparent), 0 0 28px color-mix(in srgb, var(--accent) 24%, transparent);
@@ -605,7 +699,7 @@
 
 .hybrid-seat {
     left: 50%;
-    top: 79%;
+    top: calc(79% + var(--hybrid-listen-shift));
     width: 210px;
     height: 92px;
     z-index: var(--z-base);
@@ -650,11 +744,65 @@
     font-size: 0.62rem;
     transition: 180ms ease;
 }
-.hybrid-mic-direct-left { left: 23%; top: 38%; }
-.hybrid-mic-direct-right { left: 77%; top: 38%; }
-.hybrid-mic-left { left: 37%; top: 69%; }
-.hybrid-mic-mlp { left: 50%; top: 66%; }
-.hybrid-mic-right { left: 63%; top: 69%; }
+.hybrid-mic-direct-left { left: var(--hybrid-direct-left); top: var(--hybrid-direct-y); }
+.hybrid-mic-direct-right { left: var(--hybrid-direct-right); top: var(--hybrid-direct-y); }
+.hybrid-mic-direct-center { left: 50%; top: var(--hybrid-direct-y); }
+/* The room view shows a speaker pair (default), one speaker, or only subwoofers. */
+.hybrid-room-view .hybrid-speaker-center,
+.hybrid-room-view .hybrid-mic-direct-center,
+.hybrid-room-view[data-hybrid-layout="single"] .hybrid-speaker-left,
+.hybrid-room-view[data-hybrid-layout="single"] .hybrid-speaker-right,
+.hybrid-room-view[data-hybrid-layout="single"] .hybrid-mic-direct-left,
+.hybrid-room-view[data-hybrid-layout="single"] .hybrid-mic-direct-right,
+.hybrid-room-view[data-hybrid-layout="sub"] .hybrid-speaker,
+.hybrid-room-view[data-hybrid-layout="sub"] .hybrid-mic-direct-left,
+.hybrid-room-view[data-hybrid-layout="sub"] .hybrid-mic-direct-right { display: none; }
+.hybrid-room-view[data-hybrid-layout="single"] .hybrid-speaker-center,
+.hybrid-room-view[data-hybrid-layout="single"] .hybrid-mic-direct-center { display: grid; }
+/* The sub circles keep clear of the speakers and 1 m microphones.  Two subs
+   sit at 11% / 89% of the room; the front pair keeps half a speaker, a gap
+   and the sub's width (57px) from them, which only matters in a narrow room.
+   Keep this spacing without subs too, so individual banks match Global.
+   A single sub of a one-speaker layout stands at the wall instead of on the
+   speaker's microphone. */
+.hybrid-room-view[data-hybrid-group="front"] {
+    --hybrid-speaker-left: max(23%, calc(11% + 57px));
+    --hybrid-speaker-right: min(77%, calc(89% - 57px));
+    --hybrid-direct-left: var(--hybrid-speaker-left);
+    --hybrid-direct-right: var(--hybrid-speaker-right);
+}
+/* A centered mono sub clears the shared Front speaker/microphone spacing. */
+.hybrid-room-view[data-hybrid-group="front"][data-hybrid-layout="pair"] .hybrid-sub-left.is-single { top: 52%; }
+.hybrid-room-view[data-hybrid-layout="single"] .hybrid-sub-left.is-single { left: max(11%, 26px); }
+.hybrid-mic-left { left: calc(50% - var(--hybrid-listen-spread)); top: calc(69% + var(--hybrid-listen-shift)); }
+.hybrid-mic-mlp { left: 50%; top: calc(66% + var(--hybrid-listen-shift)); }
+.hybrid-mic-right { left: calc(50% + var(--hybrid-listen-spread)); top: calc(69% + var(--hybrid-listen-shift)); }
+/* Side speakers stand at the walls beside the listener, rear speakers behind
+   the seat; the listening area moves up to make room for them. */
+.hybrid-room-view[data-hybrid-group="side"] {
+    --hybrid-speaker-y: 60%;
+    /* Half a speaker plus a margin from the wall, also on a phone. */
+    --hybrid-speaker-left: max(9%, 33px);
+    --hybrid-speaker-right: min(91%, calc(100% - 33px));
+    --hybrid-direct-y: 50%;
+    /* The 1 m microphone stands on the listener's side of its speaker: a
+       quarter of a wide room in, never inside the speaker on a narrow one
+       (half a speaker + half a microphone + a gap = 59px from its centre). */
+    --hybrid-direct-left: max(25%, calc(var(--hybrid-speaker-left) + 59px));
+    --hybrid-direct-right: min(75%, calc(var(--hybrid-speaker-right) - 59px));
+}
+.hybrid-room-view[data-hybrid-group="rear"] {
+    --hybrid-speaker-y: 87%;
+    --hybrid-direct-y: 74%;
+    --hybrid-listen-shift: -18%;
+}
+/* A side room under ~290px has no width for the three listening pills between
+   the speakers at the walls: Left and Right drop below the speakers onto the
+   seat (Main keeps its place, so the pills stay apart vertically). */
+@container hybrid-room (max-width: 290px) {
+    .hybrid-room-view[data-hybrid-group="side"] .hybrid-mic-left,
+    .hybrid-room-view[data-hybrid-group="side"] .hybrid-mic-right { top: calc(78% + var(--hybrid-listen-shift)); }
+}
 .hybrid-mic.is-target {
     border: 2px solid var(--success);
     background: color-mix(in srgb, var(--success) 18%, var(--bg-surface));
@@ -699,6 +847,28 @@
 .hybrid-action-row { display: grid; grid-template-columns: minmax(0, 0.35fr) minmax(0, 1fr); gap: 0.7rem; margin-top: 0.9rem; }
 .hybrid-action-row button { min-height: 54px; }
 .hybrid-summary { display: grid; gap: 0.45rem; margin: 0.7rem 0; }
+/* The speaker choice of the dialog: one chip per routed group, plus All.  The
+   chips are compact so that all five fit one line of the narrowest step card
+   and grow to fill it, like the sweep menu's group chips. */
+.hybrid-scope-row { display: flex; flex-wrap: wrap; gap: 0.3rem; margin-top: 0.75rem; }
+.hybrid-scope-row .measurement-chip {
+    flex: 1 1 auto;
+    min-width: 0;
+    padding-inline: 0.4rem;
+    font-size: 0.75rem;
+}
+/* Once measuring began the row is locked (disabled), but it still has to say
+   which speakers are measured: the selected chip keeps its look and only the
+   other chips dim. */
+.hybrid-scope-row .measurement-chip.is-active:disabled {
+    color: #0d0d0f;
+    background: var(--accent);
+    border-color: transparent;
+    cursor: default;
+    opacity: 1;
+}
+.measurement-current-key { display: flex; flex-wrap: wrap; gap: 0.35rem 1rem; margin-top: 0.5rem; color: var(--text-secondary); font-size: 0.78rem; }
+.measurement-current-key-item { display: inline-flex; align-items: center; gap: 0.4rem; }
 .hybrid-summary-item { padding-left: 1.2rem; color: var(--text-secondary); font-size: 0.84rem; }
 .hybrid-summary-item::before { content: '✓'; float: left; margin-left: -1.2rem; color: var(--success); }
 .hybrid-advanced-details { margin-top: 0.35rem; color: var(--text-muted); font-size: 0.78rem; }
@@ -1245,4 +1415,150 @@
 .measurement-saved-merge-action.is-inert,
 .measurement-saved-delete-action.is-inert {
     display: none;
+}
+
+.av-sync-dialog {
+    width: min(560px, calc(100vw - 2rem));
+}
+
+.av-sync-stack {
+    gap: 0.7rem;
+}
+
+/* Target and effective delay share one row; the range sits compactly below. */
+.av-sync-values {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    gap: 0.75rem 2rem;
+}
+
+.av-sync-target-group {
+    margin-bottom: 0;
+}
+
+/* Compact stepper (~165 px total): same value width as the effect steppers,
+   native spinners hidden by the shared .stepper-control rules. */
+.av-sync-stepper .av-sync-target-input {
+    width: 4.5rem;
+    min-width: 4.5rem;
+    flex: 1 1 auto;
+    min-height: 0;
+    height: auto;
+    border: 0;
+    background: transparent;
+    text-align: center;
+    padding: 0.35rem 0;
+    font-size: 0.92rem;
+}
+
+.av-sync-stepper .av-sync-target-input:focus {
+    outline: none;
+    border-color: transparent;
+    box-shadow: none;
+}
+
+.av-sync-effective {
+    display: flex;
+    flex-direction: column;
+    gap: 0.45rem;
+    padding-bottom: 0.35rem;
+}
+
+.av-sync-effective-label {
+    color: var(--text-secondary);
+    font-size: 0.85rem;
+    font-weight: 600;
+    line-height: 1.2;
+}
+
+.av-sync-effective strong {
+    color: var(--accent);
+    font-family: var(--font-mono);
+    font-size: 1.05rem;
+    line-height: 1.2;
+    white-space: nowrap;
+}
+
+.av-sync-range {
+    margin: 0;
+    color: var(--text-muted);
+    font-size: 0.8rem;
+    line-height: 1.3;
+}
+
+.av-sync-range:empty {
+    display: none;
+}
+
+.av-sync-summary {
+    margin: 0.6rem 0 0;
+    color: var(--text-secondary);
+    font-size: 0.8rem;
+    line-height: 1.3;
+}
+
+.av-sync-table-wrap {
+    max-width: 100%;
+    overflow-x: auto;
+    margin-top: 0.5rem;
+}
+
+.av-sync-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.78rem;
+    white-space: nowrap;
+}
+
+.av-sync-table th,
+.av-sync-table td {
+    text-align: right;
+    padding: 0.35rem 0.5rem;
+    border-bottom: 1px solid var(--border);
+}
+
+.av-sync-table thead th {
+    color: var(--text-secondary);
+    font-weight: 600;
+}
+
+.av-sync-table th:first-child {
+    text-align: left;
+}
+
+.av-sync-table td {
+    font-family: var(--font-mono);
+}
+
+.av-sync-note {
+    margin: 0.5rem 0 0;
+    color: var(--text-muted);
+    font-size: 0.78rem;
+    line-height: 1.35;
+}
+
+.av-sync-note:empty {
+    display: none;
+}
+
+.av-sync-details > summary {
+    cursor: pointer;
+    color: var(--text-muted);
+}
+
+@media (max-width: 480px) {
+    .av-sync-values {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 0.7rem;
+    }
+
+    .av-sync-stepper {
+        align-self: flex-start;
+    }
+
+    .av-sync-effective {
+        padding-bottom: 0;
+    }
 }

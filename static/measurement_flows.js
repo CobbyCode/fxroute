@@ -43,6 +43,16 @@
         // Selected measurement area (bank id): every wizard step is an internal
         // way sweep of the same frozen area.
         measurementAreaBank: () => '',
+        // Speaker group of a Surround Global area ('' elsewhere).
+        measurementAreaGroup: () => '',
+        // Selected measuring area (the area object of output_state.measurementArea).
+        measurementArea: () => null,
+        // Routed speaker groups of the Surround Global area ({options, selected})
+        // or null; the area of one such group; and the shared group selection
+        // the sweep menu's speaker chips write as well.
+        measurementGroupChoice: () => null,
+        measurementAreaForGroup: () => null,
+        selectMeasurementGroup: () => {},
         getMeasurementJobStatus: () => 'unknown',
         normalizeMeasurementEntry: (m) => m,
         getMeasurementJobResultMeasurement: () => null,
@@ -489,7 +499,10 @@ async function handleAutoSubResult(job) {
         measurementState.autoSubMeasurements = autoSubMeasurements;
     }
     measurementState.currentMeasurementSaved = false;
-    measurementState.currentMeasurementName = 'AutoSub';
+    // The result is saved as AutoSub while the field is blank (the field's
+    // placeholder says so); a stored "AutoSub" would be taken over by the next
+    // sweep or L/R repeat as its base name.  A typed name is kept.
+    measurementState.currentMeasurementName = ui.getTypedMeasurementName(measurementState);
     const winner = result.winner || {};
     // The outcome line comes first; scan details follow on a second line.
     const withDetail = (outcome, detailParts) => (detailParts.length ? `${outcome}\n${detailParts.join(' · ')}` : outcome);
@@ -933,7 +946,9 @@ function adoptSpeakerAlignMeasurements(job) {
     measurementState.autoSubMeasurements = [];
     measurementState.pendingRepeatMeasurements = pending;
     measurementState.currentMeasurement = pending[0];
-    measurementState.currentMeasurementName = `Speaker Align ${speakerSideLabel(job.side)}`;
+    // A name typed into the field is kept; the side stays in the entries' channel.
+    measurementState.currentMeasurementName = ui.getTypedMeasurementName(measurementState)
+        || `Speaker Align ${speakerSideLabel(job.side)}`;
     measurementState.currentMeasurementSaved = false;
     measurementState.reviewVisibilityById = measurementState.reviewVisibilityById || {};
     pending.forEach((measurement) => {
@@ -1000,11 +1015,17 @@ function clearSpeakerAlignResult() {
 function getHybridWizardState() {
     if (!deps.getState().measurement.hybridWizard || typeof deps.getState().measurement.hybridWizard !== 'object') {
         deps.getState().measurement.hybridWizard = {
-            open: false, running: false, jobId: '', stepIndex: 0, mode: 'stereo',
-            sequence: [], captures: [], status: '', phase: '', cancelRequested: false, quality: null, profile: null,
+            open: false, running: false, jobId: '', stepIndex: 0, mode: 'stereo', scope: null,
+            sequence: [], captures: [], groupProfiles: {}, status: '', phase: '', cancelRequested: false, quality: null, profile: null,
         };
     }
     return deps.getState().measurement.hybridWizard;
+}
+
+
+// A series measures every routed group at shared microphone positions.
+function isHybridSeries(wizard) {
+    return wizard.scope?.series === true;
 }
 
 
@@ -1015,8 +1036,61 @@ function getCurrentOutputModeName() {
 }
 
 
+// What the next Advanced run measures: the selected area's speakers (a pair or
+// one channel) or subwoofers, derived from the area and the active topology.
+function getCurrentHybridScope() {
+    const catalog = deps.getState().outputSystem?.catalog;
+    const topology = catalog?.modes?.[catalog.active_mode]?.topology;
+    const area = deps.measurementArea();
+    return area ? HybridMeasurement.buildScope(area, topology) : HybridMeasurement.normalizeScope(getCurrentOutputModeName());
+}
+
+
+// One scope per routed speaker group of the Surround Global area, in the group
+// row's order; null where there is no group choice (a series needs two).
+function getCurrentHybridGroupScopes() {
+    const choice = deps.measurementGroupChoice();
+    if (!choice || choice.options.length < 2) return null;
+    const catalog = deps.getState().outputSystem?.catalog;
+    const topology = catalog?.modes?.[catalog.active_mode]?.topology;
+    const scopes = choice.options
+        .map(option => deps.measurementAreaForGroup(option.id))
+        .filter(Boolean)
+        .map(area => HybridMeasurement.buildScope(area, topology));
+    return scopes.length > 1 ? scopes : null;
+}
+
+
+// The scope id the open run has to match: a series follows the routed groups,
+// a single run the selected area. Empty when a series has no groups to follow.
+function getLiveHybridScopeId(series) {
+    if (!series) return getCurrentHybridScope().id;
+    const liveScopes = getCurrentHybridGroupScopes();
+    return liveScopes ? HybridMeasurement.buildSeriesScope(liveScopes).id : '';
+}
+
+
+// Regular selected-group sequence, or all groups ordered by microphone position.
+function buildHybridWizardSequence(series) {
+    const scopes = series ? getCurrentHybridGroupScopes() : null;
+    return scopes
+        ? HybridMeasurement.buildSeriesSequence(scopes)
+        : HybridMeasurement.buildSequence(getCurrentHybridScope());
+}
+
+
+function hybridReadyStatus() {
+    return deps.measurementModeReady() ? 'Ready for the first measurement.' : 'Complete Measurement Setup before starting.';
+}
+
+
 function openHybridMeasurementWizard() {
     const wizard = getHybridWizardState();
+    const area = deps.measurementArea();
+    if (!wizard.running && (area?.available === false || area?.importable === false)) {
+        deps.showToast('Advanced builds a filter model; select a filter bank to use it.', 'warning');
+        return;
+    }
     if (wizard.running) {
         wizard.open = true;
         deps.getElements().measurementHybridPanel?.classList.remove('hidden');
@@ -1029,16 +1103,18 @@ function openHybridMeasurementWizard() {
         });
         return;
     }
-    const sequence = HybridMeasurement.buildSequence(getCurrentOutputModeName());
+    const sequence = buildHybridWizardSequence(false);
     Object.assign(wizard, {
         open: true,
         running: false,
         jobId: '',
         stepIndex: 0,
         mode: sequence.mode,
+        scope: sequence.scope,
         sequence: sequence.steps,
         captures: [],
-        status: deps.measurementModeReady() ? 'Ready for the first measurement.' : 'Complete Measurement Setup before starting.',
+        groupProfiles: {},
+        status: hybridReadyStatus(),
         phase: '',
         cancelRequested: false,
         quality: null,
@@ -1071,16 +1147,34 @@ async function closeHybridMeasurementWizard() {
 }
 
 
-function renderHybridRoomDiagram(step = {}, mode = 'stereo', complete = false) {
+// The room view places speakers per group; pair labels follow the group.
+const HYBRID_ROOM_GROUPS = ['front', 'center', 'side', 'rear'];
+const HYBRID_PAIR_LABELS = {
+    front: { left: 'L', right: 'R' },
+    side: { left: 'SL', right: 'SR' },
+    rear: { left: 'RL', right: 'RR' },
+};
+
+
+function renderHybridRoomDiagram(step = {}, scopeOrMode = 'stereo', complete = false) {
     const panel = deps.getElements().measurementHybridPanel;
     if (!panel) return;
     panel.querySelectorAll('[data-hybrid-position]').forEach(node => {
         node.classList.toggle('is-target', node.getAttribute('data-hybrid-position') === step.position);
     });
-    const diagram = HybridMeasurement.getDiagramState(mode, step.channel, complete);
+    const scope = HybridMeasurement.normalizeScope(scopeOrMode);
+    const diagram = HybridMeasurement.getDiagramState(scope, step.channel, complete);
+    const pairLabels = HYBRID_PAIR_LABELS[diagram.group] || HYBRID_PAIR_LABELS.front;
+    // The room view shows a speaker pair, one speaker, or only the subwoofers,
+    // placed for the speaker group (front wall, side walls, rear wall).
+    const room = panel.querySelector('.hybrid-room-view');
+    room?.setAttribute('data-hybrid-layout', diagram.layout);
+    room?.setAttribute('data-hybrid-group', HYBRID_ROOM_GROUPS.includes(diagram.group) ? diagram.group : 'front');
     panel.querySelectorAll('.hybrid-speaker[data-hybrid-speaker]').forEach(node => {
         const speaker = node.getAttribute('data-hybrid-speaker');
         node.classList.toggle('is-active', !!diagram.speakers[speaker]);
+        if (speaker === 'stereo') node.textContent = (scope.speaker || 'C').charAt(0).toUpperCase();
+        else if (pairLabels[speaker]) node.textContent = pairLabels[speaker];
     });
     panel.querySelectorAll('[data-hybrid-sub]').forEach(node => {
         const branch = node.getAttribute('data-hybrid-sub');
@@ -1093,12 +1187,131 @@ function renderHybridRoomDiagram(step = {}, mode = 'stereo', complete = false) {
 }
 
 
+// The gated direct lower limit of a model; a response without a gate has none.
+function formatHybridLowerLimit(profile, channel) {
+    const limitHz = profile.models[channel].modelBlend.gatedDirectLowerLimitHz;
+    return Number.isFinite(limitHz) ? `${Math.round(limitHz)} Hz` : 'unavailable';
+}
+
+
+// Collapsed numbers of a pair scope's L/R check (a single channel has none).
+function buildHybridDetailsHtml(scope, profile) {
+    if (scope.channels.length !== 2) return '';
+    const integration = profile.integration;
+    const stereoPrediction = scope.mode === 'stereo';
+    return `
+        <details class="hybrid-advanced-details">
+            <summary>Advanced details</summary>
+            <p>${stereoPrediction
+                ? 'The L/R complex sum was predicted from the main-position captures; no separate integration sweep was performed.'
+                : `Consistency status: ${deps.escapeHtml(integration.status)} · band ${integration.validationBandHz.join('–')} Hz · magnitude ${Number.isFinite(integration.magnitudeRmsErrorDb) ? `${integration.magnitudeRmsErrorDb.toFixed(1)} dB` : 'unavailable'} · phase ${Number.isFinite(integration.phaseRmsErrorDeg) ? `${integration.phaseRmsErrorDeg.toFixed(1)}°` : 'unavailable'} · complex residual ${Number.isFinite(integration.complexResidualRms) ? integration.complexResidualRms.toFixed(2) : 'unavailable'} · ${integration.comparedPoints} points`}</p>
+            ${stereoPrediction ? '' : `<p>${deps.escapeHtml(integration.limitation)}</p>`}
+        </details>`;
+}
+
+
+// Result lines of one finished scope (a group of a series, or the single run).
+function buildHybridSummaryHtml(scope, profile) {
+    const pair = scope.channels.length === 2;
+    const items = [
+        scope.direct ? (pair ? 'Left and right speaker response captured' : `${deps.escapeHtml(scope.speaker)} response captured`) : null,
+        'Main listening position measured',
+        pair ? 'Left and right listening positions measured' : 'Listening positions measured',
+        scope.direct ? 'Speaker and room measurements combined' : 'Listening-position measurements combined',
+        !pair ? null : (scope.mode === 'stereo' ? 'Left and right responses compared' : 'L/R response and subwoofer routing checked'),
+        !scope.direct ? null : (pair
+            ? `<strong>Gated direct lower limit:</strong><br>Left: ${formatHybridLowerLimit(profile, 'left')}<br>Right: ${formatHybridLowerLimit(profile, 'right')}`
+            : `<strong>Gated direct lower limit:</strong><br>${formatHybridLowerLimit(profile, 'stereo')}`),
+    ].filter(Boolean);
+    return items.map(item => `<div class="hybrid-summary-item">${item}</div>`).join('') + buildHybridDetailsHtml(scope, profile);
+}
+
+
+// One short entry per group (a series has too many groups for the full
+// lines); the numbers of its L/R check stay one click away.
+function buildHybridSeriesSummaryHtml(parts) {
+    return parts.map(({ scope, profile }) => {
+        const pair = scope.channels.length === 2;
+        const lines = [
+            !scope.direct ? null : (pair
+                ? `Gated direct lower limit: Left ${formatHybridLowerLimit(profile, 'left')} · Right ${formatHybridLowerLimit(profile, 'right')}`
+                : `Gated direct lower limit: ${formatHybridLowerLimit(profile, 'stereo')}`),
+            !pair ? null : (scope.mode === 'stereo'
+                ? 'Left and right responses compared'
+                : `L/R response and subwoofer routing checked (${deps.escapeHtml(profile.integration.status)})`),
+        ].filter(Boolean);
+        return `<div class="hybrid-summary-item"><strong>${deps.escapeHtml(scope.label)}</strong>`
+            + lines.map(line => `<br>${line}`).join('') + buildHybridDetailsHtml(scope, profile) + '</div>';
+    }).join('');
+}
+
+
+// Speaker choice of the open dialog: each routed group, or all of them in turn.
+// It is the sweep menu's speaker selection; only "All" belongs to the wizard.
+function isHybridScopeSelectable(wizard) {
+    return !wizard.running && !wizard.profile && wizard.stepIndex === 0 && wizard.captures.length === 0
+        && !deps.getState().measurement.startInFlight;
+}
+
+
+function renderHybridScopeRow(wizard) {
+    const row = deps.getElements().measurementHybridScopeRow;
+    if (!row) return;
+    const choice = deps.measurementGroupChoice();
+    const groupChips = choice ? choice.options : [];
+    const chips = groupChips.length > 1
+        ? [...groupChips, { id: 'all', short: 'All', label: 'All speakers, one after another' }]
+        : [];
+    window.FXRouteUiHelpers.renderChipRow(row, chips, {
+        attribute: 'data-hybrid-scope',
+        selected: isHybridSeries(wizard) ? 'all' : (choice ? choice.selected : ''),
+        disabled: !isHybridScopeSelectable(wizard),
+    });
+}
+
+
+function selectHybridWizardScope(selection) {
+    const wizard = getHybridWizardState();
+    if (!selection || !isHybridScopeSelectable(wizard)) return;
+    const series = selection === 'all';
+    if (!series) deps.selectMeasurementGroup(selection);
+    const sequence = buildHybridWizardSequence(series);
+    Object.assign(wizard, {
+        mode: sequence.mode,
+        scope: sequence.scope,
+        sequence: sequence.steps,
+        stepIndex: 0,
+        captures: [],
+        groupProfiles: {},
+        quality: null,
+        profile: null,
+        status: hybridReadyStatus(),
+    });
+    renderHybridMeasurementWizard();
+}
+
+
+// Header line of the dialog: a series names the group of the current step and
+// how far it is; a single run names its measuring area or output mode.
+function buildHybridHeaderText(scope, stepScope, complete) {
+    if (!scope.series) return scope.wholeSystem ? `${scope.label} output mode` : `${scope.label} · measuring area`;
+    if (complete) return `${scope.label} · measuring area`;
+    const groupNumber = scope.scopes.indexOf(stepScope) + 1;
+    return `${stepScope.label} · measuring area · ${groupNumber} / ${scope.scopes.length}`;
+}
+
+
 function renderHybridMeasurementWizard() {
     const wizard = getHybridWizardState();
     if (!wizard.open || !deps.getElements().measurementHybridPanel) return;
     const complete = !!wizard.profile;
     const current = wizard.sequence[wizard.stepIndex] || null;
-    if (deps.getElements().measurementHybridMode) deps.getElements().measurementHybridMode.textContent = `${HybridMeasurement.MODE_LABELS[wizard.mode] || wizard.mode} output mode`;
+    const scope = HybridMeasurement.normalizeScope(wizard.scope || wizard.mode);
+    // Header and room view follow the active speaker group at this position.
+    const stepScope = HybridMeasurement.scopeForStep(scope, current || wizard.sequence[wizard.sequence.length - 1]);
+    if (deps.getElements().measurementHybridMode) {
+        deps.getElements().measurementHybridMode.textContent = buildHybridHeaderText(scope, stepScope, complete);
+    }
     if (deps.getElements().measurementHybridProgress) {
         const done = complete ? wizard.sequence.length : wizard.stepIndex;
         deps.getElements().measurementHybridProgress.textContent = `${done} / ${wizard.sequence.length}`;
@@ -1117,34 +1330,21 @@ function renderHybridMeasurementWizard() {
         deps.getElements().measurementHybridStatus.classList.toggle('is-busy', wizard.running && !!wizard.phase);
     }
     if (deps.getElements().measurementHybridPrimaryBtn) {
-        deps.getElements().measurementHybridPrimaryBtn.textContent = complete ? 'Open filter generator' : (wizard.running ? 'Cancel measurement' : (wizard.quality?.retry ? 'Repeat measurement' : 'Start measurement'));
+        const finished = scope.series ? 'Show results' : 'Open filter generator';
+        deps.getElements().measurementHybridPrimaryBtn.textContent = complete ? finished : (wizard.running ? 'Cancel measurement' : (wizard.quality?.retry ? 'Repeat measurement' : 'Start measurement'));
         deps.getElements().measurementHybridPrimaryBtn.disabled = !wizard.running && !complete && !deps.measurementModeReady();
     }
     if (deps.getElements().measurementHybridBackBtn) deps.getElements().measurementHybridBackBtn.disabled = wizard.running || wizard.stepIndex === 0 || complete;
     if (deps.getElements().measurementHybridSummary) {
         deps.getElements().measurementHybridSummary.classList.toggle('hidden', !complete);
         if (complete) {
-            const left = wizard.profile.left.modelBlend;
-            const right = wizard.profile.right.modelBlend;
-            const integration = wizard.profile.integration;
-            deps.getElements().measurementHybridSummary.innerHTML = [
-                'Left and right speaker response captured',
-                'Main listening position measured',
-                'Left and right listening positions measured',
-                'Speaker and room measurements combined',
-                wizard.mode === 'stereo' ? 'Left and right responses compared' : 'L/R response and subwoofer routing checked',
-                `<strong>Gated direct lower limit:</strong><br>Left: ${Math.round(left.gatedDirectLowerLimitHz)} Hz<br>Right: ${Math.round(right.gatedDirectLowerLimitHz)} Hz`,
-            ].map(item => `<div class="hybrid-summary-item">${item}</div>`).join('') + `
-                <details class="hybrid-advanced-details">
-                    <summary>Advanced details</summary>
-                    <p>${wizard.mode === 'stereo'
-                        ? 'The L/R complex sum was predicted from the main-position captures; no separate integration sweep was performed.'
-                        : `Consistency status: ${deps.escapeHtml(integration.status)} · band ${integration.validationBandHz.join('–')} Hz · magnitude ${Number.isFinite(integration.magnitudeRmsErrorDb) ? `${integration.magnitudeRmsErrorDb.toFixed(1)} dB` : 'unavailable'} · phase ${Number.isFinite(integration.phaseRmsErrorDeg) ? `${integration.phaseRmsErrorDeg.toFixed(1)}°` : 'unavailable'} · complex residual ${Number.isFinite(integration.complexResidualRms) ? integration.complexResidualRms.toFixed(2) : 'unavailable'} · ${integration.comparedPoints} points`}</p>
-                    ${wizard.mode === 'stereo' ? '' : `<p>${deps.escapeHtml(integration.limitation)}</p>`}
-                </details>`;
+            deps.getElements().measurementHybridSummary.innerHTML = scope.series
+                ? buildHybridSeriesSummaryHtml(wizard.profile.parts)
+                : buildHybridSummaryHtml(scope, wizard.profile);
         }
     }
-    renderHybridRoomDiagram(current || {}, wizard.mode, complete);
+    renderHybridScopeRow(wizard);
+    renderHybridRoomDiagram(current || {}, stepScope, complete);
 }
 
 
@@ -1159,6 +1359,9 @@ function buildHybridMeasurementForm(step) {
     formData.append('measurement_role', step.role);
     const areaBank = deps.measurementAreaBank();
     if (areaBank) formData.append('measurement_bank', areaBank);
+    // A series step carries its own group; the speaker selection may differ.
+    const areaGroup = step.group || deps.measurementAreaGroup();
+    if (areaGroup) formData.append('measurement_group', areaGroup);
     formData.append('mic_input_channel', deps.getState().measurement.selectedMicInputChannel || '1');
     deps.appendMeasurementReferenceFields(formData);
     const calibrationFile = deps.getElements().measurementCalibrationFile?.files?.[0];
@@ -1172,7 +1375,10 @@ async function runHybridWizardStep(step) {
     const wizard = getHybridWizardState();
     wizard.quality = null;
     wizard.phase = 'measuring';
-    wizard.status = `Measuring ${ui.hybridSpeakerName(step.channel)}…`;
+    const stepScope = HybridMeasurement.scopeForStep(wizard.scope, step);
+    const speakerLabel = () => (stepScope.channels.length === 1 && step.role !== 'integration'
+        ? step.active.toLowerCase() : ui.hybridSpeakerName(step.channel));
+    wizard.status = `Measuring ${speakerLabel()}…`;
     renderHybridMeasurementWizard();
     const response = await api.startMeasurement(buildHybridMeasurementForm(step));
     const data = await response.json().catch(() => ({}));
@@ -1219,7 +1425,7 @@ async function runHybridWizardStep(step) {
         wizard.phase = processing ? 'processing' : (wizard.cancelRequested ? 'cancelling' : 'measuring');
         wizard.status = wizard.cancelRequested
             ? 'Cancelling measurement…'
-            : (processing ? `Processing ${step.channel === 'stereo' ? 'measurement' : step.channel}…` : `Measuring ${ui.hybridSpeakerName(step.channel)}…`);
+            : (processing ? `Processing ${step.channel === 'stereo' ? 'measurement' : step.channel}…` : `Measuring ${speakerLabel()}…`);
         renderHybridMeasurementWizard();
         if (ui.MEASUREMENT_JOB_SUCCESS_STATES.has(status)) {
             if (wizard.cancelRequested) return false;
@@ -1233,7 +1439,7 @@ async function runHybridWizardStep(step) {
             if (step.role === 'direct') {
                 const positionCheck = HybridMeasurement.validateDirectMicrophonePosition(
                     measurement,
-                    wizard.captures,
+                    HybridMeasurement.groupCaptures(wizard.captures, step.group),
                     step.channel,
                 );
                 measurement.analysis.direct_response.position_check = positionCheck;
@@ -1244,7 +1450,10 @@ async function runHybridWizardStep(step) {
                 }
             }
             wizard.captures = wizard.captures.filter(item => item.stepId !== step.id);
-            wizard.captures.push({ stepId: step.id, role: step.role, position: step.position, channel: step.channel, measurement });
+            wizard.captures.push({ stepId: step.id, role: step.role, position: step.position, channel: step.channel, group: step.group || '', measurement });
+            if (step.role === 'integration' && isHybridSeries(wizard)) {
+                HybridMeasurement.validateIntegration(HybridMeasurement.groupCaptures(wizard.captures, step.group), stepScope);
+            }
             wizard.quality = { level: 'ok', retry: false };
             wizard.stepIndex += 1;
             return true;
@@ -1270,13 +1479,34 @@ async function cancelHybridWizardMeasurement() {
 }
 
 
+// Profile a group only after its final scheduled capture, not a group boundary.
+// Any non-integration model failure restarts that group's nearfield capture.
+function buildFinishedHybridGroupProfile(wizard) {
+    const last = wizard.sequence[wizard.stepIndex - 1];
+    if (!last || wizard.sequence.slice(wizard.stepIndex).some(step => step.group === last.group)) return;
+    try {
+        wizard.groupProfiles[last.group] = HybridMeasurement.buildProfile(
+            HybridMeasurement.groupCaptures(wizard.captures, last.group),
+            HybridMeasurement.scopeForStep(wizard.scope, last));
+    } catch (error) {
+        error.retryGroup = last.group;
+        if (error.retryRole !== 'integration') {
+            wizard.stepIndex = Math.max(0, wizard.sequence.findIndex(step => step.group === last.group));
+        }
+        throw error;
+    }
+}
+
+
 async function runHybridWizardSweep() {
     const wizard = getHybridWizardState();
     if (wizard.running || wizard.profile) return;
     const step = wizard.sequence[wizard.stepIndex];
     if (!step) return;
-    if (getCurrentOutputModeName() !== wizard.mode) {
-        wizard.status = 'Output mode changed. Close and restart the wizard so measurements are not mixed.';
+    // A series compares the routed groups, not the speaker selection.
+    const series = isHybridSeries(wizard);
+    if (getLiveHybridScopeId(series) !== wizard.scope?.id) {
+        wizard.status = 'Measuring area or output mode changed. Close and restart the wizard so measurements are not mixed.';
         wizard.quality = { level: 'error', retry: false };
         renderHybridMeasurementWizard();
         return;
@@ -1297,6 +1527,7 @@ async function runHybridWizardSweep() {
             wizard.jobId = '';
             deps.getState().measurement.activeJobId = '';
             if (!completed || wizard.cancelRequested) break;
+            if (series) buildFinishedHybridGroupProfile(wizard);
             if (wizard.stepIndex <= seriesEnd) {
                 const next = wizard.sequence[wizard.stepIndex];
                 wizard.phase = 'preparing';
@@ -1308,15 +1539,20 @@ async function runHybridWizardSweep() {
         if (wizard.cancelRequested) {
             wizard.status = 'Measurement cancelled. The microphone position is ready to measure again.';
             wizard.quality = null;
-        } else if (wizard.stepIndex >= wizard.sequence.length) {
-            wizard.profile = HybridMeasurement.buildProfile(wizard.captures, wizard.mode);
-            wizard.status = 'All measurements were completed successfully.';
-        } else if (!wizard.quality?.retry) {
-            wizard.status = 'Position measured successfully. Move the microphone as shown for the next measurement.';
+        } else {
+            if (wizard.stepIndex >= wizard.sequence.length) {
+                wizard.profile = series
+                    ? HybridMeasurement.buildSeriesProfile(wizard.scope, wizard.groupProfiles)
+                    : HybridMeasurement.buildProfile(wizard.captures, wizard.scope);
+                wizard.status = 'All measurements were completed successfully.';
+            } else if (!wizard.quality?.retry) {
+                wizard.status = 'Position measured successfully. Move the microphone as shown for the next measurement.';
+            }
         }
     } catch (error) {
         if (error.retryRole === 'integration') {
-            const integrationIndex = wizard.sequence.findIndex(step => step.role === 'integration');
+            const integrationIndex = wizard.sequence.findIndex(step => step.role === 'integration'
+                && (step.group || '') === (error.retryGroup || ''));
             if (integrationIndex >= 0) wizard.stepIndex = integrationIndex;
         }
         wizard.status = wizard.cancelRequested
@@ -1336,46 +1572,99 @@ async function runHybridWizardSweep() {
 }
 
 
+// "L"/"R" of a pair's side; the single channel of a mono scope has none.
+function hybridSideLetter(scope, side) {
+    if (scope.channels.length !== 2) return '';
+    return side === 'left' ? 'L' : 'R';
+}
+
+
+// One correction-model entry of a finished scope (one side, or the single
+// channel).  A series qualifies the id with the group: all entries are built
+// in the same millisecond and one save rejects duplicate ids.
+function buildHybridModelEntry(profile, scope, side, series = false) {
+    const letter = hybridSideLetter(scope, side);
+    const model = profile.models[side];
+    const timing = model.timingMeasurement;
+    const modelPoints = Array.isArray(model.points) ? model.points : [];
+    const modelMinDb = modelPoints.length ? Math.min(...modelPoints.map((point) => Number(point[1]) || 0)) : 0;
+    const modelMaxDb = modelPoints.length ? Math.max(...modelPoints.map((point) => Number(point[1]) || 0)) : 0;
+    const modelMinHz = modelPoints.length ? Number(modelPoints[0][0]) || 20 : 20;
+    const modelMaxHz = modelPoints.length ? Number(modelPoints[modelPoints.length - 1][0]) || 20000 : 20000;
+    const modelSummary = { trace_count: modelPoints.length ? 1 : 0, point_count: modelPoints.length, min_db: modelMinDb, max_db: modelMaxDb, min_hz: modelMinHz, max_hz: modelMaxHz };
+    return deps.normalizeMeasurementEntry({
+        id: `hybrid-${series && scope.group ? `${scope.group}-` : ''}${side}-${Date.now()}`,
+        name: letter ? `Advanced ${scope.label} ${letter}` : `Advanced ${scope.label}`,
+        created_at: new Date().toISOString(),
+        // A single channel is taken like the left side of a mono area.
+        channel: letter ? side : 'left',
+        measurement_kind: 'hybrid-correction-model-v1',
+        measurement_role: 'hybrid-model',
+        input_device: timing.input_device,
+        input_channels: timing.input_channels,
+        calibration: timing.calibration,
+        audio_output_context: timing.audio_output_context,
+        // The model keeps the area and processing its captures were taken in.
+        measurement_target: timing.measurement_target,
+        traces: [{ kind: 'hybrid-response', role: 'trusted', label: `Hybrid ${side}`, points: model.points }],
+        summary: modelSummary,
+        review_summary: modelSummary,
+        analysis: {
+            ...timing.analysis,
+            hybrid_constraints: model.constraints,
+            hybrid_model_blend: model.modelBlend,
+            hybrid_source_roles: ['direct', 'mlp', 'secondary', 'integration'].filter(role => (role !== 'direct' || scope.direct) && (role !== 'integration' || scope.integration)),
+            integration_validation: profile.integration,
+        },
+    }, 0);
+}
+
+
+// The model entries become the pending result of the normal flow.  An unsaved
+// Auto Sub result is dropped like a Speaker Align result drops it: it would
+// take precedence in the graph and in "Save current" over these entries.  A
+// name typed into the field is kept; `name` is only the proposal.
+function adoptHybridModelEntries(entries, name) {
+    const measurement = deps.getState().measurement;
+    measurement.autoSubMeasurements = [];
+    measurement.pendingRepeatMeasurements = entries;
+    measurement.currentMeasurement = entries[0];
+    measurement.currentMeasurementName = ui.getTypedMeasurementName(measurement) || name;
+    measurement.currentMeasurementSaved = false;
+}
+
+
+// A series result is the correction model of every group.  Like an LR Repeat it
+// stays in the current assistant for review and one common save: the convolver
+// assistant takes a single L/R pair, not the models of several groups.
+function showHybridSeriesResults(profile) {
+    const measurement = deps.getState().measurement;
+    const entries = profile.parts.flatMap(part => part.scope.channels.map((side) => {
+        const entry = buildHybridModelEntry(part.profile, part.scope, side, true);
+        // Saved as "<name> · <group> · L/R"; the group keeps entries of equal
+        // sides apart.
+        const letter = hybridSideLetter(part.scope, side);
+        entry.save_suffix = letter ? `${part.scope.label} · ${letter}` : part.scope.label;
+        return entry;
+    }));
+    adoptHybridModelEntries(entries, 'Advanced');
+    deps.setMeasurementGraphView('freq');
+    measurement.statusText = 'Advanced series finished. Review all results and save them together.';
+    void closeHybridMeasurementWizard();
+    deps.renderMeasurementPanel();
+}
+
+
 function openHybridProfileInConvolver() {
     const wizard = getHybridWizardState();
     if (!wizard.profile) return;
-    const buildSide = (side) => {
-        const model = wizard.profile[side];
-        const timing = model.timingMeasurement;
-        const modelPoints = Array.isArray(model.points) ? model.points : [];
-        const modelMinDb = modelPoints.length ? Math.min(...modelPoints.map((point) => Number(point[1]) || 0)) : 0;
-        const modelMaxDb = modelPoints.length ? Math.max(...modelPoints.map((point) => Number(point[1]) || 0)) : 0;
-        const modelMinHz = modelPoints.length ? Number(modelPoints[0][0]) || 20 : 20;
-        const modelMaxHz = modelPoints.length ? Number(modelPoints[modelPoints.length - 1][0]) || 20000 : 20000;
-        const modelSummary = { trace_count: modelPoints.length ? 1 : 0, point_count: modelPoints.length, min_db: modelMinDb, max_db: modelMaxDb, min_hz: modelMinHz, max_hz: modelMaxHz };
-        return deps.normalizeMeasurementEntry({
-            id: `hybrid-${side}-${Date.now()}`,
-            name: `Advanced ${HybridMeasurement.MODE_LABELS[wizard.mode]} ${side === 'left' ? 'L' : 'R'}`,
-            created_at: new Date().toISOString(),
-            channel: side,
-            measurement_kind: 'hybrid-correction-model-v1',
-            measurement_role: 'hybrid-model',
-            input_device: timing.input_device,
-            input_channels: timing.input_channels,
-            calibration: timing.calibration,
-            audio_output_context: timing.audio_output_context,
-            traces: [{ kind: 'hybrid-response', role: 'trusted', label: `Hybrid ${side}`, points: model.points }],
-            summary: modelSummary,
-            review_summary: modelSummary,
-            analysis: {
-                ...timing.analysis,
-                hybrid_constraints: model.constraints,
-                hybrid_model_blend: model.modelBlend,
-                hybrid_source_roles: ['direct', 'mlp', 'secondary', 'integration'],
-                integration_validation: wizard.profile.integration,
-            },
-        }, 0);
-    };
-    const pair = [buildSide('left'), buildSide('right')];
-    deps.getState().measurement.pendingRepeatMeasurements = pair;
-    deps.getState().measurement.currentMeasurement = pair[0];
-    deps.getState().measurement.currentMeasurementName = `Advanced ${HybridMeasurement.MODE_LABELS[wizard.mode]}`;
-    deps.getState().measurement.currentMeasurementSaved = false;
+    if (wizard.profile.series) {
+        showHybridSeriesResults(wizard.profile);
+        return;
+    }
+    const scope = HybridMeasurement.normalizeScope(wizard.scope || wizard.mode);
+    const entries = scope.channels.map(side => buildHybridModelEntry(wizard.profile, scope, side));
+    adoptHybridModelEntries(entries, `Advanced ${scope.label}`);
     deps.setMeasurementAssistMode('convolver');
     void closeHybridMeasurementWizard();
     deps.renderMeasurementPanel();
@@ -1391,6 +1680,10 @@ function setupHybridMeasurementWizard() {
         if (getHybridWizardState().running) void cancelHybridWizardMeasurement();
         else if (getHybridWizardState().profile) openHybridProfileInConvolver();
         else void runHybridWizardSweep();
+    });
+    deps.getElements().measurementHybridScopeRow?.addEventListener('click', (event) => {
+        const button = event.target.closest?.('[data-hybrid-scope]');
+        if (button) selectHybridWizardScope(button.getAttribute('data-hybrid-scope') || '');
     });
     deps.getElements().measurementHybridBackBtn?.addEventListener('click', () => {
         const wizard = getHybridWizardState();
@@ -1424,6 +1717,9 @@ function setupHybridMeasurementWizard() {
         clearSpeakerAlignResult,
         getHybridWizardState,
         getCurrentOutputModeName,
+        getCurrentHybridScope,
+        getCurrentHybridGroupScopes,
+        selectHybridWizardScope,
         openHybridMeasurementWizard,
         closeHybridMeasurementWizard,
         renderHybridRoomDiagram,

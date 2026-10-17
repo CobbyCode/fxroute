@@ -374,10 +374,9 @@
             } else if (action === 'play-qobuz') {
                 post('/api/streaming/qobuz/demo_start', {});
             } else if (action === 'preset-plus6') {
-                post('/api/dsp/presets/load', { preset_name: '+6' });
+                setGlobalBank({ preset: '+6' });
             } else if (action === 'dsp-demo') {
-                post('/api/dsp/presets/load', { preset_name: '+6' });
-                post('/api/dsp/compare', { presetA: 'Direct', presetB: '+6', activeSide: 'B' });
+                setGlobalBank({ preset_a: 'Direct', preset_b: '+6', active_side: 'B' });
                 post('/api/dsp/extras', { headroomEnabled: true, headroomGainDb: -3, loudnessEnabled: true, loudnessStrength: 5 });
                 // Animate the Compare A/B control so the filter switch is
                 // visible: pulse the button, then actually click it to flip
@@ -392,11 +391,11 @@
                 setTimeout(function () {
                     var btn = pulseCompareBtn();
                     if (btn && typeof btn.click === 'function') try { btn.click(); } catch (eA) {}
-                    else post('/api/dsp/compare', { presetA: 'Direct', presetB: '+6', activeSide: 'A' });
+                    else setGlobalBank({ active_side: 'A' });
                     setTimeout(function () {
                         var btn2 = pulseCompareBtn();
                         if (btn2 && typeof btn2.click === 'function') try { btn2.click(); } catch (eB) {}
-                        else post('/api/dsp/compare', { presetA: 'Direct', presetB: '+6', activeSide: 'B' });
+                        else setGlobalBank({ active_side: 'B' });
                     }, 950);
                 }, 1100);
             } else if (action === 'measurement-demo') {
@@ -433,7 +432,11 @@
                                 // The auto-sub group only shows in subwoofer
                                 // output modes; skip it when hidden.
                                 if (sub && sub.offsetParent !== null) pulse(sub);
-                                if (spl) pulse(spl);
+                                // The calibration entries sit in the Calibration popover, so
+                                // pulse its toggle; the entry itself is hidden until opened.
+                                var cal = document.getElementById('measurement-calibration-toggle');
+                                if (cal) pulse(cal);
+                                if (spl && spl.offsetParent !== null) pulse(spl);
                             }, 900);
                         }, 800);
                     }, 700);
@@ -492,10 +495,25 @@
         }).catch(function () {});
     }
 
+    var bankMutationChain = Promise.resolve();
+    function setGlobalBank(fields) {
+        if (typeof fetch !== 'function') return;
+        bankMutationChain = bankMutationChain.then(function () {
+            return fetch('/api/audio/output-state').then(function (response) { return response.json(); });
+        }).then(function (state) {
+            return fetch('/api/audio/output-state/apply', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ expected_revision: state.revision,
+                    mutation: Object.assign({ kind: 'set_bank_preset', mode: state.active_mode,
+                        bank_id: 'global' }, fields) }),
+            });
+        }).catch(function () {});
+    }
+
     function finish() {
         // Leave the demo in a neutral state: restore the Direct preset and
         // close any dialog the tour opened (settings or measurement).
-        post('/api/dsp/presets/load', { preset_name: 'Direct' });
+        setGlobalBank({ preset: 'Direct' });
         closeMeasurementPanel();
         var panel = document.querySelector('#settings-panel');
         if (panel && !panel.classList.contains('hidden')) {

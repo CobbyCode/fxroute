@@ -30,7 +30,6 @@
         renderMeasurementArea: () => {},
         measurementArea: () => null,
         applyMutation: async () => null,
-        confirmDialog: (message) => (typeof confirm === 'function' ? confirm(message) : false),
     };
 
     function init(overrides) {
@@ -39,6 +38,32 @@
 
     function outputState() {
         return (root && root.FXRouteOutputState) || null;
+    }
+
+    // Easy/Expert view of the DSP tab, kept per browser like the grid/list
+    // views. Easy (Global only) is the default without a stored choice.
+    const EXPERT_VIEW_STORAGE_KEY = 'fx-dsp-expert';
+
+    function readStoredExpertView() {
+        try {
+            return localStorage.getItem(EXPERT_VIEW_STORAGE_KEY) === '1';
+        } catch (e) {
+            return false;
+        }
+    }
+
+    // The switch changes the view only: the output state is not written, the
+    // catalog is read again through the other view.
+    async function setExpertView(expert) {
+        const system = deps.getState().outputSystem;
+        if (!system || !!system.expert === !!expert) return;
+        system.expert = !!expert;
+        try {
+            localStorage.setItem(EXPERT_VIEW_STORAGE_KEY, expert ? '1' : '0');
+        } catch (e) {
+            // Storage unavailable: the choice lasts for this page only.
+        }
+        await deps.refreshCatalog(true);
     }
 
     // Transition-error formatter owned by api.js; this module only displays it.
@@ -52,34 +77,8 @@
     let effectsCompareActionsWired = false;
     let _bankImportChannelMode = null;
     let effectsImportInFlight = false;
-
-    function normalizeEffectsCompareSelection(compare = {}) {
-        const presetA = typeof compare.presetA === 'string' ? compare.presetA : '';
-        let presetB = typeof compare.presetB === 'string' ? compare.presetB : '';
-        const activeSide = compare.activeSide === 'A' || compare.activeSide === 'B' ? compare.activeSide : null;
-        if (presetA && presetB && presetA === presetB) {
-            presetB = '';
-        }
-        return { presetA, presetB, activeSide };
-    }
-
-    function resolveEffectsCompareState(compare, presets = [], activePreset = '') {
-        const server = normalizeEffectsCompareSelection(compare || {});
-        const presetSet = new Set((presets || []).filter(Boolean));
-        const presetA = presetSet.has(server.presetA) ? server.presetA : (activePreset && presetSet.has(activePreset) ? activePreset : '');
-        const presetB = presetSet.has(server.presetB) ? server.presetB : '';
-        const activeSide = server.activeSide === 'A' || server.activeSide === 'B' ? server.activeSide : null;
-        return normalizeEffectsCompareSelection({ presetA, presetB, activeSide });
-    }
-
-    async function saveEffectsCompareState(compare) {
-        try {
-            const api = (root && root.FXRouteApi) || null;
-            await api.apiPostJson('/api/dsp/compare', compare);
-        } catch (e) {
-            console.warn('Failed to persist effects compare state', e);
-        }
-    }
+    let effectsDeleteDraft = null;
+    let effectsDeleteInFlight = false;
 
     function getDefaultEffectsCombineDraft() {
         return {
@@ -117,17 +116,17 @@
     function outputSystemBankBinding() {
         const catalog = (deps.getState().outputSystem || {}).catalog;
         try {
-            return outputState()?.bankBinding(catalog) || null;
+            return outputState()?.bankBinding(catalog, deps.getState().measurement?.globalGroup) || null;
         } catch (e) {
             return null;
         }
     }
 
-    function outputSystemCombineBank() {
+    function outputSystemBankOwner() {
         const catalog = (deps.getState().outputSystem || {}).catalog;
         if (!catalog) return null;
         try {
-            return outputState()?.combineBank(catalog) || null;
+            return outputState()?.bankOwner(catalog) || null;
         } catch (e) {
             return null;
         }
@@ -139,10 +138,10 @@
         const catalog = (deps.getState().outputSystem || {}).catalog;
         if (!catalog || !mod || typeof mod.presetsForBank !== 'function') return entries.slice();
         const bankId = catalog.modes?.[catalog.active_mode]?.selected_bank || 'global';
-        // Strict per-bank stock: only the bank's own presets (plus built-ins;
-        // untagged legacy reads as Global). No foreign presets are merged in,
-        // so switching banks can never leak another bank's stock.
-        return mod.presetsForBank(entries, bankId);
+        // Strict per-bank stock: only the bank's own presets plus the
+        // built-ins. No foreign presets are merged in, so switching banks can
+        // never leak another bank's stock.
+        return mod.presetsForBank(entries, bankId, catalog.active_mode);
     }
 
     function visiblePresetNamesForBank() {
@@ -154,6 +153,7 @@
         if (!binding || !formData || typeof formData.append !== 'function') return false;
         formData.append('bank_mode', binding.bank_mode);
         formData.append('bank_id', binding.bank_id);
+        if (binding.bank_group) formData.append('bank_group', binding.bank_group);
         formData.append('expected_revision', String(binding.expected_revision));
         return true;
     }
@@ -172,8 +172,17 @@
     }
 
     function requireConcreteFilterBank() {
-        if (deps.measurementArea()?.available !== false) return true;
+        // Importing or creating a filter needs a bank to commit into.
+        const area = deps.measurementArea();
+        if (area?.available !== false && area?.importable !== false) return true;
         deps.showToast('Select a filter bank for import or measurement.', 'warning');
+        return false;
+    }
+
+    function requireMeasurableArea() {
+        // A sweep only needs an area to measure; Ind. Banks measures the whole system.
+        if (deps.measurementArea()?.available !== false) return true;
+        deps.showToast('Select a filter bank for measurement.', 'warning');
         return false;
     }
 
@@ -181,27 +190,71 @@
         const mod = (root && root.FXRouteOutputState) || null;
         const catalog = (deps.getState().outputSystem || {}).catalog;
         if (!mod || !deps.getElements().effectsBankSelect) return;
+        const expert = !!deps.getState().outputSystem?.expert;
+        // The Expert switch is offered wherever a bank selection exists.
+        const expertToggle = deps.getElements().effectsExpertToggle;
+        if (expertToggle) {
+            expertToggle.checked = expert;
+            expertToggle.closest('.effects-expert-toggle')?.classList.toggle('hidden',
+                !catalog || !mod.bankSelectorVisible(catalog.modes?.[catalog.active_mode]));
+        }
         if (!catalog) {
             deps.getElements().effectsBankSelect.innerHTML = '';
             deps.getElements().effectsBankSelect.closest('.effects-bank-row')?.classList.add('hidden');
             return;
         }
-        mod.renderBankSelector(deps.getElements().effectsBankSelect, catalog, catalog.active_mode || 'stereo');
+        mod.renderBankSelector(deps.getElements().effectsBankSelect, catalog, catalog.active_mode || 'stereo', expert);
         deps.getElements().effectsBankSelect.disabled = !!deps.getState().outputSystem.busy || effectsCompareLoadInFlight;
         deps.renderMeasurementArea();
         renderBankImportTarget();
         syncBankActionButtons();
     }
 
+    function renderSweepGroupRow() {
+        /* Measure narrows Global or Ind. Banks to a configured speaker group.
+         * Chips are only rebuilt when the routed groups change: replacing the
+         * clicked button would read as an outside click and close the menu. */
+        const row = deps.getElements().measurementSweepGroupRow;
+        const mod = outputState();
+        if (!row || !mod) return;
+        const catalog = (deps.getState().outputSystem || {}).catalog;
+        const measurement = deps.getState().measurement || {};
+        const allBanks = catalog?.modes?.[catalog.active_mode]?.selected_bank === 'all';
+        const choice = catalog ? mod.globalGroupChoice(catalog,
+            allBanks ? measurement.allBanksGroup : measurement.globalGroup) : null;
+        root.FXRouteUiHelpers.renderChipRow(row, choice ? choice.options : [], {
+            attribute: 'data-sweep-group',
+            selected: choice ? choice.selected : '',
+            disabled: !!measurement.startInFlight,
+        });
+    }
+
+    function selectEffectsGroup(group) {
+        const measurement = deps.getState().measurement;
+        const catalog = (deps.getState().outputSystem || {}).catalog;
+        const field = catalog?.modes?.[catalog.active_mode]?.selected_bank === 'all' ? 'allBanksGroup' : 'globalGroup';
+        if (!measurement || measurement[field] === group) return;
+        measurement[field] = group;
+        renderEffectsBankSelector();
+        syncEffectsDeleteButton();
+    }
+
     function syncBankActionButtons() {
-        /* All Banks only switches A/B jointly across the area banks: there is
-         * nothing to measure, import or combine there, so those entries stay
-         * disabled. */
-        const aggregate = deps.measurementArea()?.available === false;
-        for (const button of [deps.getElements().effectsMeasureOpenBtn, deps.getElements().effectsToggleImportBtn]) {
-            if (!button) continue;
-            button.disabled = aggregate;
-            button.title = aggregate ? 'All Banks only switches A/B; select a filter bank to measure or import.' : '';
+        /* Ind. Banks switches A/B jointly and can be measured as a whole system,
+         * but owns no bank: there is nothing to import or combine there. */
+        const area = deps.measurementArea();
+        const aggregate = area?.available === false || area?.importable === false;
+        const measureButton = deps.getElements().effectsMeasureOpenBtn;
+        if (measureButton) {
+            measureButton.classList?.toggle('hidden', area?.available === false);
+            measureButton.disabled = area?.available === false;
+            measureButton.title = area?.available === false ? 'Select a filter bank to measure.' : '';
+        }
+        const importButton = deps.getElements().effectsToggleImportBtn;
+        if (importButton) {
+            importButton.classList?.toggle('hidden', aggregate);
+            importButton.disabled = aggregate;
+            importButton.title = aggregate ? 'Ind. Banks only switches A/B; select a filter bank to import.' : '';
         }
         if (deps.getElements().effectsCombineSaveBtn) {
             renderEffectsCombine();
@@ -218,8 +271,29 @@
         const area = deps.measurementArea();
         const mono = area?.channel_mode === 'mono';
         const note = document.getElementById('effects-import-bank-target');
-        if (note) note.textContent = area?.available === false ? 'Select a filter bank before importing.'
+        const importable = area?.available !== false && area?.importable !== false;
+        if (note) note.textContent = !importable ? 'Select a filter bank before importing.'
             : `Target: ${area?.label || 'Global'} · ${mono ? 'Mono' : 'Stereo L/R'}`;
+        // Surround Global imports for one configured speaker group, chosen here
+        // like the measured group; the chips set the same selection.
+        const catalog = deps.getState().outputSystem?.catalog;
+        const measurement = deps.getState().measurement || {};
+        const choice = importable && catalog ? outputState()?.globalGroupChoice(catalog, measurement.globalGroup) : null;
+        root.FXRouteUiHelpers?.renderChipRow(deps.getElements().effectsImportGroupRow, choice ? choice.options : [], {
+            attribute: 'data-import-group',
+            selected: choice ? choice.selected : '',
+            disabled: !!measurement.startInFlight,
+        });
+        root.FXRouteUiHelpers?.renderChipRow(deps.getElements().effectsPeqGroupRow, choice ? choice.options : [], {
+            attribute: 'data-peq-group',
+            selected: choice ? choice.selected : '',
+            disabled: !!measurement.startInFlight,
+        });
+        root.FXRouteUiHelpers?.renderChipRow(deps.getElements().effectsCombineGroupRow, choice ? choice.options : [], {
+            attribute: 'data-combine-group',
+            selected: choice ? choice.selected : '',
+            disabled: !!measurement.startInFlight,
+        });
         // Mono banks get a single import field: the stereo file area is hidden
         // and the remaining pane accepts every mono-supported format. A stale
         // file selection from the other mode is cleared on switching only, so
@@ -257,7 +331,7 @@
         const leftLabel = document.querySelector('label[for="effects-rew-left-text"]');
         if (leftLabel) leftLabel.textContent = mono ? 'Mono filter' : 'Left filter';
         if (deps.getElements().effectsRewLeftText) deps.getElements().effectsRewLeftText.placeholder = mono ? 'Paste mono REW text' : 'Paste Left REW text';
-        if (deps.getElements().effectsRewDualCreatePresetBtn) deps.getElements().effectsRewDualCreatePresetBtn.disabled = area?.available === false;
+        if (deps.getElements().effectsRewDualCreatePresetBtn) deps.getElements().effectsRewDualCreatePresetBtn.disabled = !importable;
     }
 
     async function readTextFile(file) {
@@ -349,7 +423,6 @@
             formData.append('preset_name', presetName);
             formData.append('left_text', leftText);
             formData.append('right_text', rightText);
-            formData.append('load_after_create', 'false');
             formData.append('limiter_enabled', extras.limiterEnabled ? 'true' : 'false');
             formData.append('headroom_enabled', extras.headroomEnabled ? 'true' : 'false');
             formData.append('headroom_gain_db', String(extras.headroomGainDb));
@@ -418,41 +491,43 @@
         return { presetA: '', presetB: '', activeSide: null };
     }
 
+    // A/B compare lives in the output-state banks; nothing to compare
+    // until the catalog is loaded.
     function getEffectsCompareState() {
-        const bankState = outputState()?.compareState((deps.getState().outputSystem || {}).catalog);
-        if (bankState) return bankState;
-        const fx = deps.getState().dsp || {};
-        const compare = normalizeEffectsCompareSelection(fx.compare || getEmptyEffectsCompareState());
-        const activePreset = fx.active_preset || '';
-        const effectiveActiveSide = getEffectiveEffectsCompareSide(compare, activePreset);
-        return {
-            compare,
-            activePreset,
-            effectiveActiveSide,
-            presetA: compare.presetA || activePreset || '',
-            presetB: compare.presetB || '',
+        return outputState()?.compareState((deps.getState().outputSystem || {}).catalog) || {
+            compare: getEmptyEffectsCompareState(),
+            activePreset: '',
+            effectiveActiveSide: null,
+            presetA: '',
+            presetB: '',
         };
-    }
-
-    function getEffectiveEffectsCompareSide(compare, activePreset) {
-        if (activePreset && compare?.presetA === activePreset) return 'A';
-        if (activePreset && compare?.presetB === activePreset) return 'B';
-        return compare?.activeSide || null;
     }
 
     function setEffectsCompareLoadBusy(isBusy) {
         effectsCompareLoadInFlight = !!isBusy;
         const compare = getEffectsCompareState();
         const busy = effectsCompareLoadInFlight || !!deps.getState().outputSystem?.busy;
-        if (deps.getElements().effectsCompareA) deps.getElements().effectsCompareA.disabled = busy || !!compare.aggregate;
-        if (deps.getElements().effectsCompareB) deps.getElements().effectsCompareB.disabled = busy || !!compare.aggregate;
+        // Ind. Banks lists the bank presets of each slot in place of the picker;
+        // Surround Global lists one picker per speaker group instead.
+        const slotRows = !!compare.aggregate || !!compare.groupSlots;
+        if (deps.getElements().effectsCompareA) deps.getElements().effectsCompareA.disabled = busy || slotRows;
+        if (deps.getElements().effectsCompareB) deps.getElements().effectsCompareB.disabled = busy || slotRows;
+        [deps.getElements().effectsCompareA, deps.getElements().effectsCompareB].forEach(select => {
+            select?.closest?.('.select-tooltip-wrap')?.classList.toggle('hidden', slotRows);
+        });
+        [deps.getElements().effectsCompareABanks, deps.getElements().effectsCompareBBanks].forEach(list => {
+            list?.classList?.toggle('hidden', !slotRows);
+            list?.querySelectorAll?.('select').forEach(select => { select.disabled = busy; });
+        });
         const unavailable = !!deps.getState().outputSystem?.catalog && !(compare.effectiveActiveSide === 'A' ? compare.canB : compare.canA);
         if (deps.getElements().effectsCompareToggle) {
+            deps.getElements().effectsCompareToggle.classList?.toggle('hidden', unavailable);
             deps.getElements().effectsCompareToggle.disabled = busy || unavailable;
             deps.getElements().effectsCompareToggle.title = unavailable ? (compare.aggregate
-                ? 'Assign preset B in every configured bank first.' : 'Select preset B to compare.') : '';
+                ? 'Assign preset B in at least one bank first.' : 'Select preset B to compare.') : '';
         }
         if (deps.getElements().effectsBankSelect) deps.getElements().effectsBankSelect.disabled = busy;
+        syncEffectsDeleteButton();
     }
 
     function getEffectsChainLabelForPreset(presetName, presetMap = new Map()) {
@@ -477,7 +552,105 @@
         const cleanName = String(presetName || '').trim();
         if (!cleanName) return '—';
         const displayName = getCompactDisplayName(cleanName, 24);
-        return `<a href="${deps.escapeHtml(deps.presetFileUrl(cleanName))}" data-tooltip="${deps.escapeHtml(cleanName)}">${deps.escapeHtml(displayName)}</a>`;
+        return `<a href="${deps.escapeHtml(deps.presetFileUrl(cleanName, outputSystemBankOwner()))}" data-tooltip="${deps.escapeHtml(cleanName)}">${deps.escapeHtml(displayName)}</a>`;
+    }
+
+    // Under Listening/Chain: active presets outside the current bank selection.
+    function renderEffectsBankPresets() {
+        const target = deps.getElements().effectsCompareBanks;
+        if (!target) return;
+        const catalog = deps.getState().outputSystem?.catalog;
+        const mod = outputState();
+        const entries = catalog && typeof mod?.activePresetOverview === 'function'
+            ? mod.activePresetOverview(catalog) : [];
+        const expert = !!deps.getState().outputSystem?.expert;
+        const visible = entries.filter(entry => expert || entry.ids.includes('global') || entry.preset !== 'Neutral');
+        const html = visible.map((entry) => {
+            const name = entry.preset || 'Per-channel';
+            return `<span class="effects-compare-bank" data-tooltip="${deps.escapeHtml(`${entry.label}: ${name}`)}">`
+                + `<span class="effects-compare-bank-key">${deps.escapeHtml(entry.label)}</span> `
+                + `<span class="effects-compare-bank-preset">${deps.escapeHtml(mod.compactPresetName(name))}</span></span>`;
+        }).join(' ');
+        // Unchanged markup stays in place, so an open tooltip is not rebuilt on every push.
+        if (target.innerHTML !== html) target.innerHTML = html;
+    }
+
+    // Ind. Banks slots: the preset each switched bank plays on that side. A bank
+    // without a B stays on A; in a mixed state each bank marks the side it is on.
+    function renderAllBanksSlots(effectiveActiveSide) {
+        const catalog = deps.getState().outputSystem?.catalog;
+        const mod = outputState();
+        const rows = catalog && typeof mod?.allBanksCompareOverview === 'function' ? mod.allBanksCompareOverview(catalog) : [];
+        [['A', deps.getElements().effectsCompareABanks], ['B', deps.getElements().effectsCompareBBanks]].forEach(([slot, target]) => {
+            if (!target) return;
+            const html = rows.map((row) => {
+                const preset = slot === 'A' ? row.presetA : row.presetB;
+                const staysOnA = slot === 'B' && !preset && !row.canB;
+                const name = preset || (staysOnA ? 'stays on A' : 'Per-channel');
+                const tooltip = staysOnA ? `${row.label}: no preset B, stays on A` : `${row.label}: ${name}`;
+                const classes = `effects-compare-slot-bank${staysOnA ? ' is-fixed' : ''}`
+                    + `${!effectiveActiveSide && row.side === slot ? ' is-heard' : ''}`;
+                return `<li class="${classes}" data-tooltip="${deps.escapeHtml(tooltip)}">`
+                    + `<span class="effects-compare-slot-bank-key">${deps.escapeHtml(row.label)}</span>`
+                    + `<span class="effects-compare-slot-bank-preset">${deps.escapeHtml(name)}</span></li>`;
+            }).join('') || '<li class="effects-compare-slot-bank is-fixed">No area banks</li>';
+            if (target.innerHTML !== html) target.innerHTML = html;
+        });
+    }
+
+    // Surround Global rows (null elsewhere): per routed speaker group, the
+    // preset each slot selects and the presets of that group.
+    function globalGroupRows() {
+        const catalog = deps.getState().outputSystem?.catalog;
+        const mod = outputState();
+        if (!catalog || typeof mod?.globalGroupSlots !== 'function') return null;
+        return mod.globalGroupSlots(catalog, visiblePresetEntriesForBank());
+    }
+
+    function groupSlotOptions(row, slot) {
+        const selected = slot === 'A' ? row.presetA : row.presetB;
+        const option = (value, label) => `<option value="${deps.escapeHtml(value)}"${value === selected ? ' selected' : ''}>`
+            + `${deps.escapeHtml(label)}</option>`;
+        // Generated names differ at their end, so a long one keeps its last
+        // word; the picker tooltip names the selected preset in full.
+        const compact = name => outputState().compactPresetName(name, 28);
+        return option('Neutral', 'Neutral')
+            + row.options.map(name => option(name, compact(name))).join('') + option('Direct', 'Direct · all groups');
+    }
+
+    // Surround Global slots: one preset picker per speaker group in A and B.
+    // A/B switches the whole selection; every listed group plays at once.
+    function renderGlobalGroupSlots(rows) {
+        [['A', deps.getElements().effectsCompareABanks], ['B', deps.getElements().effectsCompareBBanks]].forEach(([slot, target]) => {
+            if (!target) return;
+            const html = rows.map((row) => {
+                const preset = slot === 'A' ? row.presetA : row.presetB;
+                const tooltip = `Preset ${slot} · ${row.label}: ${preset}`;
+                return `<li class="effects-compare-slot-bank effects-compare-slot-group" data-group="${row.group}">`
+                    + `<label class="effects-compare-slot-bank-key" for="effects-compare-${slot.toLowerCase()}-${row.group}">${deps.escapeHtml(row.label)}</label>`
+                    + `<select id="effects-compare-${slot.toLowerCase()}-${row.group}" class="url-input compare-select compare-group-select"`
+                    + ` data-slot="${slot}" data-group="${row.group}" data-tooltip="${deps.escapeHtml(tooltip)}">`
+                    + `${groupSlotOptions(row, slot)}</select></li>`;
+            }).join('') || '<li class="effects-compare-slot-bank is-fixed">No speaker groups</li>';
+            // Rebuilding an open <select> on every push would close it.
+            if (target.innerHTML !== html) target.innerHTML = html;
+        });
+    }
+
+    async function handleGlobalGroupChange(select) {
+        if (effectsCompareLoadInFlight) return;
+        const catalog = deps.getState().outputSystem?.catalog;
+        const current = getEffectsCompareState();
+        if (!catalog || !current.groupSlots) return;
+        const { slot, group } = select.dataset;
+        const fields = { mode: catalog.active_mode, bank_id: 'global' };
+        Object.assign(fields, { [slot === 'A' ? 'preset_a' : 'preset_b']: select.value, group });
+        if (!current.effectiveActiveSide) fields.active_side = slot;
+        try {
+            await deps.applyMutation('set_bank_preset', fields, false);
+        } finally {
+            renderEffectsCompare();
+        }
     }
 
     function renderEffectsCompare() {
@@ -485,11 +658,13 @@
         const presetEntries = fx.presets || [];
         const visibleEntries = deps.getState().outputSystem?.catalog ? visiblePresetEntriesForBank() : presetEntries.slice();
         const presets = visibleEntries.map(p => p.name);
-        const presetMap = new Map(presetEntries.map(preset => [preset.name, preset]));
-        const { compare, activePreset, effectiveActiveSide, presetA, presetB, aggregate } = getEffectsCompareState();
+        // The selected bank's entries: another bank may hold a preset of the same name.
+        const presetMap = new Map(visibleEntries.map(preset => [preset.name, preset]));
+        const { compare, activePreset, effectiveActiveSide, presetA, presetB, aggregate, groupSlots, canA, canB } = getEffectsCompareState();
 
         if (!deps.getElements().effectsCompareRow) return;
-        if (!aggregate && presets.length === 0) {
+        renderEffectsBankPresets();
+        if (!deps.getState().outputSystem?.catalog || (!aggregate && presets.length === 0)) {
             deps.getElements().effectsCompareRow.style.display = 'none';
             syncBankActionButtons();
             return;
@@ -498,21 +673,16 @@
 
         // Rebuilding <option> lists on every WS push closes an open dropdown.
         // Only touch the DOM when the values actually changed.
-        // All Banks owns no presets: both disabled selects show one aggregate
-        // A/B label, and the chain line names the involved area banks below.
-        const aggregateBanks = aggregate ? (() => {
-            const modeConfig = (deps.getState().outputSystem?.catalog?.modes || {})[deps.getState().outputSystem?.catalog?.active_mode] || {};
-            return Object.entries(modeConfig.banks || {}).filter(([id]) => id !== 'global');
-        })() : [];
-        const aggregateLabel = (id, bank) => bank?.label || outputState()?.roleLabel?.(id) || id;
-        const optionsA = aggregate ? '<option>All Banks · A</option>' :
+        // Ind. Banks owns no presets: its hidden selects hold one aggregate
+        // label each, and the slots list the bank presets instead.
+        const optionsA = aggregate ? '<option>Ind. Banks · A</option>' :
             (!presetA ? '<option value="">Per-channel presets</option>' : '') + presets.map(n => `<option value="${deps.escapeHtml(n)}" ${n === presetA ? 'selected' : ''}>${deps.escapeHtml(n)}</option>`).join('');
         if (deps.getElements().effectsCompareA.innerHTML !== optionsA) {
             deps.getElements().effectsCompareA.innerHTML = optionsA;
         }
-        const optionsB = aggregate ? '<option>All Banks · B</option>' : [`<option value="" ${!presetB ? 'selected' : ''}>${!presetB && getEffectsCompareState().canB ? 'Per-channel presets' : 'Select preset…'}</option>`].concat(
-                presets.map(n => `<option value="${deps.escapeHtml(n)}" ${n === presetB ? 'selected' : ''}>${deps.escapeHtml(n)}</option>`)
-            ).join('');
+        const optionsB = aggregate ? '<option>Ind. Banks · B</option>' :
+            (!presetB && canB ? '<option value="" selected>Per-channel presets</option>' : '')
+            + presets.map(n => `<option value="${deps.escapeHtml(n)}" ${n === (presetB || (canB ? '' : 'Neutral')) ? 'selected' : ''}>${deps.escapeHtml(n)}</option>`).join('');
         if (deps.getElements().effectsCompareB.innerHTML !== optionsB) {
             deps.getElements().effectsCompareB.innerHTML = optionsB;
         }
@@ -544,15 +714,23 @@
             const chainLabel = getEffectsChainLabelForPreset(chainPresetName, presetMap);
             deps.getElements().effectsCompareChain.textContent = chainLabel;
         }
+        // Ind. Banks: the status names the side only; the slots list the banks.
+        deps.getElements().effectsCompareChain?.classList?.toggle('hidden', !!aggregate);
         if (aggregate) {
             if (deps.getElements().effectsCompareActive) deps.getElements().effectsCompareActive.textContent = effectiveActiveSide
-                ? `Listening: ${effectiveActiveSide} · All Banks` : 'Listening: Mixed A/B';
-            if (deps.getElements().effectsCompareChain) deps.getElements().effectsCompareChain.textContent =
-                aggregateBanks.map(([id, bank]) => aggregateLabel(id, bank)).join(' · ') || 'No area banks';
+                ? `Listening: ${effectiveActiveSide} · Ind. Banks` : 'Listening: Mixed A/B';
+            renderAllBanksSlots(effectiveActiveSide);
+        } else if (groupSlots) {
+            // Surround Global: the slots list each group's preset; the chain names
+            // the groups the listened selection filters.
+            if (deps.getElements().effectsCompareActive) deps.getElements().effectsCompareActive.textContent = effectiveActiveSide
+                ? `Listening: ${effectiveActiveSide}` : `Listening: ${activePreset || '—'}`;
+            if (deps.getElements().effectsCompareChain) deps.getElements().effectsCompareChain.textContent = activePreset === 'Direct'
+                ? 'Filters: bypassed (Direct)' : activePreset && activePreset !== 'Neutral' ? `Filters: ${activePreset}` : 'Filters: none';
+            renderGlobalGroupSlots(globalGroupRows() || []);
         }
-        if (deps.getElements().effectsCompareToggle) deps.getElements().effectsCompareToggle.textContent = aggregate
-            ? `Switch all to ${effectiveActiveSide === 'A' ? 'B' : 'A'}` : 'Compare A/B';
-        deps.getElements().effectsDeleteBtn?.classList.toggle('hidden', !!aggregate);
+        if (deps.getElements().effectsCompareToggle) deps.getElements().effectsCompareToggle.textContent = 'Compare A/B';
+        syncEffectsDeleteButton();
         const badge = document.getElementById('effects-compare-active-badge');
         if (badge) {
             badge.classList.toggle('is-side-a', effectiveActiveSide === 'A');
@@ -560,12 +738,74 @@
         }
         document.querySelectorAll('.effects-compare-slot').forEach((slotEl) => {
             const slot = slotEl.dataset.compareSlot;
-            const slotPreset = slot === 'A' ? presetA : presetB;
-            slotEl.classList.toggle('is-active', effectiveActiveSide === slot && (!!slotPreset || aggregate));
-            slotEl.classList.toggle('is-armed', effectiveActiveSide !== slot && !!slotPreset);
+            const slotAvailable = aggregate || groupSlots ? !!(slot === 'A' ? canA : canB) : !!(slot === 'A' ? presetA : presetB);
+            slotEl.classList.toggle('is-active', effectiveActiveSide === slot && (slotAvailable || aggregate));
+            slotEl.classList.toggle('is-armed', effectiveActiveSide !== slot && slotAvailable);
         });
         renderEffectsBankSelector();
         setEffectsCompareLoadBusy(effectsCompareLoadInFlight);
+    }
+
+    // Surround Global deletes from every routed group on the listened side,
+    // independently of the measurement/import target and Easy/Expert view.
+    function activeDeletablePresets() {
+        const { activePreset, effectiveActiveSide, groupSlots, aggregate } = getEffectsCompareState();
+        if (aggregate) return [];
+        const catalog = deps.getState().outputSystem?.catalog;
+        const config = catalog?.modes?.[catalog.active_mode];
+        const bank = config?.banks?.[config.selected_bank];
+        if (groupSlots && effectiveActiveSide !== 'A' && effectiveActiveSide !== 'B') return [];
+        const entries = groupSlots
+            ? (globalGroupRows() || []).map(row => ({
+                name: effectiveActiveSide === 'B' ? row.presetB : row.presetA, label: row.label, group: row.group,
+            }))
+            : [{ name: activePreset, label: bank?.label || '', group: '' }];
+        return entries.filter(entry => entry.name && entry.name !== 'Direct' && entry.name !== 'Neutral');
+    }
+
+    function effectsDeleteContext() {
+        return JSON.stringify([outputSystemBankOwner(), getEffectsCompareState().effectiveActiveSide, activeDeletablePresets()]);
+    }
+
+    // Delete targets the selected bank's active preset, as in Global; Ind.
+    // Banks has no Delete.
+    function syncEffectsDeleteButton() {
+        const button = deps.getElements().effectsDeleteBtn;
+        if (!button) return;
+        const { aggregate } = getEffectsCompareState();
+        button.classList.toggle('hidden', !!aggregate);
+        button.disabled = effectsDeleteInFlight || !!deps.getState().outputSystem?.busy
+            || !deps.getState().dsp?.available || activeDeletablePresets().length === 0;
+        const tooltip = 'Delete active presets';
+        if (button.dataset) button.dataset.tooltip = tooltip;
+        button.setAttribute?.('aria-label', tooltip);
+    }
+
+    function syncEffectsDeleteDialog() {
+        const elements = deps.getElements();
+        const multiple = (effectsDeleteDraft?.presets.length || 0) > 1;
+        const inputs = Array.from(elements.effectsDeleteList?.querySelectorAll('input[data-delete-index]') || []);
+        const selected = multiple ? inputs.filter(input => input.checked).length : effectsDeleteDraft ? 1 : 0;
+        if (elements.effectsDeleteConfirm) {
+            elements.effectsDeleteConfirm.textContent = multiple ? `Delete (${selected})` : 'Delete';
+            elements.effectsDeleteConfirm.disabled = effectsDeleteInFlight || selected === 0;
+        }
+        if (elements.effectsDeleteCancel) elements.effectsDeleteCancel.disabled = effectsDeleteInFlight;
+        inputs.forEach(input => { input.disabled = effectsDeleteInFlight; });
+    }
+
+    function closeEffectsDeleteDialog() {
+        if (effectsDeleteInFlight) return;
+        const panel = deps.getElements().effectsDeletePanel;
+        effectsDeleteDraft = null;
+        panel?.classList.add('hidden');
+        root.FXRouteModal?.close(panel);
+        if (deps.getElements().effectsDeleteBtn?.disabled) {
+            const compare = deps.getElements().effectsCompareToggle;
+            const fallback = compare && !compare.disabled && !compare.classList.contains('hidden')
+                ? compare : document.querySelector?.('.tab-btn[data-tab="effects"]');
+            fallback?.focus();
+        }
     }
 
     function getEffectsCombineValidationState() {
@@ -633,7 +873,7 @@
         if (deps.getElements().effectsCombineSaveBtn) {
             deps.getElements().effectsCombineSaveBtn.disabled = !fx.available || !validation.isValid;
             if (validation.aggregate) {
-                deps.getElements().effectsCombineSaveBtn.title = 'All Banks owns no presets; select a concrete filterbank.';
+                deps.getElements().effectsCombineSaveBtn.title = 'Ind. Banks owns no presets; select a concrete filterbank.';
             } else if (validation.crossBank) {
                 deps.getElements().effectsCombineSaveBtn.title = 'Combine only presets from the selected bank.';
             } else {
@@ -645,8 +885,8 @@
     async function createCombinedEffectsPreset() {
         const validation = getEffectsCombineValidationState();
         if (validation.aggregate) {
-            if (deps.getElements().effectsStatus) deps.getElements().effectsStatus.innerHTML = '<div style="color: var(--danger);">All Banks owns no presets; select a concrete filterbank.</div>';
-            deps.showToast('All Banks owns no presets; select a concrete filterbank', 'error');
+            if (deps.getElements().effectsStatus) deps.getElements().effectsStatus.innerHTML = '<div style="color: var(--danger);">Ind. Banks owns no presets; select a concrete filterbank.</div>';
+            deps.showToast('Ind. Banks owns no presets; select a concrete filterbank', 'error');
             return;
         }
         if (validation.crossBank) {
@@ -674,14 +914,17 @@
         if (deps.getElements().effectsCombineSaveBtn) deps.getElements().effectsCombineSaveBtn.disabled = true;
         if (deps.getElements().effectsStatus) deps.getElements().effectsStatus.innerHTML = `<div>Saving combined preset: <strong>${deps.escapeHtml(validation.presetName)}</strong>…</div>`;
         try {
-            const combineBank = outputSystemCombineBank();
+            const owner = outputSystemBankOwner();
+            const group = owner?.bank_mode === 'surround' && owner.bank_id === 'global'
+                ? outputSystemBankBinding()?.bank_group : null;
             const resp = await fetch('/api/dsp/presets/combine', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     presetName: validation.presetName,
                     presetNames: validation.selectedPresets,
-                    ...(combineBank || {}),
+                    ...(owner || {}),
+                    ...(group ? { bank_group: group } : {}),
                 }),
             });
             const data = await resp.json().catch(() => ({}));
@@ -698,34 +941,17 @@
         }
     }
 
-    async function loadEffectsComparePreset(target, newSide, targetA, targetB) {
+    async function loadEffectsComparePreset(newSide) {
         if (effectsCompareLoadInFlight) return;
+        const catalog = deps.getState().outputSystem?.catalog;
+        if (!catalog) return;
         setEffectsCompareLoadBusy(true);
         try {
-            const catalog = deps.getState().outputSystem?.catalog;
-            if (catalog) {
-                const bankId = catalog.modes[catalog.active_mode].selected_bank;
-                await deps.applyMutation('set_bank_preset', {
-                    mode: catalog.active_mode, bank_id: bankId, active_side: newSide,
-                }, false);
-                renderEffectsCompare();
-                return;
-            }
-            const resp = await fetch('/api/dsp/presets/load', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ preset_name: target }),
-            });
-            const data = await resp.json();
-            if (!resp.ok) throw new Error(data.detail || 'Failed to load preset');
-            deps.getState().dsp.active_preset = target;
-            deps.getState().dsp.compare = {
-                presetA: targetA,
-                presetB: targetB,
-                activeSide: newSide,
-            };
-            await saveEffectsCompareState(deps.getState().dsp.compare);
-            deps.renderEffects();
+            const bankId = catalog.modes[catalog.active_mode].selected_bank;
+            await deps.applyMutation('set_bank_preset', {
+                mode: catalog.active_mode, bank_id: bankId, active_side: newSide,
+            }, false);
+            renderEffectsCompare();
         } finally {
             setEffectsCompareLoadBusy(false);
         }
@@ -734,104 +960,41 @@
     async function handleEffectsCompareSelectionChange(slot) {
         if (effectsCompareLoadInFlight) return;
         const catalog = deps.getState().outputSystem?.catalog;
-        if (catalog) {
-            const current = getEffectsCompareState();
-            if (current.aggregate) return;
-            const selectedValue = (slot === 'A' ? deps.getElements().effectsCompareA?.value : deps.getElements().effectsCompareB?.value) || null;
-            if (selectedValue && selectedValue === (slot === 'A' ? current.presetB : current.presetA)) {
-                deps.showToast('A and B must use different presets', 'warning');
-                renderEffectsCompare();
-                return;
-            }
-            const fields = { mode: catalog.active_mode, bank_id: catalog.modes[catalog.active_mode].selected_bank,
-                [slot === 'A' ? 'preset_a' : 'preset_b']: selectedValue };
-            if (selectedValue && (!current.effectiveActiveSide || current.effectiveActiveSide === slot)) fields.active_side = slot;
-            if (!selectedValue && slot === 'B' && current.effectiveActiveSide === 'B') fields.active_side = 'A';
-            await deps.applyMutation('set_bank_preset', fields, false);
+        if (!catalog) {
             renderEffectsCompare();
             return;
         }
-        deps.getState().dsp.compare = normalizeEffectsCompareSelection(deps.getState().dsp.compare || getEmptyEffectsCompareState());
-
-        const previousCompare = {
-            presetA: deps.getState().dsp.compare.presetA || '',
-            presetB: deps.getState().dsp.compare.presetB || '',
-            activeSide: deps.getState().dsp.compare.activeSide || null,
-        };
-        const activePreset = deps.getState().dsp?.active_preset || '';
-        const effectiveActiveSide = getEffectiveEffectsCompareSide(previousCompare, activePreset);
-
-        let targetA = deps.getElements().effectsCompareA?.value || '';
-        let targetB = deps.getElements().effectsCompareB?.value || '';
-        if (targetA && targetB && targetA === targetB) {
-            if (slot === 'B') {
-                targetB = '';
-                if (deps.getElements().effectsCompareB) deps.getElements().effectsCompareB.value = '';
-                deps.showToast('A and B must use different presets', 'warning');
-            } else {
-                targetB = '';
-            }
-        }
-        deps.getState().dsp.compare = normalizeEffectsCompareSelection({
-            presetA: targetA,
-            presetB: targetB,
-            activeSide: deps.getState().dsp.compare.activeSide || null,
-        });
-        await saveEffectsCompareState(deps.getState().dsp.compare);
-
-        const selectedValue = slot === 'A' ? targetA : targetB;
-        const shouldAutoload = !!selectedValue && selectedValue !== activePreset && (!effectiveActiveSide || effectiveActiveSide === slot);
-
-        if (shouldAutoload) {
-            await loadEffectsComparePreset(selectedValue, slot, deps.getState().dsp.compare.presetA, deps.getState().dsp.compare.presetB);
-        } else {
-            renderEffectsCompare();
-        }
-    }
-
-    function getEffectsCompareToggleTarget({ effectiveActiveSide, activePreset, presetA, presetB }) {
-        if (effectiveActiveSide === 'A' && presetB) return { target: presetB, side: 'B' };
-        if (effectiveActiveSide === 'B' && presetA) return { target: presetA, side: 'A' };
-        if (presetB && presetA === activePreset) return { target: presetB, side: 'B' };
-        if (presetA) return { target: presetA, side: 'A' };
-        if (presetB) return { target: presetB, side: 'B' };
-        return { target: null, side: null };
+        const current = getEffectsCompareState();
+        if (current.aggregate) return;
+        const selectedValue = (slot === 'A' ? deps.getElements().effectsCompareA?.value : deps.getElements().effectsCompareB?.value) || null;
+        const fields = { mode: catalog.active_mode, bank_id: catalog.modes[catalog.active_mode].selected_bank,
+            [slot === 'A' ? 'preset_a' : 'preset_b']: selectedValue };
+        if (selectedValue && (!current.effectiveActiveSide || current.effectiveActiveSide === slot)) fields.active_side = slot;
+        if (!selectedValue && slot === 'B' && current.effectiveActiveSide === 'B') fields.active_side = 'A';
+        await deps.applyMutation('set_bank_preset', fields, false);
+        renderEffectsCompare();
     }
 
     async function toggleComparePreset() {
         if (effectsCompareLoadInFlight) return;
         try {
+            const catalog = deps.getState().outputSystem?.catalog;
+            if (!catalog) return;
             const compareState = getEffectsCompareState();
+            const side = compareState.effectiveActiveSide === 'A' ? 'B' : 'A';
             if (compareState.aggregate) {
-                const side = compareState.effectiveActiveSide === 'A' ? 'B' : 'A';
                 if (!(side === 'B' ? compareState.canB : compareState.canA)) {
-                    deps.showToast('Assign preset B in every configured bank first.', 'warning');
+                    deps.showToast('Assign preset B in at least one bank first.', 'warning');
                     return;
                 }
                 await deps.applyMutation('switch_all_banks', {
-                    mode: deps.getState().outputSystem.catalog.active_mode, active_side: side,
+                    mode: catalog.active_mode, active_side: side,
                 }, false);
                 renderEffectsCompare();
                 return;
             }
-            if (deps.getState().outputSystem?.catalog) {
-                const side = compareState.effectiveActiveSide === 'A' ? 'B' : 'A';
-                if (!(side === 'B' ? compareState.canB : compareState.canA)) return;
-                await loadEffectsComparePreset(null, side, compareState.presetA, compareState.presetB);
-                return;
-            }
-            if (!compareState.presetA && !compareState.presetB) {
-                deps.showToast('Select a preset in A or B first', 'warning');
-                return;
-            }
-
-            const { target, side } = getEffectsCompareToggleTarget(compareState);
-            if (!target || !side) {
-                deps.showToast('Select a preset in A or B first', 'warning');
-                return;
-            }
-
-            await loadEffectsComparePreset(target, side, compareState.presetA, compareState.presetB);
+            if (!(side === 'B' ? compareState.canB : compareState.canA)) return;
+            await loadEffectsComparePreset(side);
         } catch (e) {
             console.error('toggleComparePreset error:', e);
             deps.showToast(e.message || 'Failed to toggle preset', 'error');
@@ -847,6 +1010,17 @@
         if (deps.getElements().effectsCompareToggle) {
             deps.getElements().effectsCompareToggle.addEventListener('click', toggleComparePreset);
         }
+        [deps.getElements().effectsCompareABanks, deps.getElements().effectsCompareBBanks].forEach(list => {
+            list?.addEventListener?.('change', async (event) => {
+                if (!event.target?.classList?.contains('compare-group-select')) return;
+                try {
+                    await handleGlobalGroupChange(event.target);
+                } catch (e) {
+                    console.error('compare group preset change error:', e);
+                    deps.showToast(e.message || 'Failed to select preset', 'error');
+                }
+            });
+        });
         if (deps.getElements().effectsCompareA) {
             deps.getElements().effectsCompareA.addEventListener('change', async () => {
                 try {
@@ -943,7 +1117,6 @@
             return;
         }
         const formData = new FormData();
-        formData.append('load_after_create', 'false');
         formData.append('file', file);
         appendBankBindingFields(formData);
         if (deps.getElements().effectsStatus) deps.getElements().effectsStatus.innerHTML = `<div>Importing preset: <strong>${deps.escapeHtml(file.name)}</strong>…</div>`;
@@ -984,7 +1157,6 @@
             return;
         }
         const formData = new FormData();
-        formData.append('load_after_create', 'false');
         formData.append('file', file);
         appendBankBindingFields(formData);
         if (deps.getElements().effectsStatus) deps.getElements().effectsStatus.innerHTML = `<div>Importing bundle: <strong>${deps.escapeHtml(file.name)}</strong>…</div>`;
@@ -1029,7 +1201,6 @@
         const extras = deps.collectEffectsExtras();
         const formData = new FormData();
         formData.append('preset_name', presetName);
-        formData.append('load_after_create', 'false');
         formData.append('limiter_enabled', extras.limiterEnabled ? 'true' : 'false');
         formData.append('headroom_enabled', extras.headroomEnabled ? 'true' : 'false');
         formData.append('headroom_gain_db', String(extras.headroomGainDb));
@@ -1066,33 +1237,77 @@
         }
     }
 
-    async function deleteEffectsPreset() {
-        const presetName = getEffectsCompareState().activePreset;
-        if (!presetName) {
+    function deleteEffectsPreset() {
+        if (effectsDeleteInFlight) return;
+        const presets = activeDeletablePresets();
+        if (!presets.length) {
             deps.showToast('No active preset to delete', 'warning');
             return;
         }
-        if (presetName === 'Direct' || presetName === 'Neutral') {
-            deps.showToast(`Preset "${presetName}" is built-in and cannot be deleted`, 'error');
+        if (!deps.getState().dsp?.available || deps.getState().outputSystem?.busy) return;
+        const elements = deps.getElements();
+        if (!elements.effectsDeletePanel || !elements.effectsDeleteList) return;
+        effectsDeleteDraft = { presets, owner: outputSystemBankOwner() || {}, context: effectsDeleteContext() };
+        const multiple = presets.length > 1;
+        elements.effectsDeleteList.innerHTML = presets.map((preset, index) => {
+            const copy = `<span class="effects-delete-copy"><strong>${deps.escapeHtml(preset.label)}</strong>`
+                + `<span>${deps.escapeHtml(preset.name)}</span></span>`;
+            return multiple ? `<label class="effects-delete-item"><input type="checkbox" data-delete-index="${index}" checked>${copy}</label>`
+                : `<div class="effects-delete-item">${copy}</div>`;
+        }).join('');
+        const side = getEffectsCompareState().effectiveActiveSide;
+        if (elements.effectsDeleteDescription) elements.effectsDeleteDescription.textContent =
+            (side ? `Listening: ${side} · ` : '') + (multiple ? 'Select the presets to delete.' : 'Delete this preset?');
+        syncEffectsDeleteDialog();
+        elements.effectsDeletePanel.classList.remove('hidden');
+        root.FXRouteModal?.open(elements.effectsDeletePanel, {
+            opener: elements.effectsDeleteBtn, initialFocus: elements.effectsDeleteCancel,
+            onEscape: closeEffectsDeleteDialog,
+        });
+    }
+
+    async function confirmEffectsPresetDelete() {
+        if (!effectsDeleteDraft || effectsDeleteInFlight) return;
+        const { presets, owner, context } = effectsDeleteDraft;
+        const inputs = Array.from(deps.getElements().effectsDeleteList?.querySelectorAll('input[data-delete-index]') || []);
+        const selected = presets.length === 1 ? presets : presets.filter((preset, index) =>
+            inputs.some(input => Number(input.dataset.deleteIndex) === index && input.checked));
+        if (!selected.length) return;
+        if (context !== effectsDeleteContext() || !deps.getState().dsp?.available || deps.getState().outputSystem?.busy) {
+            closeEffectsDeleteDialog();
+            deps.showToast('Active presets changed. Reopen Delete active to review them.', 'warning');
             return;
         }
-        if (!deps.confirmDialog(`Delete preset "${presetName}"?`)) return;
-        deps.getElements().effectsDeleteBtn.disabled = true;
+        effectsDeleteInFlight = true;
+        syncEffectsDeleteDialog();
+        syncEffectsDeleteButton();
+        let deletedCount = 0;
         try {
-            const resp = await fetch('/api/dsp/presets/delete', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ preset_name: presetName }),
-            });
-            const data = await resp.json();
-            if (!resp.ok) throw new Error(data.detail || 'Preset delete failed');
-            await deps.fetchEffects();
-            void deps.refreshCatalog(true);
-            deps.showToast(`Deleted preset: ${presetName}`, 'success');
+            for (const preset of selected) {
+                const resp = await fetch('/api/dsp/presets/delete', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ preset_name: preset.name, ...owner }),
+                });
+                const data = await resp.json();
+                if (!resp.ok) throw new Error(formatError(data.detail, typeof data.detail === 'string' ? data.detail : 'Preset delete failed'));
+                deletedCount++;
+            }
+            deps.showToast(selected.length === 1 ? `Deleted preset: ${selected[0].name}` : `Deleted ${selected.length} presets`, 'success');
         } catch (e) {
-            deps.showToast(e.message || 'Preset delete failed', 'error');
+            const progress = deletedCount ? `Deleted ${deletedCount} of ${selected.length} presets. ` : '';
+            deps.showToast(progress + (e.message || 'Preset delete failed'), 'error');
         } finally {
-            deps.getElements().effectsDeleteBtn.disabled = false;
+            try {
+                await deps.fetchEffects();
+                await deps.refreshCatalog(true);
+            } catch (e) {
+                deps.showToast(e.message || 'Preset refresh failed', 'error');
+            } finally {
+                effectsDeleteInFlight = false;
+                syncEffectsDeleteButton();
+                closeEffectsDeleteDialog();
+            }
         }
     }
 
@@ -1113,7 +1328,6 @@
         const extras = deps.collectEffectsExtras();
         const formData = new FormData();
         formData.append('preset_name', presetName);
-        formData.append('load_after_create', 'false');
         formData.append('limiter_enabled', extras.limiterEnabled ? 'true' : 'false');
         formData.append('headroom_enabled', extras.headroomEnabled ? 'true' : 'false');
         formData.append('headroom_gain_db', String(extras.headroomGainDb));
@@ -1151,6 +1365,14 @@
             // import file, dual-filter create, and the combine draft inputs.
             // Compare dropdowns bind through setupEffectsCompareActions below.
             if (deps.getElements().effectsDeleteBtn) deps.getElements().effectsDeleteBtn.addEventListener('click', deleteEffectsPreset);
+            deps.getElements().effectsDeleteConfirm?.addEventListener('click', confirmEffectsPresetDelete);
+            deps.getElements().effectsDeleteCancel?.addEventListener('click', closeEffectsDeleteDialog);
+            deps.getElements().effectsDeleteList?.addEventListener('change', syncEffectsDeleteDialog);
+            deps.getElements().effectsDeletePanel?.querySelector('.manage-overlay-backdrop')
+                ?.addEventListener('click', closeEffectsDeleteDialog);
+            deps.getElements().effectsExpertToggle?.addEventListener('change', (event) => {
+                void setExpertView(!!event.target.checked);
+            });
             if (deps.getElements().effectsToggleImportBtn) {
                 deps.getElements().effectsToggleImportBtn.addEventListener('click', () => {
                     const shouldOpen = deps.getElements().effectsImportPanel?.classList.contains('hidden');
@@ -1201,21 +1423,23 @@
 
     return {
         init,
-        normalizeEffectsCompareSelection,
-        resolveEffectsCompareState,
-        saveEffectsCompareState,
+        readStoredExpertView,
+        setExpertView,
         getDefaultEffectsCombineDraft,
         normalizeEffectsCombineDraft,
         setEffectsImportPanelOpen,
         outputSystemBankBinding,
-        outputSystemCombineBank,
+        outputSystemBankOwner,
         visiblePresetEntriesForBank,
         visiblePresetNamesForBank,
         appendBankBindingFields,
         bankBindingJson,
         measurementPeqParams,
         requireConcreteFilterBank,
+        requireMeasurableArea,
         renderEffectsBankSelector,
+        selectEffectsGroup,
+        renderSweepGroupRow,
         syncBankActionButtons,
         renderBankImportTarget,
         readTextFile,
@@ -1224,18 +1448,17 @@
         createDualFilterPreset,
         getEmptyEffectsCompareState,
         getEffectsCompareState,
-        getEffectiveEffectsCompareSide,
         setEffectsCompareLoadBusy,
         getEffectsChainLabelForPreset,
         getCompactDisplayName,
         renderPresetDownloadLink,
         renderEffectsCompare,
+        syncEffectsDeleteButton,
         getEffectsCombineValidationState,
         renderEffectsCombine,
         createCombinedEffectsPreset,
         loadEffectsComparePreset,
         handleEffectsCompareSelectionChange,
-        getEffectsCompareToggleTarget,
         toggleComparePreset,
         setupEffectsCompareActions,
         detectEffectsImportType,

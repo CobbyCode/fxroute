@@ -17,7 +17,9 @@ const MEASUREMENT_JOB_CANCELLED_STATES = new Set(['cancelled', 'canceled']);
 const MEASUREMENT_JOB_FAILED_STATES = new Set(['failed', 'failure', 'error']);
 const MEASUREMENT_JOB_SUCCESS_STATES = new Set(['completed', 'complete', 'finished', 'success', 'ready', 'done', 'ok']);
 const MEASUREMENT_LR_REPEAT_DELTA_TOOLTIP = 'L/R delta is calculated as Right - Left. Positive means the right channel arrives later.';
-const measurementComparePalette = ['#60a5fa', '#f59e0b', '#f472b6', '#a78bfa', '#f87171', '#facc15'];
+// An Advanced series saves up to seven runs (Front L/R, Center, Side L/R,
+// Rear L/R) next to the current green, so seven saved runs stay distinct.
+const measurementComparePalette = ['#60a5fa', '#f59e0b', '#f472b6', '#a78bfa', '#f87171', '#facc15', '#22d3ee', '#a3e635'];
 const measurementCurrentColor = '#22c55e';
 const measurementPeqPalette = ['#60a5fa', '#f59e0b', '#f472b6', '#a78bfa'];
 const measurementPeqTypes = ['bell', 'low_shelf', 'high_shelf', 'low_pass', 'high_pass', 'notch', 'gain'];
@@ -128,8 +130,10 @@ function measurementFileUrl(measurementId = '') {
     return `/api/measurements/${encodeURIComponent(String(measurementId || ''))}/file`;
 }
 
-function presetFileUrl(presetName = '') {
-    return `/api/dsp/presets/${encodeURIComponent(String(presetName || ''))}/file`;
+// A preset name is unique within its bank only; ``owner`` ({bank_mode, bank_id}) names the bank.
+function presetFileUrl(presetName = '', owner = null) {
+    const query = owner ? `?${new URLSearchParams(owner)}` : '';
+    return `/api/dsp/presets/${encodeURIComponent(String(presetName || ''))}/file${query}`;
 }
 
 function getDefaultMeasurementPeqFilter(index = 0) {
@@ -170,6 +174,21 @@ function getDefaultMeasurementConvolverState() {
         creatingPreset: false,
         draft: { left: null, right: null, presetName: '', nameTouched: false, notice: '' },
     };
+}
+
+function hasUnsavedMeasurementContent(measurementState = {}) {
+    return (!!measurementState.currentMeasurement && !measurementState.currentMeasurementSaved)
+        || (Array.isArray(measurementState.pendingRepeatMeasurements) && measurementState.pendingRepeatMeasurements.length > 0)
+        || (Array.isArray(measurementState.autoSubMeasurements) && measurementState.autoSubMeasurements.length > 0);
+}
+
+// The name the user typed into the name field.  '' while the field holds a
+// name the app proposed for a result (AutoSub, a sweep's own name) or nothing:
+// such a proposal never replaces a typed name.
+function getTypedMeasurementName(measurementState = {}) {
+    const typed = String(measurementState.typedMeasurementName || '').trim();
+    const shown = String(measurementState.currentMeasurementName || '').trim();
+    return typed && typed === shown ? typed : '';
 }
 
 function hasResettableMeasurementSettings(assistMode, peq, conv, defaults = getDefaultMeasurementConvolverState()) {
@@ -676,13 +695,6 @@ function summarizeMeasurementBand(summary = {}, fallbackLabel = 'No points') {
     return summary.point_count ? `${summary.point_count} pts · ${summary.min_hz || 20}–${summary.max_hz || 20000} Hz` : fallbackLabel;
 }
 
-function formatMeasurementUpperLimit(maxHz) {
-    const numericMaxHz = Number(maxHz);
-    if (!Number.isFinite(numericMaxHz) || numericMaxHz <= 0) return '';
-    if (numericMaxHz >= 1000) return `${(numericMaxHz / 1000).toFixed(numericMaxHz >= 10000 ? 1 : 2).replace(/\.0$/, '')}k`;
-    return `${Math.round(numericMaxHz)} Hz`;
-}
-
 function summarizeMeasurementEntry(measurement = {}) {
     const displaySummary = (measurement.review_summary || {}).point_count ? (measurement.review_summary || {}) : (measurement.summary || {});
     return summarizeMeasurementBand(displaySummary, 'No graph data');
@@ -1011,6 +1023,8 @@ function hybridSpeakerName(channel) {
         getDefaultMeasurementPeqFilter,
         getDefaultMeasurementPeqState,
         getDefaultMeasurementConvolverState,
+        hasUnsavedMeasurementContent,
+        getTypedMeasurementName,
         hasResettableMeasurementSettings,
         getMeasurementConvolverDraftPhaseMode,
         getMeasurementPeqNameSuffix,
@@ -1053,7 +1067,6 @@ function hybridSpeakerName(channel) {
         measurementIrAmplitudeToY,
         getNearestMeasurementIrPoint,
         summarizeMeasurementBand,
-        formatMeasurementUpperLimit,
         summarizeMeasurementEntry,
         formatMeasurementQualityReason,
         getMeasurementQualitySummary,

@@ -57,7 +57,35 @@
         presetEntry('PEQ', { peq: { enabled: true, params: { channelMode: 'dual', eqMode: 'IIR', leftBands: [], rightBands: [] } } }),
         presetEntry('PEQ LR Measurement 2f 0tewt', { peq: { enabled: true, params: { channelMode: 'dual', eqMode: 'IIR', leftBands: [], rightBands: [] } } }),
     ];
-    let dspActivePreset = 'Conv LR HybAlign BK 20-12000Hz -3dB 044321';
+    // Every bank has its own presets, Global one set per output mode; the
+    // stock belongs to Stereo + Sub Global, the mode the demo starts in.
+    dspPresets.forEach((entry) => {
+        Object.assign(entry, ['Direct', 'Neutral'].includes(entry.name)
+            ? { bank: entry.name === 'Direct' ? 'global' : null, mode: null } : { bank: 'global', mode: 'stereo-sub' });
+    });
+    // Mirror of dsp.api._optional_owner: the bank a request addresses, Stereo
+    // Global without one. A preset name is unique within its bank only.
+    function demoPresetOwner(body) {
+        const bank = String(body.bank_id || '') || 'global';
+        return { bank, mode: bank === 'global' ? String(body.bank_mode || '') || 'stereo' : null };
+    }
+    function findDemoPreset(name, owner) {
+        return dspPresets.find(entry => entry.name === name
+            && (entry.bank === null || (entry.bank === owner.bank && (entry.mode === null || entry.mode === owner.mode))));
+    }
+    function addDemoPreset(name, body, extra) {
+        const owner = demoPresetOwner(body);
+        const existing = findDemoPreset(name, owner);
+        // Writing over a name replaces the stored preset (DSPPresetStore.write),
+        // it does not leave the previous filters behind.
+        if (existing) {
+            Object.assign(existing, extra || {});
+            return existing;
+        }
+        const entry = { ...presetEntry(name, extra), ...owner };
+        dspPresets.push(entry);
+        return entry;
+    }
     let dspExtras = {
         limiter: { enabled: true, params: { thresholdDb: -1.0, attackMs: 5.0, releaseMs: 20.0, lookaheadMs: 5.0, stereoLinkPercent: 100.0 } },
         headroom: { enabled: false, params: { gainDb: -3 } },
@@ -66,12 +94,8 @@
         autogain: { enabled: false, params: { targetDb: -18 } },
         loudness: { enabled: false, params: { strength: 2, fftSize: 16384, volumeDb: 0 } },
         tone_effect: { enabled: false, mode: 'crystalizer' },
+        upmixer: { enabled: false, params: { mode: 'fast', center: 6, surround: 6, fftSize: 2048 } },
     };
-    // The A/B compare block mirrors the seeded Global bank slots, so the card
-    // and the legacy compare payload never name different presets. The chain
-    // itself starts on the .104 active preset.
-    let dspCompare = { presetA: 'Neutral', presetB: 'Conv LR HybAlign BK 30-3000Hz -7dB', activeSide: 'B' };
-
     // Audible offset for the meter sim: only the +3/+6 dB filter
     // presets lift the visible level (their real chains hold a broadband
     // gain stage); headroom cuts it 1:1 (the real headroom stage sits
@@ -83,15 +107,31 @@
         return 0;
     }
 
+    // Upmixer steering strength: whole number 0 (off) .. 10; empty or invalid keeps the fallback.
+    function demoUpmixerStrength(value, fallback) {
+        const numeric = value === '' || value === null ? NaN : Math.round(Number(value));
+        return Number.isFinite(numeric) ? Math.max(0, Math.min(10, numeric)) : fallback;
+    }
+
+    // Upmixer engine ("fast" or "hq") and the HQ transform size; anything else keeps the fallback.
+    function demoUpmixerMode(value, fallback) {
+        const mode = String(value === null || value === undefined ? '' : value).trim().toLowerCase();
+        return mode === 'fast' || mode === 'hq' ? mode : fallback;
+    }
+    function demoUpmixerFftSize(value, fallback) {
+        const numeric = Number(value);
+        return [1024, 2048, 4096, 8192].includes(numeric) ? numeric : fallback;
+    }
+
     function demoMeterOffsetDb() {
-        let offset = presetMeterGainDb(dspActivePreset);
+        let offset = presetMeterGainDb(activeGlobalPreset());
         const extras = dspExtras || {};
         if (extras.headroom && extras.headroom.enabled) {
             offset += Number(extras.headroom.params && extras.headroom.params.gainDb) || 0;
         }
         if (extras.autogain && extras.autogain.enabled) offset += 2;
         if (extras.loudness && extras.loudness.enabled) {
-            offset += 0.4 * Math.max(1, Math.min(10, Number(extras.loudness.params && extras.loudness.params.strength) || 0));
+            offset += 0.4 * Math.max(0, Math.min(10, Number(extras.loudness.params && extras.loudness.params.strength) || 0));
         }
         if (extras.bass_enhancer && extras.bass_enhancer.enabled) {
             offset += Math.max(0, Math.min(3, Number(extras.bass_enhancer.params && extras.bass_enhancer.params.amount) || 0) / 4);
@@ -105,10 +145,9 @@
             limiterEnabled: !!(dspExtras.limiter && dspExtras.limiter.enabled),
             extras: dspExtras,
             presets: dspPresets,
-            activePreset: dspActivePreset,
+            activePreset: activeGlobalPreset(),
         });
     }
-    syncDspToState();
 
     function dspPayload() {
         // The IR pool mirrors the .104 kernel stock, so a preset that carries a
@@ -124,11 +163,10 @@
             available: true,
             presets: dspPresets,
             preset_count: dspPresets.length,
-            active_preset: dspActivePreset,
+            active_preset: activeGlobalPreset(),
             irs,
             global_extras: dspExtras,
             global_extras_excluded_presets: [],
-            compare: dspCompare,
             mode: 'native',
             paths: {},
         };
@@ -177,6 +215,9 @@
     // crossover plus two subs fits its 6 routed outputs, and its multichannel
     // capture input is the one that offers the split Electrical Ref L/R pair.
     let selectedOutputKeyCache = SCARLETT_KEY;
+
+    // The demo always serves the full device list: the seeded device is the
+    // machine the demo describes and no simulated unplug changes it.
     function selectedOutput() {
         return OUTPUTS.find(o => o.key === selectedOutputKeyCache) || OUTPUTS[0];
     }
@@ -258,7 +299,7 @@
     // The real store's scope note: the sweep is a host-local measurement
     // through the active output and the selected microphone, independent of
     // the active DSP preset. The demo serves the same wording.
-    const DEMO_MEASUREMENT_SCOPE_NOTE = 'FXRoute measures with a host-local sweep through the active PipeWire output and selected microphone input. The result is a practical response trace for comparison and PEQ drafting, independent of the active DSP preset.';
+    const DEMO_MEASUREMENT_SCOPE_NOTE = 'FXRoute measures with a host-local sweep through its DSP engine, the active PipeWire output and the selected microphone input. The sweep runs through the DSP processing active for it, and the result includes that processing: a normal sweep passes the complete active chain (Global preset and output extras, crossover, the measured bank\'s preset, output trims), while Auto Sub Optimize and Speaker Align bypass the presets and output extras and keep crossover, trims and routing. The result is a practical response trace for comparison and PEQ drafting.';
     function captureInputForOutputKey(key) {
         return key === SCARLETT_OUTPUT_KEY ? MULTICHANNEL_CAPTURE_INPUT : STEREO_CAPTURE_INPUT;
     }
@@ -307,7 +348,6 @@
         selectedInputConfigured: true,
         selectedMicInputChannel: '1',
         ...measurementReferenceSettings(),
-        measurementSampleRate: 48000,
     };
     function setMeasurementCaptureInput(input, force) {
         if (!input || (!force && input.id === measurementSettings.selectedInputId)) return;
@@ -321,7 +361,6 @@
             // mic to input 1 and the reference to that device's defaults.
             selectedMicInputChannel: '1',
             ...measurementReferenceSettings(),
-            measurementSampleRate: Number(input.measurement_sample_rate) || 48000,
         };
     }
     let outputMode = {
@@ -376,52 +415,154 @@
     const speakerWays = ['left_low', 'left_low_mid', 'left_mid', 'left_high', 'right_low',
         'right_low_mid', 'right_mid', 'right_high'];
     const subRoles = ['sub_l', 'sub_r', 'sub1', 'sub2'];
+    // Surround roles beyond the front pair, in routing order (mirrors
+    // audio/output_topology.py SURROUND_SPEAKERS). Sub L / Sub R are not
+    // Surround roles: the LFE bus feeds Sub 1 / Sub 2.
+    const OUTPUT_STATE_MODES = ['stereo', 'stereo-sub', 'surround'];
+    const surroundSpeakers = ['center', 'side_l', 'side_r', 'rear_l', 'rear_r'];
+    // Surround bass-management speaker groups, in display order; the stored
+    // sub_filters overrides are keyed by them instead of left/right.
+    const SURROUND_GROUPS = ['front', 'center', 'side', 'rear'];
     function outputStateRoles(mode) {
-        return [...(outputStateStore.modes[mode].crossover_enabled ? speakerWays : ['main_l', 'main_r']),
-            ...(mode === 'stereo-sub' ? subRoles : [])];
+        const fronts = outputStateStore.modes[mode].crossover_enabled ? speakerWays : ['main_l', 'main_r'];
+        if (mode === 'surround') return [...fronts, ...surroundSpeakers, 'sub1', 'sub2'];
+        return [...fronts, ...(mode === 'stereo-sub' ? subRoles : [])];
     }
-    const neutralBank = () => ({ preset: 'Neutral', preset_a: 'Neutral', preset_b: null, active_side: 'A' });
+    const neutralBank = () => ({ preset: 'Neutral', preset_a: 'Neutral', preset_b: 'Neutral', active_side: 'A' });
+    // Surround Global slots select one preset per speaker group (mirror of
+    // dsp.surround_global); Direct bypasses every group.
+    const neutralSelection = () => Object.fromEntries(SURROUND_GROUPS.map(group => [group, 'Neutral']));
+    const isSelection = slot => !!slot && typeof slot === 'object';
+    const sameSlot = (a, b) => isSelection(a) && isSelection(b)
+        ? SURROUND_GROUPS.every(group => a[group] === b[group]) : a === b;
+    const neutralGroupBank = () => ({ preset: neutralSelection(), preset_a: neutralSelection(), preset_b: neutralSelection(), active_side: 'A' });
+    const demoBankSide = bank => sameSlot(bank.preset_a, bank.preset_b) && bank.active_side === 'B'
+        && sameSlot(bank.preset, bank.preset_b) ? 'B' : sameSlot(bank.preset, bank.preset_a) ? 'A'
+            : sameSlot(bank.preset, bank.preset_b) ? 'B' : null;
+    function demoSelectionLabel(slot) {
+        if (!isSelection(slot)) return slot;
+        return SURROUND_GROUPS.filter(group => slot[group] !== 'Neutral').map(group => `${group}: ${slot[group]}`).join(' · ') || 'Neutral';
+    }
+    function demoSurroundGroup(role) {
+        if (/^(main_[lr]|left_|right_)/.test(role)) return 'front';
+        return role === 'center' ? 'center' : String(role).replace(/_[lr]$/, '');
+    }
+    // Mirror of output_state._group_slot.
+    function demoGroupSlot(slot, group, name) {
+        if (name === 'Direct') return name;
+        if (!SURROUND_GROUPS.includes(group)) throw new Error('Surround Global selects a preset per speaker group; name the group');
+        return { ...(isSelection(slot) ? slot : neutralSelection()), [group]: name };
+    }
+    // Mirror of set_bank_preset for Surround Global: a group's preset replaces
+    // only that group, an unassigned B starts from A, editing the listened
+    // slot keeps listening to it; equal selections are allowed.
+    function demoGroupMutation(bank, mutation, slot) {
+        const result = { ...mutation };
+        delete result.group;
+        const listened = demoBankSide(bank);
+        if (mutation.preset) result.preset = demoGroupSlot(bank[`preset_${slot.toLowerCase()}`], mutation.group, mutation.preset);
+        if (mutation.preset_a) {
+            result.preset_a = demoGroupSlot(bank.preset_a, mutation.group, mutation.preset_a);
+            if (!result.active_side && listened === 'A') result.active_side = 'A';
+        }
+        if (mutation.preset_b) {
+            result.preset_b = demoGroupSlot(bank.preset_b || bank.preset_a, mutation.group, mutation.preset_b);
+            if (!result.active_side && listened === 'B') result.active_side = 'B';
+        }
+        return result;
+    }
     const bankPairs = { main: ['main_l', 'main_r'], low: ['left_low', 'right_low'],
         low_mid: ['left_low_mid', 'right_low_mid'], mid: ['left_mid', 'right_mid'],
-        high: ['left_high', 'right_high'], sub: ['sub_l', 'sub_r'] };
-    function demoBankDefinitions(roles) {
+        high: ['left_high', 'right_high'], sub: ['sub_l', 'sub_r'],
+        side: ['side_l', 'side_r'], rear: ['rear_l', 'rear_r'] };
+    const BANK_PAIR_LABELS = { main: 'Main L/R', low: 'Low L/R', low_mid: 'Low-Mid L/R',
+        mid: 'Mid L/R', high: 'High L/R', sub: 'Sub L/R', side: 'Side L/R', rear: 'Rear L/R' };
+    function bankLabel(bankId) {
+        if (/^sub\d+$/.test(bankId)) return `Sub ${bankId.slice(3)}`;
+        return String(bankId).split('_').map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(' ');
+    }
+    // Mirror of audio/filter_banks.bank_definitions plus main.py's Surround
+    // rename: complete pairs become one bank, remaining roles stay mono.
+    // Global is offered in every mode; in Surround it holds group-scoped presets.
+    function demoBankDefinitions(roles, mode) {
         const pending = new Set(roles);
         const definitions = { global: { id: 'global', label: 'Global', roles: ['global'], channel_mode: 'stereo' } };
         for (const [id, pair] of Object.entries(bankPairs)) {
             if (!pair.every(role => pending.has(role))) continue;
-            definitions[id] = { id, label: `${id.split('_').map(word => word[0].toUpperCase() + word.slice(1)).join('-')} L/R`,
-                roles: pair, channel_mode: 'stereo' };
+            const label = id === 'main' && mode === 'surround' ? 'Front L/R' : BANK_PAIR_LABELS[id];
+            definitions[id] = { id, label, roles: pair, channel_mode: 'stereo' };
             pair.forEach(role => pending.delete(role));
         }
         for (const role of pending) definitions[role] = { id: role,
-            label: role.replace(/^sub(\d+)$/, 'Sub $1').replace(/^center$/, 'Center'), roles: [role], channel_mode: 'mono' };
+            label: bankLabel(role), roles: [role], channel_mode: 'mono' };
         return definitions;
     }
     function demoBankSummary(bindings) {
-        const common = values => new Set(values).size === 1 ? values[0] : null;
+        // Compared by value: a Surround Global slot is a group selection.
+        const common = values => values.length && values.every(value => sameSlot(value, values[0])) ? values[0] : null;
         return { preset: common(bindings.map(bank => bank.preset)), preset_a: common(bindings.map(bank => bank.preset_a)),
             preset_b: common(bindings.map(bank => bank.preset_b)),
-            active_side: common(bindings.map(bank => bank.preset === bank.preset_a ? 'A' : bank.preset === bank.preset_b ? 'B' : null)),
+            active_side: common(bindings.map(demoBankSide)),
             can_a: bindings.length > 0, can_b: bindings.length > 0 && bindings.every(bank => !!bank.preset_b) };
     }
-    function updateDemoBanks(config, roles, mutation) {
+    // Mirror of summarize_all_banks: B needs one bank with a B; banks
+    // without one stay on A and do not decide the joint side.
+    function demoAllBanksSummary(bindings) {
+        const comparable = bindings.filter(bank => !!bank.preset_b);
+        const fixedOnA = bindings.every(bank => !!bank.preset_b || bank.preset === bank.preset_a);
+        const sides = demoBankSummary(comparable.length && fixedOnA ? comparable : bindings).active_side;
+        return { ...demoBankSummary(bindings), active_side: sides, can_b: comparable.length > 0 };
+    }
+    function switchDemoAllBanks(config, roles, side) {
+        if (!['A', 'B'].includes(side)) throw new Error('Compare side must be A or B');
+        const comparable = roles.filter(role => !!config.banks[role].preset_b);
+        if (side === 'B' && !comparable.length) throw new Error('Compare side B has no assigned preset in any configured bank');
+        for (const role of roles) {
+            const bank = config.banks[role];
+            const selected = comparable.includes(role) ? side : 'A';
+            config.banks[role] = { ...bank, preset: selected === 'B' ? bank.preset_b : bank.preset_a, active_side: selected };
+        }
+    }
+    function updateDemoBanks(config, roles, mutation, mode) {
         const slot = mutation.active_side || demoBankSummary(roles.map(role => config.banks[role])).active_side || 'A';
         if (!['A', 'B'].includes(slot)) throw new Error('Compare side must be A or B');
+        if (mode === 'surround' && roles.length === 1 && roles[0] === 'global') {
+            mutation = demoGroupMutation(config.banks.global, mutation, slot);
+        } else if (mutation.group) {
+            throw new Error('A speaker group applies to the Surround Global bank only');
+        }
         const updated = {};
         for (const role of roles) {
             const bank = { ...config.banks[role] };
+            const listened = demoBankSide(bank);
             for (const key of ['preset_a', 'preset_b']) if (key in mutation) bank[key] = mutation[key];
             if (mutation.preset) { bank[`preset_${slot.toLowerCase()}`] = mutation.preset; bank.preset = mutation.preset; }
             else if (mutation.active_side) {
                 if (!bank[`preset_${slot.toLowerCase()}`]) throw new Error(`Compare side ${slot} has no assigned preset`);
                 bank.preset = bank[`preset_${slot.toLowerCase()}`];
             }
-            if (bank.preset_a === bank.preset_b) throw new Error('Compare slots must use distinct presets');
+            bank.active_side = mutation.preset || mutation.active_side ? slot
+                : listened === 'B' && sameSlot(bank.preset, bank.preset_b) ? 'B' : null;
             updated[role] = bank;
         }
         Object.assign(config.banks, updated);
     }
-    const defaultProcessing = () => ({ highpass: null, lowpass: null, level_db: 0.0, alignment_ms: 0.0, polarity: 'normal' });
+    const defaultProcessing = () => ({ highpass: null, lowpass: null, level_db: 0.0, alignment_ms: 0.0, polarity: 'normal',
+        level_cal_db: { global: 0.0, bank: 0.0 } });
+    // Level Calibration is cut-only (mirrors audio/output_state.py validate_level_cal).
+    const LEVEL_CAL_SLOTS = ['global', 'bank'];
+    function mergeLevelCal(current, update) {
+        if (!update || typeof update !== 'object' || !Object.keys(update).every(slot => LEVEL_CAL_SLOTS.includes(slot))) {
+            throw new Error('Level calibration accepts only the slots: global, bank');
+        }
+        const merged = { ...current, ...update };
+        for (const slot of LEVEL_CAL_SLOTS) {
+            if (!Number.isFinite(merged[slot]) || merged[slot] > 0 || merged[slot] < -80) {
+                throw new Error(`Level calibration ${slot} must be finite and between -80 and 0`);
+            }
+        }
+        return merged;
+    }
     const lr24 = (frequency_hz) => ({ family: 'linkwitz-riley', slope_db_oct: 24, frequency_hz });
     const defaultBassManagement = () => ({ frequency_hz: 80, main_highpass_enabled: true,
         family: 'linkwitz-riley', slope_db_oct: 24, sub_link: true, sub_filters: {} });
@@ -444,18 +585,16 @@
     // LR24 crossover at 3 kHz across an 18-channel Scarlett in Stereo + Sub
     // mode with two subs behind an 80 Hz bass-management split.
     // Compare slots are stored per role and projected to banks in the
-    // catalog, like the backend: Neutral on A, Direct on B, with the low,
-    // high and both sub ways actually holding B.
-    const demoWayBank = (onB) => ({ preset: onB ? 'Direct' : 'Neutral', preset_a: 'Neutral', preset_b: onB ? 'Direct' : null, active_side: onB ? 'B' : 'A' });
+    // catalog, like the backend: Neutral is the default for both slots.
     const stereoSubBanks = () => ({
         global: { preset: 'Neutral', preset_a: 'Neutral', preset_b: 'Conv LR HybAlign BK 30-3000Hz -7dB', active_side: 'A' },
         main_l: neutralBank(), main_r: neutralBank(),
-        left_low: demoWayBank(true), right_low: demoWayBank(true),
+        left_low: neutralBank(), right_low: neutralBank(),
         left_low_mid: neutralBank(), right_low_mid: neutralBank(),
         left_mid: neutralBank(), right_mid: neutralBank(),
-        left_high: demoWayBank(true), right_high: demoWayBank(true),
+        left_high: neutralBank(), right_high: neutralBank(),
         sub_l: neutralBank(), sub_r: neutralBank(),
-        sub1: demoWayBank(true), sub2: demoWayBank(true),
+        sub1: neutralBank(), sub2: neutralBank(),
     });
     const wayProcessing = (lowpass_hz, level_db, alignment_ms) => ({
         ...defaultProcessing(),
@@ -492,6 +631,46 @@
         frequency_hz: DEMO_BASS_HZ,
         sub_filters: { left: lr24(DEMO_BASS_HZ), right: lr24(DEMO_BASS_HZ) },
     });
+    // The seeded Surround system: the stereo-sub front end expanded to a 7.2
+    // layout on the 18-channel Scarlett — a complete 2-way LR24 front at
+    // 3 kHz, Center, Side L/R, Rear L/R and both sub roles behind the 80 Hz
+    // bass-management split. It is the state a Surround switch lands on, so
+    // the mode is explorable without touching the stereo-sub configuration;
+    // turning Crossover Off maps the low ways back to Front L/R.
+    const surroundSpeakerBanks = () => ({
+        global: neutralGroupBank(),
+        main_l: neutralBank(), main_r: neutralBank(),
+        left_low: neutralBank(), right_low: neutralBank(),
+        left_low_mid: neutralBank(), right_low_mid: neutralBank(),
+        left_mid: neutralBank(), right_mid: neutralBank(),
+        left_high: neutralBank(), right_high: neutralBank(),
+        center: neutralBank(), side_l: neutralBank(), side_r: neutralBank(),
+        rear_l: neutralBank(), rear_r: neutralBank(),
+        sub1: neutralBank(), sub2: neutralBank(),
+    });
+    const surroundProcessing = () => ({
+        main_l: defaultProcessing(), main_r: defaultProcessing(),
+        left_low: wayProcessing(DEMO_CROSSOVER_HZ, 0.0, 0.0),
+        left_low_mid: wayProcessing(800, 0.0, 0.0),
+        left_mid: wayProcessing(800, 0.0, 0.0),
+        left_high: wayBankProcessing(DEMO_CROSSOVER_HZ, 0.0, 0.0),
+        right_low: wayProcessing(DEMO_CROSSOVER_HZ, 0.0, 0.0),
+        right_low_mid: wayProcessing(800, 0.0, 0.0),
+        right_mid: wayProcessing(800, 0.0, 0.0),
+        right_high: wayBankProcessing(DEMO_CROSSOVER_HZ, 0.0, 0.0),
+        center: defaultProcessing(), side_l: defaultProcessing(), side_r: defaultProcessing(),
+        rear_l: defaultProcessing(), rear_r: defaultProcessing(),
+        sub1: { ...defaultProcessing(), level_db: -1.5, alignment_ms: 2.8 },
+        sub2: { ...defaultProcessing(), level_db: 0.5, alignment_ms: 0.0 },
+    });
+    // The groups start linked and carry the shared shape as their stored
+    // override, so unchecking "Link groups" opens on the audible values.
+    const surroundBassManagement = () => ({
+        ...defaultBassManagement(),
+        frequency_hz: DEMO_BASS_HZ,
+        sub_filters: Object.fromEntries(SURROUND_GROUPS.map(group =>
+            [group, { ...lr24(DEMO_BASS_HZ), highpass_enabled: true }])),
+    });
     const outputStateStore = {
         // Revision of the seeded .104 system. Every accepted mutation and the
         // Speaker Auto Alignment commit bump it, like the real output state.
@@ -516,16 +695,40 @@
                 extras: {},
                 routing: {},
             },
+            surround: {
+                crossover_enabled: true,
+                // An existing Surround setup lands on All Banks; Global is selectable.
+                selected_bank: 'all',
+                banks: surroundSpeakerBanks(),
+                processing: surroundProcessing(),
+                bass_management: surroundBassManagement(),
+                extras: {},
+                routing: {},
+            },
         },
     };
+    // A Surround Global group selection reads as its short text (main.py).
+    function activeGlobalPreset() {
+        return demoSelectionLabel(outputStateStore.modes[outputStateStore.active_mode].banks.global.preset);
+    }
+    for (const config of Object.values(outputStateStore.modes)) {
+        config.av_sync = { target_ms: 0, basis: {}, source_basis: {}, basis_origin: 'adopted', basis_context: {} };
+    }
     // Out 1/2 mains, 3/4 subs, 5/6 tweeters, 7..18 silent — the .104 routing.
     const DEMO_ROUTING_TAIL = 'off';
     outputStateStore.modes.stereo.routing[SCARLETT_KEY] =
         ['main_l', 'main_r', ...Array(16).fill(DEMO_ROUTING_TAIL)];
     outputStateStore.modes['stereo-sub'].routing[SCARLETT_KEY] =
         ['left_low', 'right_low', 'sub1', 'sub2', 'left_high', 'right_high', ...Array(12).fill(DEMO_ROUTING_TAIL)];
-    function outputStateTopology(mode, assignments) {
-        const enabled = outputStateStore.modes[mode].crossover_enabled;
+    // Out 1-4 the 2-way front, 5 center, 6/7 side, 8/9 rear, 10/11 subs,
+    // 12..18 silent — the seeded Surround system.
+    outputStateStore.modes.surround.routing[SCARLETT_KEY] =
+        ['left_low', 'right_low', 'left_high', 'right_high', 'center', 'side_l', 'side_r',
+            'rear_l', 'rear_r', 'sub1', 'sub2', ...Array(7).fill(DEMO_ROUTING_TAIL)];
+    function outputStateTopology(mode, assignments, crossoverOverride) {
+        const enabled = crossoverOverride !== undefined
+            ? !!crossoverOverride
+            : outputStateStore.modes[mode].crossover_enabled;
         const roles = outputStateRoles(mode).filter(role => assignments.includes(role));
         const subs = roles.filter(r => ['sub_l', 'sub_r', 'sub1', 'sub2'].includes(r));
         const subMode = !subs.length ? 'none' : subs.length === 1 ? 'mono'
@@ -533,9 +736,21 @@
             : subs.length === 2 ? 'dual-mono' : 'unsupported';
         const issues = [];
         let wayCount = null;
+        // Surround checks first, like derive_topology: the summary line
+        // reports the first problem, so the order decides what the user reads.
+        if (mode === 'surround' && subs.includes('sub2') && !subs.includes('sub1')) {
+            issues.push('Surround Sub 2 requires Sub 1');
+        }
+        if (mode === 'surround') {
+            for (const [label, pair] of [['Side', ['side_l', 'side_r']], ['Rear', ['rear_l', 'rear_r']]]) {
+                if (pair.filter(role => roles.includes(role)).length === 1) {
+                    issues.push(`Surround ${label} requires ${label} L and ${label} R`);
+                }
+            }
+        }
+        if (subs.length > 2) issues.push('At most two distinct sub roles are supported');
         if (!enabled) {
             if (!roles.includes('main_l') || !roles.includes('main_r')) issues.push('Stereo routing requires Main L and Main R');
-            if (subs.length > 2) issues.push('At most two distinct sub roles are supported');
         } else {
             const ways = ['low', 'low_mid', 'mid', 'high'];
             const left = roles.filter(r => r.startsWith('left_')).map(r => r.slice(5));
@@ -543,45 +758,73 @@
             const complete = [['low', 'high'], ['low', 'mid', 'high'], ways];
             const leftOk = complete.some(set => JSON.stringify(set) === JSON.stringify(left));
             const rightOk = complete.some(set => JSON.stringify(set) === JSON.stringify(right));
-            if (!leftOk || !rightOk || JSON.stringify(left) !== JSON.stringify(right)) {
+            if (!leftOk || !rightOk) {
                 issues.push('Crossover requires complete Low/High, Low/Mid/High, or Low/Low-Mid/Mid/High ways');
+            } else if (JSON.stringify(left) !== JSON.stringify(right)) {
+                issues.push('Left and Right crossover ways must match');
             } else {
                 wayCount = left.length;
             }
-            if (subs.length > 2) issues.push('At most two distinct sub roles are supported');
         }
         return { mode, crossover_enabled: enabled, roles, sub_roles: subs, sub_mode: subMode,
             left_ways: roles.filter(role => role.startsWith('left_')),
             right_ways: roles.filter(role => role.startsWith('right_')), way_count: wayCount, issues };
     }
+    // Routed layout of the active output mode on the selected device: what the
+    // footer's multichannel meter follows (roles in engine output order).
+    function demoMeterLayout() {
+        const out = outputEntry(selectedOutput());
+        const channels = Number(out.channels || 0);
+        const mode = outputStateStore.active_mode;
+        const config = outputStateStore.modes[mode];
+        const fixedStereo = channels === 2;
+        const routing = fixedStereo ? ['main_l', 'main_r']
+            : (config.routing[out.key] || (config.crossover_enabled ? [] : ['main_l', 'main_r'])).slice();
+        const topology = outputStateTopology(mode, routing.slice(0, channels || routing.length),
+            fixedStereo ? false : config.crossover_enabled);
+        return { mode, roles: topology.roles };
+    }
+    S.setMeterLayoutProvider(demoMeterLayout);
     function outputStateCatalog() {
         const out = outputEntry(selectedOutput());
         const key = out.key;
         const channels = Number(out.channels || 0);
+        const fixedStereo = channels === 2;
         const modes = {};
-        for (const mode of ['stereo', 'stereo-sub']) {
+        for (const mode of OUTPUT_STATE_MODES) {
             const config = outputStateStore.modes[mode];
-            const routing = (config.routing[key] || (config.crossover_enabled ? [] : ['main_l', 'main_r'])).slice();
-            const topology = outputStateTopology(mode, routing.slice(0, channels || routing.length));
+            const surround = mode === 'surround';
+            const routing = fixedStereo ? ['main_l', 'main_r']
+                : (config.routing[key] || (config.crossover_enabled ? [] : ['main_l', 'main_r'])).slice();
+            const effectiveCrossover = fixedStereo ? false : config.crossover_enabled;
+            const topology = outputStateTopology(mode, routing.slice(0, channels || routing.length), effectiveCrossover);
             const banks = {};
-            for (const [id, definition] of Object.entries(demoBankDefinitions(topology.roles))) {
+            for (const [id, definition] of Object.entries(demoBankDefinitions(topology.roles, mode))) {
                 banks[id] = { ...definition, ...demoBankSummary(definition.roles.map(role => config.banks[role])) };
             }
-            const pureStereo = topology.roles.length === 2 && topology.roles.includes('main_l') && topology.roles.includes('main_r');
+            const pureStereo = !surround && topology.roles.length === 2
+                && topology.roles.includes('main_l') && topology.roles.includes('main_r');
+            const fallback = surround && topology.roles.length ? 'all' : 'global';
+            let selected = config.selected_bank;
+            if (pureStereo) selected = 'global';
+            else if (config.selected_bank === 'all' && (topology.roles.length || !surround)) selected = 'all';
+            else if (!banks[config.selected_bank]) selected = fallback;
             modes[mode] = {
-                crossover_enabled: config.crossover_enabled,
-                selected_bank: pureStereo ? 'global' : (config.selected_bank === 'all' || banks[config.selected_bank] ? config.selected_bank : 'global'),
+                crossover_enabled: effectiveCrossover,
+                selected_bank: selected,
                 banks,
-                all_banks: demoBankSummary(topology.roles.map(role => config.banks[role])),
+                all_banks: demoAllBanksSummary(topology.roles.map(role => config.banks[role])),
                 processing: JSON.parse(JSON.stringify(config.processing)),
                 bass_management: { ...config.bass_management },
                 extras: JSON.parse(JSON.stringify(config.extras)),
+                av_sync: JSON.parse(JSON.stringify(config.av_sync)),
                 topology,
             };
         }
         const deviceRouting = {};
-        for (const mode of ['stereo', 'stereo-sub']) {
-            deviceRouting[mode] = (outputStateStore.modes[mode].routing[key]
+        for (const mode of OUTPUT_STATE_MODES) {
+            deviceRouting[mode] = fixedStereo ? ['main_l', 'main_r']
+                : (outputStateStore.modes[mode].routing[key]
                 || (outputStateStore.modes[mode].crossover_enabled ? [] : ['main_l', 'main_r'])).slice();
         }
         return {
@@ -589,35 +832,341 @@
             device: { key, channels, routing: deviceRouting },
             modes,
             capabilities: {
-                modes: ['stereo', 'stereo-sub'],
-                roles: { stereo: outputStateRoles('stereo'), 'stereo-sub': outputStateRoles('stereo-sub') },
+                modes: [...OUTPUT_STATE_MODES],
+                roles: Object.fromEntries(OUTPUT_STATE_MODES.map(mode => [mode, outputStateRoles(mode)])),
                 filter_families: { 'linkwitz-riley': [12, 24, 36, 48, 60, 72], butterworth: [6, 12, 18, 24, 30, 36, 42, 48, 54, 60, 66, 72], bessel: [6, 12, 18, 24, 30, 36, 42, 48, 54, 60, 66, 72] },
                 max_slope_db_oct: 72,
                 max_biquads_per_output: 32,
             },
         };
     }
-    // Assigns a just-created preset to its bank when the request carries
-    // a bank target (multipart fields arrive as strings, JSON as
-    // numbers). Mirrors the backend binding contract.
-    function assignDemoBankTarget(body, createdName) {
+    function demoAvSync() {
+        const catalog = outputStateCatalog(), mode = catalog.active_mode;
+        const config = outputStateStore.modes[mode], roles = catalog.modes[mode].topology.roles;
+        const rate = samplerate.active_rate || 48000;
+        const globalPreset = config.banks.global.preset || 'Neutral';
+        const direct = globalPreset === 'Direct';
+        const presetLatency = name => /Hyb|Lin/i.test(name || '') ? 4096 * 1000 / rate : 0;
+        // A Surround Global group preset delays only its own group's speakers;
+        // the shared subs follow the longest group.
+        const globalLatency = role => !isSelection(globalPreset) ? presetLatency(globalPreset)
+            : subRoles.includes(role) ? Math.max(0, ...SURROUND_GROUPS.map(group => presetLatency(globalPreset[group])))
+                : presetLatency(globalPreset[demoSurroundGroup(role)]);
+        let shared = 0;
+        if (!direct && dspExtras.limiter.enabled) shared += dspExtras.limiter.params.lookaheadMs;
+        if (!direct && dspExtras.loudness.enabled) shared += dspExtras.loudness.params.fftSize * 1000 / rate;
+        if (!direct && dspExtras.tone_effect.enabled) shared += (dspExtras.tone_effect.mode === 'maximizer' ? 480 : 1904) * 1000 / rate;
+        if (!direct && mode === 'surround' && dspExtras.upmixer.enabled) shared +=
+            (dspExtras.upmixer.params.mode === 'hq' ? dspExtras.upmixer.params.fftSize - 1 : Math.round(rate * 64 / 48000)) * 1000 / rate;
+        const automaticInput = sourceMode === 'external-input'
+            && SOURCE_INPUTS.some(item => item.key === selectedSourceInputKey);
+        const input = automaticInput ? 2818 / 48 : 0;
+        const offset = Math.max(0, -Math.min(0, ...roles.map(role => config.processing[role]?.alignment_ms || 0)));
+        const rows = roles.map(role => {
+            const dsp = shared + (direct ? 0 : globalLatency(role)) + presetLatency(config.banks[role]?.preset);
+            if (!(role in config.av_sync.basis)) config.av_sync.basis[role] = input + dsp;
+            return { role, dsp_ms: dsp, intentional_ms: 0, align_ms: offset + (config.processing[role]?.alignment_ms || 0),
+                balance_ms: 0, total_ms: 0, unknown: 0, mixed: 0, basis_known: 1 };
+        });
+        const deltas = rows.map(row => input + row.dsp_ms - config.av_sync.basis[row.role]);
+        const maximumDelta = deltas.length ? Math.max(...deltas) : 0;
+        rows.forEach((row, index) => { row.balance_ms = maximumDelta - deltas[index]; });
+        const reference = Math.max(0, roles.findIndex(role => ['main_l', 'left_low', 'FL'].includes(role)));
+        const minimum = rows.length ? input + rows[reference].dsp_ms + rows[reference].align_ms + rows[reference].balance_ms : 0;
+        const available = Math.max(0, 500 - Math.max(0, ...rows.map(row => row.align_ms + row.balance_ms)));
+        const maximum = minimum + available;
+        const common = Math.max(0, Math.min(available, config.av_sync.target_ms - minimum));
+        rows.forEach(row => { row.sync_ms = row.balance_ms + common;
+            row.total_ms = input + row.dsp_ms + row.intentional_ms + row.align_ms + row.sync_ms; });
+        return { status: 'ok', revision: catalog.revision, active_mode: mode, settings: JSON.parse(JSON.stringify(config.av_sync)),
+            latency: { simulated: true, ready: rows.length > 0, rate, reference, input_ms: input, target_ms: config.av_sync.target_ms,
+                minimum_ms: minimum, maximum_ms: maximum, actual_ms: minimum + common, common_ms: common,
+                limited: Math.abs(minimum + common - config.av_sync.target_ms) > 0.02, balance_limited: 0, balance_unavailable: 0,
+                outputs: rows, sources: [] } };
+    }
+    // Resolves the bank target of a create/import before anything is written
+    // (dsp.api._resolve_bank_binding): the preset file and its bank slot are
+    // one transaction, so a client whose revision is stale is refused without
+    // leaving a preset behind. Multipart fields arrive as strings, JSON as
+    // numbers. Returns {binding}, {error, status} or {conflict} (the backend's
+    // 409 body).
+    function demoBankTarget(body) {
         const mode = String(body.bank_mode || '');
         const bankId = String(body.bank_id || '');
-        if (!mode && !bankId) return null;
+        if (!mode && !bankId) return { binding: null };
         if (!mode || !bankId) return { error: 'bank_mode and bank_id are required together', status: 400 };
         const revision = Number(body.expected_revision);
         if (!Number.isInteger(revision) || revision < 0) {
             return { error: 'expected_revision must be a non-negative integer', status: 400 };
         }
-        const config = outputStateStore.modes[mode];
-        const bank = config && outputStateCatalog().modes[mode].banks[bankId];
+        const bank = outputStateCatalog().modes?.[mode]?.banks?.[bankId];
         if (!bank) return { error: `Unknown bank ${bankId}`, status: 400 };
-        if (revision !== outputStateStore.revision) {
-            return { conflict: true, created: createdName };
+        // Mirror of dsp.api._validate_bank_target: a speaker group belongs to
+        // the Surround Global bank, which needs one.
+        const group = String(body.bank_group || '');
+        const surroundGlobal = mode === 'surround' && bankId === 'global';
+        if (group && (!['front', 'center', 'side', 'rear'].includes(group) || !surroundGlobal)) {
+            return { error: `Speaker group ${group} does not apply to this bank`, status: 400 };
         }
-        updateDemoBanks(config, bank.roles, { preset: createdName });
+        if (surroundGlobal && !group) return { error: 'Surround Global presets need a speaker group', status: 400 };
+        if (revision !== outputStateStore.revision) {
+            return { conflict: { code: 'bank-assign-conflict',
+                message: 'Output state changed; refresh before creating the preset',
+                revision: outputStateStore.revision, created: null, assigned: false } };
+        }
+        return { binding: { mode, bank_id: bankId, group, roles: bank.roles } };
+    }
+
+    // Commits a created preset into the resolved bank, the way
+    // dsp.api._assign_created_preset_to_bank follows the write: a Surround
+    // Global preset replaces only its speaker group in the listened slot,
+    // every other bank takes it as a whole.
+    function commitDemoBankTarget(body, binding, createdName) {
+        if (!binding) return null;
+        if (binding.group) {
+            // A Surround Global preset carries its group plugins and the surround layout.
+            Object.assign(findDemoPreset(createdName, demoPresetOwner(body)), { layout: 'surround', group: binding.group });
+        }
+        updateDemoBanks(outputStateStore.modes[binding.mode], binding.roles,
+            { preset: createdName, ...(binding.group ? { group: binding.group } : {}) }, binding.mode);
         outputStateStore.revision += 1;
-        return { assigned: true, mode, bank_id: bankId, revision: outputStateStore.revision };
+        syncDspToState();
+        return { assigned: true, mode: binding.mode, bank_id: binding.bank_id,
+            revision: outputStateStore.revision, live_applied: true, live_reason: 'applied' };
+    }
+
+    // Answer of a create/import that may commit into a bank, in the shape
+    // dsp.api sends (import_dsp_preset_json, create_peq_preset, ...).
+    function demoCreatedPresetResponse(name, body, binding, extra) {
+        const owner = demoPresetOwner(body);
+        const entry = findDemoPreset(name, owner) || {};
+        const bank = commitDemoBankTarget(body, binding, name);
+        if (bank) {
+            // A committed bank assignment moves the output-state revision, so
+            // the page's cached catalog is one revision behind afterwards. The
+            // product forces that refresh after a convolver creation (see
+            // createConvolverPreset) but not after the JSON/bundle imports;
+            // without it the next create or import would be refused as stale.
+            // The demo layer keeps the client current for every creation it
+            // assigned, in the background and only as a client-side nudge.
+            demoRefreshOutputCatalog();
+        }
+        return {
+            status: 'ok', success: true,
+            preset: { name, filename: name + '.json', path: `/demo/presets/${owner.bank}/${name}.json`,
+                bank: owner.bank, source_presets: entry.source_presets || [] },
+            active_preset: activeGlobalPreset(),
+            ...(extra || {}),
+            ...(bank ? { bank } : {}),
+        };
+    }
+
+    // ── Uploaded files ──────────────────────────────────────────────────
+    // Create/import endpoints take multipart uploads; the demo reads the very
+    // File the browser sent, so a preset is named after the upload as
+    // DSPManager._ensure_overwritable_name names it and the imported filters
+    // reach the preset entry the UI renders.
+    const DEMO_PRESET_SCHEMA = 'fxroute.dsp.preset';
+    const DEMO_UPLOAD_AUDIO_EXTENSIONS = ['.mp3', '.flac', '.ogg', '.oga', '.opus', '.m4a', '.aac',
+        '.wav', '.wma', '.webm', '.weba'];
+    const DEMO_UPLOAD_PLAYLIST_EXTENSIONS = ['.m3u', '.m3u8'];
+
+    function demoUploadFile(body, key) {
+        const value = body[key || 'file'];
+        return value && typeof value === 'object' && typeof value.name === 'string'
+            && (typeof value.text === 'function' || typeof value.slice === 'function') ? value : null;
+    }
+    function demoUploadFileName(file) {
+        return String((file && file.name) || '').split(/[\\/]/).pop().trim();
+    }
+    function demoUploadStem(file) {
+        return demoUploadFileName(file).replace(/\.[^.]+$/, '').trim();
+    }
+    function demoUploadExtension(name) {
+        const match = String(name || '').toLowerCase().match(/\.[^.]+$/);
+        return match ? match[0] : '';
+    }
+    async function demoUploadText(file) {
+        if (!file || typeof file.text !== 'function') return '';
+        try { return await file.text(); } catch (e) { return ''; }
+    }
+    async function demoUploadHead(file, bytes) {
+        if (!file || typeof file.slice !== 'function') return '';
+        try { return await file.slice(0, bytes).text(); } catch (e) { return ''; }
+    }
+
+    // First member name of a ZIP, read from its local file header (the demo
+    // never unpacks: one header is enough for the bundle's naming rule).
+    function demoZipFirstName(head) {
+        if (typeof head !== 'string' || head.length < 30) return '';
+        const view = head.slice(0, 30);
+        const length = view.charCodeAt(26) | (view.charCodeAt(27) << 8);
+        return length > 0 ? head.slice(30, 30 + length) : '';
+    }
+
+    // REW PEQ text, parsed like DSPManager.import_rew_peq_text: only lines
+    // that start a filter entry are read (preamble and table headers are
+    // skipped), a malformed or unsupported line is an error, and only PK/PEQ
+    // filters become bands.
+    function demoRewPeqParse(text) {
+        if (!String(text || '').trim()) return { error: 'REW PEQ text is empty' };
+        const number = '[-+]?(?:\\d+(?:\\.\\d*)?|\\.\\d+)(?:[eE][-+]?\\d+)?';
+        const entry = new RegExp('^\\s*(?:Filter\\s+\\d+\\s*:|(?:Filter\\s+)?\\d+\\s+(?:true|false|on|off)(?=\\s|$))', 'i');
+        const header = new RegExp('^\\s*(?:Filter\\s+\\d+\\s*:\\s*|\\d+\\s+)(true|false|on|off)\\s+(?:auto\\s+)?(\\S+)(.*)$', 'i');
+        const compact = new RegExp('^\\s*(' + number + ')\\s+(' + number + ')\\s+(' + number + ')(?:\\s+' + number + ')?\\s*$');
+        const exported = new RegExp('^\\s*Fc\\s+(' + number + ')\\s+Hz\\s+Gain\\s+(' + number + ')\\s+dB\\s+Q\\s+(' + number + ')\\s*$', 'i');
+        // The parser is line-based and anchored, so `.match` (exec-like with
+        // capture groups) is enough; nothing here spawns a process.
+        const bands = [];
+        const unsupported = [];
+        const lines = String(text).split(/\r?\n/);
+        for (let index = 0; index < lines.length; index += 1) {
+            const line = lines[index];
+            if (!entry.test(line)) continue;
+            const match = line.match(header);
+            if (!match) return { error: `REW PEQ line ${index + 1} is malformed` };
+            const kind = match[2].toUpperCase();
+            if (kind === 'NONE' && !match[3].trim()) continue;
+            if (kind !== 'PK' && kind !== 'PEQ') {
+                unsupported.push(`line ${index + 1}: filter type ${match[2]}`);
+                continue;
+            }
+            const values = match[3].match(compact) || match[3].match(exported);
+            if (!values) return { error: `REW PEQ line ${index + 1} has invalid frequency, gain or Q` };
+            bands.push({ filterType: 'bell', frequencyHz: Number(values[1]), gainDb: Number(values[2]),
+                q: Number(values[3]), enabled: ['true', 'on'].includes(match[1].toLowerCase()) });
+        }
+        if (unsupported.length) {
+            return { error: 'Unsupported REW PEQ filter type(s): ' + unsupported.join('; ') + ' (supported: PK/PEQ)' };
+        }
+        if (!bands.length) return { error: 'No supported REW PEQ filters found' };
+        return { bands };
+    }
+
+    // The two payload shapes DSPManager.import_preset_json accepts: the native
+    // preset schema and an EasyEffects output preset. Empty string means the
+    // text is importable.
+    function demoPresetPayloadError(text) {
+        let source = null;
+        try { source = JSON.parse(text); } catch (e) { return `Preset JSON is invalid: ${e.message}`; }
+        if (source && typeof source === 'object' && !Array.isArray(source) && source.schema === DEMO_PRESET_SCHEMA) return '';
+        const output = source && typeof source === 'object' && !Array.isArray(source) ? source.output : null;
+        if (output && typeof output === 'object' && !Array.isArray(output) && Array.isArray(output.plugins_order)) return '';
+        return 'Preset JSON is neither a native nor EasyEffects output preset';
+    }
+
+    // Legacy EasyEffects equalizer bands (DSPManager._legacy_eq_bands).
+    function demoLegacyEqBands(plugin, side) {
+        const channel = plugin && plugin[side];
+        const count = Number((plugin && plugin['num-bands']) || 0);
+        if (!channel || typeof channel !== 'object') return [];
+        const types = { Bell: 'bell', Notch: 'notch', 'Lo-shelf': 'low_shelf', 'Hi-shelf': 'high_shelf',
+            'Lo-pass': 'low_pass', 'Hi-pass': 'high_pass' };
+        const bands = [];
+        for (let index = 0; index < Math.max(0, count); index += 1) {
+            const band = channel[`band${index}`];
+            if (!band || typeof band !== 'object') break;
+            bands.push({ enabled: !band.mute, filterType: types[band.type] || 'bell',
+                frequencyHz: Number(band.frequency ?? 1000), gainDb: Number(band.gain || 0), q: Number(band.q || 1) });
+        }
+        return bands;
+    }
+
+    // What an imported preset carries into its demo entry: the PEQ workspace
+    // and the IR pool follow a preset by the filters it ships.
+    function demoImportedFilters(text) {
+        let source = null;
+        try { source = JSON.parse(text); } catch (e) { return {}; }
+        const found = {};
+        const chain = source && typeof source === 'object' && Array.isArray(source.chain) ? source.chain : [];
+        for (const plugin of chain) {
+            if (!plugin || typeof plugin !== 'object') continue;
+            if (plugin.type === 'equalizer' && plugin.params && !found.peq) {
+                found.peq = { enabled: plugin.enabled !== false, params: plugin.params };
+            }
+            if (plugin.type === 'convolver' && !found.convolver) {
+                found.convolver = true;
+                const kernel = plugin.params && (plugin.params.kernel || plugin.params.kernelName);
+                if (kernel) found.kernel = String(kernel);
+            }
+        }
+        const output = source && typeof source === 'object' ? source.output : null;
+        const legacy = output && typeof output === 'object' ? output['equalizer#0'] : null;
+        if (!found.peq && legacy && typeof legacy === 'object') {
+            const split = !!legacy['split-channels'];
+            found.peq = { enabled: !legacy.bypass, params: {
+                channelMode: split ? 'dual' : 'stereo-linked',
+                eqMode: String(legacy.mode || 'IIR').toUpperCase(),
+                ...(split ? { leftBands: demoLegacyEqBands(legacy, 'left'), rightBands: demoLegacyEqBands(legacy, 'right') }
+                    : { bands: demoLegacyEqBands(legacy, 'left') }),
+                inputGainDb: Number(legacy['input-gain'] || 0), outputGainDb: Number(legacy['output-gain'] || 0),
+            } };
+        }
+        const legacyKernel = output && typeof output === 'object' ? output['convolver#0'] : null;
+        if (!found.convolver && legacyKernel && typeof legacyKernel === 'object') {
+            found.convolver = true;
+            if (legacyKernel['kernel-name']) found.kernel = String(legacyKernel['kernel-name']);
+        }
+        return found;
+    }
+
+    // ── Uploaded library files ──────────────────────────────────────────
+    // An audio upload lands in an upload folder of the active catalog (the
+    // real scan groups by folder, library/api.py upload_track), a ZIP as its
+    // own album folder, so both show up in the library views right away.
+    function demoUploadAlbum(catalog, label) {
+        const name = String(label || 'Uploads').trim() || 'Uploads';
+        const id = 'upload_' + name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+        catalog.albums = catalog.albums || [];
+        let album = catalog.albums.find(entry => entry.id === id);
+        if (!album) {
+            const cover = lib.demoImage('album:' + name);
+            album = { id, name, artist: 'Uploaded Files', track_count: 0, genres: ['Uploads'], years: [],
+                year: new Date().getFullYear(), release_type: 'Album', favorite: false,
+                cover_source: 'folder', has_external_cover: true, coverUrl: cover, demo_cover_url: cover };
+            catalog.albums.unshift(album);
+        }
+        return album;
+    }
+    function demoUploadTrack(catalog, album, filename) {
+        const stem = String(filename || 'Track').replace(/\.[^.]+$/, '').trim() || 'Track';
+        const title = stem.replace(/^\d+\s*[-–]\s*/, '').trim() || stem;
+        const id = `upload_${album.name}/${filename}`;
+        catalog.tracks = catalog.tracks || [];
+        const existing = catalog.tracks.find(track => track.id === id || track.upload_name === filename);
+        if (existing) return existing;
+        const cover = album.coverUrl || lib.demoImage('album:' + album.name);
+        const track = { id, title, artist: album.artist, album: album.name, album_artist: album.artist,
+            genre: 'Uploads', year: album.year, track_number: album.track_count + 1, disc_number: 1,
+            source: 'local', url: `file://demo/uploads/${filename}`, duration: 0, path: `Uploads/${filename}`,
+            upload_name: filename, sample_rate_hz: Number(samplerate.active_rate || 48000),
+            cover_available: true, cover_url: cover, cover_info_url: `/api/tracks/cover-info/${id}`,
+            artwork_available: true, artwork_url: cover, artwork_source: 'library', favorite: false };
+        catalog.tracks.unshift(track);
+        album.track_count = catalog.tracks.filter(entry => entry.album === album.name).length;
+        return track;
+    }
+
+    function demoRefreshOutputCatalog() {
+        const refresh = () => {
+            const controller = window.FXRouteOutputSystemController;
+            if (controller && typeof controller.fetchOutputSystemCatalog === 'function') {
+                controller.fetchOutputSystemCatalog(true);
+            }
+        };
+        if (typeof setTimeout === 'function') setTimeout(() => { try { refresh(); } catch (e) { /* keep the response */ } }, 0);
+        else { try { refresh(); } catch (e) { /* keep the response */ } }
+    }
+
+    // A request's own preset name, cleaned the way DSPManager intends it:
+    // basename without a trailing .json (dsp/persistence.clean_name).
+    function demoRequestPresetName(body) {
+        const raw = String(body.preset_name || body.presetName || body.name || '').trim();
+        const base = raw.split(/[\\/]/).pop().trim();
+        return base.toLowerCase().endsWith('.json') ? base.slice(0, -5).trim() : base;
+    }
+    function demoProtectedPresetName(name) {
+        return name === 'Direct' || name === 'Neutral';
     }
     function demoButterworthDb(frequency, cutoff, slopeDbOct, kind) {
         const order = Math.max(1, Math.round(slopeDbOct / 6));
@@ -702,6 +1251,7 @@
     }
 
     let samplerate = { available: true, active_rate: 48000, mode: 'auto', policy: { mode: 'auto', rate: null }, support: { rates: [44100, 48000, 88200, 96000, 176400, 192000, 352800, 384000] } };
+    let srcMode = 'standard';
 
     // Native-kHz simulation: mirrors the real rate resolution
     // (playback/orchestration.py coordinator_source_rate +
@@ -1058,11 +1608,147 @@
     };
     let sourceMode = 'app-playback';
     let selectedSourceInputKey = SOURCE_INPUTS[0].key;
+    // Input auto-select: armed keys only; the demo has no signal to detect.
+    let sourceAutoArmed = [];
+    // ── Custom input mapping (mirrors audio/custom_input_mapping.py) ─────
+    // One mapping per device, keyed by the card base. Its input is offered
+    // whichever output is selected; the dialog can map any device with at
+    // least two capture channels in the demo.
+    const CUSTOM_MAPPING_POSITIONS = [['FL', 'Front L'], ['FR', 'Front R'], ['FC', 'Center'],
+        ['LFE', 'LFE'], ['SL', 'Side L'], ['SR', 'Side R'], ['BL', 'Rear L'], ['BR', 'Rear R']];
+    const customMappings = {};
+    const customMappingKey = (base) => 'custom-mapping::' + base;
+    function demoCardBase(name) {
+        const match = String(name || '').match(/^alsa_(?:input|output)\.(.+)\.[^.]+$/);
+        return match ? match[1] : null;
+    }
+    // Devices with capture channels, from the demo's source pairs, by label.
+    function customMappingDevices() {
+        const byBase = {};
+        for (const item of SOURCE_INPUTS) {
+            const base = demoCardBase(item.source_key);
+            if (base) (byBase[base] = byBase[base] || []).push(item);
+        }
+        return Object.entries(byBase).map(([base, items]) => {
+            items.sort((a, b) => a.pair_index - b.pair_index);
+            return {
+                base, pair: items[0], label: items[0].device_label,
+                suffixes: items.flatMap((item) => [item.left_channel, item.right_channel]),
+            };
+        }).filter((device) => device.suffixes.length >= 2)
+            .sort((a, b) => a.label.localeCompare(b.label) || a.base.localeCompare(b.base));
+    }
+    // The device of the selected custom-mapping input, else of the selected
+    // output, else the first one; only a listed device can be the default.
+    function customMappingDefault(devices) {
+        const listed = devices.map((device) => device.base);
+        const selectedKey = String(selectedSourceInputKey || '');
+        const fromInput = selectedKey.startsWith('custom-mapping::') ? selectedKey.slice('custom-mapping::'.length) : null;
+        return [fromInput, demoCardBase(selectedOutput().key)].find((base) => base && listed.includes(base))
+            || listed[0] || null;
+    }
+    function customMappingEntry(device) {
+        const mapping = customMappings[device.base];
+        if (!mapping) return null;
+        const { suffixes } = device;
+        const channels = mapping.channels;
+        return {
+            ...device.pair,
+            id: 900 + Object.keys(customMappings).sort().indexOf(device.base),
+            key: customMappingKey(device.base),
+            label: mapping.name || 'Custom mapping',
+            is_default: false,
+            pair_index: 0,
+            pair_count: 1,
+            pair_label: null,
+            pair_channels: [channels.FL, channels.FR],
+            left_channel: suffixes[channels.FL - 1],
+            right_channel: suffixes[channels.FR - 1],
+            custom_mapping: {
+                name: mapping.name,
+                channels: { ...channels },
+                suffixes: Object.fromEntries(Object.entries(channels).map(([position, index]) => [position, suffixes[index - 1]])),
+            },
+        };
+    }
+    function customMappingEntries() {
+        return customMappingDevices().map(customMappingEntry).filter(Boolean)
+            .sort((a, b) => a.key.localeCompare(b.key));
+    }
+    function customMappingDeviceContext(device) {
+        const mapping = customMappings[device.base];
+        return {
+            device: { card_base: device.base, label: device.label },
+            capture: {
+                channels: device.suffixes.map((suffix, index) => ({ index: index + 1, suffix, source: device.pair.source_key })),
+            },
+            mapping: mapping ? { name: mapping.name, channels: { ...mapping.channels } } : null,
+            input_key: mapping ? customMappingKey(device.base) : null,
+        };
+    }
+    function customMappingContext() {
+        const devices = customMappingDevices();
+        return { default_device: customMappingDefault(devices), devices: devices.map(customMappingDeviceContext) };
+    }
+    // The device a request names (query or body), else the default; the same errors as the API.
+    function resolveCustomMappingDevice(requested) {
+        const devices = customMappingDevices();
+        const named = typeof requested === 'string' ? requested.trim() : '';
+        if (requested != null && !named) return { error: 'device must be an audio device name' };
+        const base = named || customMappingDefault(devices);
+        if (!base) return { error: 'No audio device with input channels is available' };
+        const device = devices.find((item) => item.base === base);
+        if (!device) return { error: 'Unknown audio device or it has no input channels: ' + base };
+        return { device };
+    }
+    function customMappingPayload(device) {
+        return {
+            ...customMappingDeviceContext(device),
+            devices: customMappingDevices().map((item) => ({
+                card_base: item.base, label: item.label, channel_count: item.suffixes.length,
+                has_mapping: !!customMappings[item.base],
+            })),
+            positions: CUSTOM_MAPPING_POSITIONS.map(([id, label]) => ({ id, label })),
+        };
+    }
+    // Same rules and messages as custom_input_mapping.validate.
+    function validateCustomMapping(rawName, rawChannels, count) {
+        const name = rawName == null ? '' : rawName;
+        if (typeof name !== 'string') return { error: 'Name must be a string' };
+        if (name.trim().length > 40) return { error: 'Name must be at most 40 characters' };
+        if (!rawChannels || typeof rawChannels !== 'object' || Array.isArray(rawChannels)) {
+            return { error: 'channels must be an object mapping channel to input number' };
+        }
+        const labels = Object.fromEntries(CUSTOM_MAPPING_POSITIONS);
+        for (const position of Object.keys(rawChannels)) {
+            if (!(position in labels)) return { error: 'Unknown channel: ' + position };
+        }
+        const channels = {};
+        const owner = {};
+        for (const [position] of CUSTOM_MAPPING_POSITIONS) {
+            const value = rawChannels[position];
+            if (value == null) continue;
+            if (!Number.isInteger(value)) return { error: `Input for ${labels[position]} must be a whole number` };
+            if (value < 1 || value > count) {
+                return { error: `Input ${value} is not available: the device has ${count} input channels` };
+            }
+            if (owner[value]) return { error: `Input ${value} is assigned to both ${labels[owner[value]]} and ${labels[position]}` };
+            owner[value] = position;
+            channels[position] = value;
+        }
+        const missing = ['FL', 'FR'].filter((position) => !(position in channels)).map((position) => labels[position]);
+        if (missing.length) return { error: missing.join(' and ') + ' must be mapped' };
+        return { mapping: { name: name.trim(), channels } };
+    }
     function sourceInputByKey(key) {
-        return SOURCE_INPUTS.find((item) => item.key === String(key || '')) || null;
+        const wanted = String(key || '');
+        return SOURCE_INPUTS.find((item) => item.key === wanted)
+            || customMappingEntries().find((item) => item.key === wanted)
+            || null;
     }
     function sourceOverview() {
         const selected = sourceInputByKey(selectedSourceInputKey) || SOURCE_INPUTS[0];
+        const customs = customMappingEntries();
         const withSelected = (item) => ({ ...item, is_selected: item.key === selected.key });
         return {
             mode: sourceMode,
@@ -1070,12 +1756,28 @@
                 { key: 'app-playback', label: 'App playback', selectable: true },
                 { key: 'external-input', label: 'External input', selectable: true },
                 { key: 'bluetooth-input', label: 'Bluetooth input', selectable: true },
+                { key: 'stdin-input', label: 'STDIN', selectable: true },
             ],
             default_input: withSelected(SOURCE_INPUTS[0]),
             selected_input: withSelected(selected),
             current_input: withSelected(selected),
-            inputs: SOURCE_INPUTS.map(withSelected),
+            inputs: [...SOURCE_INPUTS, ...customs].map(withSelected),
+            custom_mapping_context: customMappingContext(),
             bluetooth: { ...BLUETOOTH_SOURCE },
+            stdin: {
+                available: true, selectable: true, state: 'waiting',
+                selected: sourceMode === 'stdin-input', session_id: null,
+                format: null, rate: null, channels: null, left: null,
+                right: null, routed: false, frames_received: 0, error: null,
+                measurement_active: false,
+            },
+            auto_select: {
+                armed: [...sourceAutoArmed],
+                engaged: null,
+                paused: false,
+                inputs: Object.fromEntries(sourceAutoArmed.map((key) => [key,
+                    { active: false, format: null, lock: null }])),
+            },
             notes: [],
             pending: false,
         };
@@ -1254,6 +1956,21 @@
         };
     }
 
+    // ── Response pace ───────────────────────────────────────────────────
+    // See demoPace in state.js: control endpoints stay snappy, browse reads
+    // take a moment and the surfaces that really do work on a box
+    // (measurements, scans) take the longest. The kind is picked per request
+    // by the interceptor and read back here while the handler runs.
+    const PACE_CONTROL_RE = /^\/api\/(?:status|play|pause|stop|volume|playback\/|hardware\/|power\/|debug\/|dsp\/(?:presets\/load|extras|compare))/;
+    const PACE_HEAVY_RE = /^\/api\/(?:measurements|library\/status|music-libraries|speaker-align)/;
+    let paceKind = 'read';
+    function paceKindFor(pathname, method) {
+        if (PACE_CONTROL_RE.test(pathname)) return 'control';
+        if (PACE_HEAVY_RE.test(pathname)) return 'heavy';
+        if (method === 'POST' || method === 'PATCH' || method === 'DELETE') return 'job';
+        return 'read';
+    }
+
     function j(data, status = 200, headers = {}) {
         // headers + blob(): the real frontend download paths read
         // Content-Disposition and consume resp.blob() (see
@@ -1275,18 +1992,34 @@
                 blob: () => Promise.resolve(makeDemoBlob('', mime)),
             });
         }
-        return Promise.resolve({
+        // Every handler answers through here, so this is also the one place a
+        // session snapshot is taken: the mutation has already happened by the
+        // time the response is built.
+        if (typeof S.saveSession === 'function') S.saveSession();
+        const response = {
             ok: status >= 200 && status < 300,
             status,
             headers: headerMap,
             json: () => Promise.resolve(data),
             text: () => Promise.resolve(bodyText),
             blob: () => Promise.resolve(makeDemoBlob(bodyText, mime)),
-        });
+        };
+        return (typeof S.pacedResolve === 'function' ? S.pacedResolve : (value) => Promise.resolve(value))(response, paceKind);
     }
 
     function err(detail, status = 404) {
         return j({ detail }, status);
+    }
+
+    // The live backend pushes the audio-source overview over the WebSocket
+    // whenever it changes; a mutation answers with the same push, so the
+    // Source Inputs surface and the footer switcher stay current without a
+    // poll (a plain GET stays silent — repeated pushes would re-render an open
+    // control for nothing).
+    function jSource() {
+        const payload = sourceOverview();
+        if (typeof window.__demoBroadcast === 'function') window.__demoBroadcast('source', payload);
+        return j(payload);
     }
 
     function readBody(opts) {
@@ -1349,6 +2082,106 @@
     // instead of jumping straight to a finished job.
     const autoSubJobs = {};
     let autoSubSeq = 0;
+
+    // Level Matching: fixed raw levels per speaker stand in for the microphone;
+    // the trims follow the backend rule (cut-only, target = quietest raw level).
+    const levelMatchRaw = { main_l: -20.0, main_r: -21.8, center: -22.5, side_l: -23.1, side_r: -22.4,
+        rear_l: -24.0, rear_r: -23.2 };
+    const levelMatchEntries = {};
+    const levelMatchJobs = {};
+    let levelMatchSeq = 0;
+    const levelMatchRoleRaw = (role) => levelMatchRaw[role] ?? (role.startsWith('left_') ? -20.0 : -21.8);
+    function levelMatchScope(bankId) {
+        const catalog = outputStateCatalog();
+        const mode = catalog.active_mode;
+        const modeConfig = catalog.modes[mode];
+        const roles = modeConfig.topology.roles.filter(role => !role.startsWith('sub'));
+        const surround = mode === 'surround';
+        const front = (role) => role === 'main_l' || role === 'main_r' || /^(left|right)_/.test(role);
+        if (!['global', 'all'].includes(bankId) && !modeConfig.banks[bankId]) return { error: `Bank ${bankId} is not an active bank` };
+        const wholeMode = ['global', 'all'].includes(bankId) || bankId.startsWith('sub');
+        let members;
+        if (!surround || wholeMode) members = roles;
+        else members = modeConfig.banks[bankId].roles.filter(role => roles.includes(role));
+        if (!members.length) return { error: 'Level Matching needs a routed speaker' };
+        const isFront = members.every(front);
+        if (surround && isFront) members = roles.filter(front);
+        const slot = surround && !isFront && !wholeMode ? 'bank' : 'global';
+        const slotForRole = (role) => surround && !front(role) ? 'bank' : 'global';
+        const groups = surround ? ['front', 'center', 'side', 'rear'].map(group =>
+            members.filter(role => group === 'front' ? front(role) : role.startsWith(group))) : [members];
+        return { mode, roles, members, slot, slotForRole, family: surround ? 'surround' : 'scope:global',
+            requiresReference: surround && !isFront && !wholeMode, frontRoles: roles.filter(front),
+            units: groups.flatMap(group => polarityCheckUnits(group).map(unit => unit.label)) };
+    }
+    function levelMatchRoutedEntries(mode) {
+        const roles = outputStateCatalog().modes[mode].topology.roles;
+        return Object.fromEntries(Object.entries(levelMatchEntries[mode] || {})
+            .filter(([, entry]) => roles.includes(entry.role)));
+    }
+    function levelMatchDerive(mode) {
+        const entries = Object.values(levelMatchRoutedEntries(mode));
+        const targets = {};
+        for (const entry of entries) targets[entry.family] = Math.min(targets[entry.family] ?? Infinity, entry.raw_db);
+        const values = {};
+        for (const entry of entries) {
+            const trim = Math.min(0, Math.round((targets[entry.family] - entry.raw_db) * 10) / 10) + 0;
+            (values[entry.role] = values[entry.role] || {})[entry.slot] = trim;
+            if (mode !== 'surround') values[entry.role].bank = 0;
+        }
+        return values;
+    }
+    function levelMatchStatus(bankId) {
+        const scope = levelMatchScope(bankId);
+        if (scope.error) return scope;
+        const entries = levelMatchRoutedEntries(scope.mode);
+        const values = levelMatchDerive(scope.mode);
+        const frontSlot = 'global';
+        const referenceReady = !scope.requiresReference
+            || scope.frontRoles.every(role => entries[`${frontSlot}:${role}`]);
+        return { scope, referenceReady, payload: {
+            status: 'ok', mode: scope.mode, bank_id: bankId, slot: scope.slot, family: scope.family,
+            requires_reference: scope.requiresReference, reference_ready: referenceReady, units: scope.units,
+            entries: Object.entries(entries).filter(([, entry]) => entry.family === scope.family).map(([, entry]) => ({
+                role: entry.role, slot: entry.slot, raw_db: entry.raw_db, valid: true,
+                trim_db: values[entry.role]?.[entry.slot] ?? null, measured_at: entry.measured_at })),
+            job: null } };
+    }
+
+    // Polarity Check: a fixed verdict per speaker stands in for the microphone,
+    // one reversed speaker shows what a finding looks like. Like the product,
+    // only the newest job is kept and nothing is persisted.
+    const polarityCheckReversed = new Set(['rear_r']);
+    const polarityCheckJobs = {};
+    let polarityCheckLast = null;
+    let polarityCheckSeq = 0;
+    function polarityCheckUnits(members) {
+        const side = (role) => (/^left_|_l$/.test(role) ? 'left' : (/^right_|_r$/.test(role) ? 'right' : 'mono'));
+        const units = [];
+        for (const label of ['left', 'right']) {
+            const roles = members.filter(role => side(role) === label);
+            if (roles.length) units.push({ label, roles });
+        }
+        for (const role of members.filter(role => side(role) === 'mono')) units.push({ label: role, roles: [role] });
+        return units;
+    }
+    function polarityCheckStatus(bankId) {
+        const catalog = outputStateCatalog();
+        const config = catalog.modes[catalog.active_mode];
+        const roles = config.topology.roles;
+        const implicitStereo = catalog.active_mode !== 'surround'
+            && roles.length === 2 && roles.includes('main_l') && roles.includes('main_r');
+        if (bankId === 'all' || bankId.startsWith('sub') || (bankId === 'global' && !implicitStereo)) {
+            return { error: 'Select an individual speaker bank to check wiring polarity' };
+        }
+        const bank = config.banks[bankId];
+        if (!bank) return { error: `Bank ${bankId} is not an active speaker bank` };
+        const scope = { mode: catalog.active_mode, members: bankId === 'global' ? roles : bank.roles };
+        if (scope.mode === 'surround' && scope.members.every(role => /^(main_[lr]|left_|right_)/.test(role))) {
+            scope.members = roles.filter(role => /^(main_[lr]|left_|right_)/.test(role));
+        }
+        return { scope, units: polarityCheckUnits(scope.members) };
+    }
 
     // Job discovery after a reload. The backend keeps its jobs in a
     // process-wide map, so GET .../current answers with the newest live or
@@ -1855,6 +2688,89 @@
         };
     }
 
+    // ── Session snapshot / restore ──────────────────────────────────────
+    // The transport lives in state.js; this module contributes the DSP chain,
+    // the output system (device, mode, revision, banks and routing) and the
+    // measurement setup. Only the runs the user created in this session are
+    // stored — the fixture stock is always re-seeded from demo/data, so a
+    // session snapshot can never thin out the demo.
+    const seededMeasurementIds = new Set(S.getSavedMeasurements().map(m => String(m.id)));
+    function sessionCreatedMeasurements() {
+        return S.getSavedMeasurements()
+            .filter(m => !seededMeasurementIds.has(String(m.id)))
+            .map(m => JSON.parse(JSON.stringify(m)));
+    }
+    if (typeof S.registerSessionSlice === 'function') {
+        S.registerSessionSlice(() => ({
+            dsp: { extras: dspExtras },
+            output: {
+                device_key: selectedOutputKeyCache,
+                mode: outputMode,
+                device_modes: deviceOutputModes,
+                state: outputStateStore,
+                routing: routingStore,
+            },
+            measurement: {
+                settings: measurementSettings,
+                library_id: musicLibraries.active_id,
+                saved: sessionCreatedMeasurements(),
+                spl: S.spl,
+            },
+        }));
+    }
+
+    function restoreDemoSession() {
+        if (!S.session) return;
+        const saved = S.session.read();
+        if (saved.dsp) {
+            if (saved.dsp.extras) dspExtras = { ...dspExtras, ...saved.dsp.extras };
+        }
+        if (saved.output) {
+            const output = saved.output;
+            if (output.device_key && OUTPUTS.some(entry => entry.key === output.device_key)) {
+                selectedOutputKeyCache = output.device_key;
+                // The capture interface follows the selected device, like the
+                // real /api/audio/outputs switch.
+                measurementCaptureInput = captureInputForOutputKey(selectedOutputKeyCache);
+            }
+            if (output.mode) Object.assign(outputMode, output.mode);
+            if (output.device_modes) Object.assign(deviceOutputModes, output.device_modes);
+            if (output.routing) Object.assign(routingStore, output.routing);
+            if (output.state && output.state.modes) {
+                if (Number.isFinite(Number(output.state.revision))) outputStateStore.revision = Number(output.state.revision);
+                if (OUTPUT_STATE_MODES.includes(output.state.active_mode)) outputStateStore.active_mode = output.state.active_mode;
+                outputStateStore.modes = output.state.modes;
+            }
+        }
+        if (saved.measurement) {
+            const measurement = saved.measurement;
+            if (measurement.library_id && musicLibraries.libraries.some(entry => entry.id === measurement.library_id)) {
+                const entry = musicLibraries.libraries.find(item => item.id === measurement.library_id);
+                musicLibraries.active_id = entry.id;
+                musicLibraries.active_type = entry.type;
+                if (typeof S.setActiveLibraryId === 'function') S.setActiveLibraryId(entry.id);
+            }
+            // Applied after the device, which has just reset the capture
+            // defaults for its own channel layout.
+            if (measurement.settings) measurementSettings = { ...measurementSettings, ...measurement.settings };
+            if (Array.isArray(measurement.saved)) {
+                for (const stored of measurement.saved) {
+                    if (!stored || !stored.id) continue;
+                    if (S.getSavedMeasurements().some(m => String(m.id) === String(stored.id))) continue;
+                    S.addSavedMeasurement(stored);
+                    if (!savedMeasurements.some(m => String(m.id) === String(stored.id))) savedMeasurements.unshift(stored);
+                }
+            }
+            if (measurement.spl && typeof measurement.spl === 'object') Object.assign(S.spl, measurement.spl);
+        }
+        // The reattached track may run at a different native rate than the
+        // seeded default; re-derive the graph rate it drives.
+        if (typeof S.onSourceChanged === 'function') S.onSourceChanged();
+        S.session.ready();
+    }
+    restoreDemoSession();
+    syncDspToState();
+
     // ── fetch interceptor ───────────────────────────────────────────────
     const origFetch = window.fetch;
     window.fetch = function (url, opts) {
@@ -1863,6 +2779,7 @@
         const p = parsed.split('?')[0];
         const method = (opts && opts.method) || 'GET';
         const query = new URLSearchParams((parsed.split('?')[1] || ''));
+        paceKind = paceKindFor(p, method);
         const body = readBody(opts);
         const post = method === 'POST' || method === 'PATCH';
 
@@ -2118,6 +3035,66 @@
             return j({ status: 'ok', ...libraryScanStatus() });
         }
         if (p === '/api/library/folders/delete' && post) return j({ status: 'ok' });
+        if (p === '/api/library/upload' && post) {
+            // Mirror of library/api.py upload_track: audio files land in the
+            // active catalog as their own upload folder, a playlist file
+            // imports the library tracks it names, a ZIP lands as one album.
+            // The upload itself is read (the browser posts it via
+            // XMLHttpRequest, see demo/xhr.js), so its name and size reach the
+            // response the UI reports.
+            const file = demoUploadFile(body);
+            const filename = demoUploadFileName(file);
+            if (!filename) return err('A filename is required', 400);
+            const suffix = demoUploadExtension(filename);
+            if (!DEMO_UPLOAD_AUDIO_EXTENSIONS.includes(suffix)
+                    && !DEMO_UPLOAD_PLAYLIST_EXTENSIONS.includes(suffix) && suffix !== '.zip') {
+                return err('Unsupported file type', 400);
+            }
+            const catalog = activeLib();
+            const root = String(musicLibraries.active_id || 'local');
+            if (suffix === '.zip') {
+                return demoUploadHead(file, 4).then((head) => {
+                    if (!head.startsWith('PK')) return err('Invalid ZIP archive', 400);
+                    const album = demoUploadAlbum(catalog, demoUploadStem(file));
+                    demoUploadTrack(catalog, album, `${demoUploadStem(file)}.flac`);
+                    return j({ status: 'imported', kind: 'zip', filename, folder: album.name,
+                        path: `demo/${root}/${album.name}`, track_count: (catalog.tracks || []).length,
+                        imported_track_count: 1, imported_playlist_count: 0, playlists: [],
+                        skipped_entry_count: 0,
+                        message: `Imported 1 track from ${filename}` });
+                });
+            }
+            if (DEMO_UPLOAD_PLAYLIST_EXTENSIONS.includes(suffix)) {
+                return demoUploadText(file).then((text) => {
+                    const wanted = String(text || '').split(/\r?\n/)
+                        .map(line => line.trim()).filter(line => line && !line.startsWith('#'))
+                        .map(line => line.split(/[\\/]/).pop().toLowerCase());
+                    const matched = (catalog.tracks || []).filter(track =>
+                        wanted.includes(String(track.path || '').split(/[\\/]/).pop().toLowerCase())
+                        || wanted.includes(String(track.title || '').toLowerCase()));
+                    if (!matched.length) return err('Playlist did not match any library tracks', 400);
+                    const id = 'playlist_upload_' + Date.now();
+                    const name = demoUploadStem(file) || 'Imported Playlist';
+                    const playlist = { id, name, track_ids: matched.map(track => track.id), track_count: matched.length };
+                    catalog.playlists = catalog.playlists || [];
+                    catalog.playlists.push(playlist);
+                    return j({ status: 'imported', kind: 'playlist', filename,
+                        track_count: (catalog.tracks || []).length, imported_playlist_count: 1,
+                        playlist,
+                        message: `Imported playlist ${name} with ${matched.length} track${matched.length === 1 ? '' : 's'}` });
+                });
+            }
+            if ((catalog.tracks || []).some(track => track.upload_name === filename)) {
+                return err('A file with that name already exists', 409);
+            }
+            return demoUploadHead(file, 4).then(() => {
+                const album = demoUploadAlbum(catalog, 'Uploads');
+                const track = demoUploadTrack(catalog, album, filename);
+                return j({ status: 'uploaded', kind: 'audio', filename, path: `demo/Uploads/${filename}`,
+                    track_count: (catalog.tracks || []).length, track_id: track.id,
+                    message: `Uploaded ${filename}` });
+            });
+        }
         if (p === '/api/tracks/delete' && post) return j({ status: 'ok' });
         if (p === '/api/tracks/download' && post) {
             // Selection download: a downloadable body for the POSTed ids so
@@ -2474,6 +3451,9 @@
             return j(outputMode);
         }
 
+        if (p === '/api/audio/av-sync' && !post) {
+            return j(demoAvSync());
+        }
         if (p === '/api/audio/output-state' && !post) {
             return j(outputStateCatalog());
         }
@@ -2507,8 +3487,12 @@
                 }
                 if (config.selected_bank !== 'global' && config.selected_bank !== 'all'
                     && !allowed.includes(config.selected_bank)
-                    && !Object.values(demoBankDefinitions(allowed)).some(definition => definition.id === config.selected_bank)) config.selected_bank = 'global';
+                    && !Object.values(demoBankDefinitions(allowed, mode)).some(definition => definition.id === config.selected_bank)) {
+                    config.selected_bank = mode === 'surround' ? 'all' : 'global';
+                }
             } else if (mutation.kind === 'set_routing') {
+                const currentChannels = Number(outputEntry(selectedOutput()).channels || 0);
+                if (currentChannels === 2) return fail('Output routing is fixed to Out 1 Main L / Out 2 Main R on two-output devices');
                 const assignments = mutation.assignments;
                 if (!Array.isArray(assignments)) return fail('Routing assignments must be an array');
                 const allowed = new Set([...outputStateRoles(mode), 'off']);
@@ -2522,27 +3506,42 @@
                     }
                 }
                 const routedRoles = assignments.filter(role => role !== 'off');
-                const routedBanks = demoBankDefinitions(routedRoles);
+                const routedBanks = demoBankDefinitions(routedRoles, mode);
                 let selected = config.selected_bank;
                 for (const definition of Object.values(routedBanks)) {
                     if (definition.id === selected || definition.roles.includes(selected)) { selected = definition.id; break; }
                 }
-                const pureStereo = routedRoles.length === 2 && routedRoles.includes('main_l') && routedRoles.includes('main_r');
-                if (pureStereo || (selected !== 'all' && !routedBanks[selected])) selected = 'global';
+                const fallback = mode === 'surround' && routedRoles.length ? 'all' : 'global';
+                const pureStereo = mode !== 'surround' && routedRoles.length === 2
+                    && routedRoles.includes('main_l') && routedRoles.includes('main_r');
+                if (pureStereo) selected = 'global';
+                else if (selected !== 'all' && !routedBanks[selected]) selected = fallback;
                 config.selected_bank = selected;
             } else if (mutation.kind === 'select_bank') {
                 const active = outputStateCatalog().modes[mode].banks;
                 const roles = outputStateCatalog().modes[mode].topology.roles;
-                if (roles.length === 2 && roles.includes('main_l') && roles.includes('main_r') && mutation.bank_id !== 'global') return fail('Pure stereo uses the Global bank; no bank selection is shown');
-                if (mutation.bank_id !== 'all' && !active[mutation.bank_id]) return fail(`Unknown bank ${mutation.bank_id}`);
-                config.selected_bank = mutation.bank_id;
+                const bankId = String(mutation.bank_id);
+                const surround = mode === 'surround';
+                if (!surround && roles.length === 2 && roles.includes('main_l') && roles.includes('main_r') && bankId !== 'global') return fail('Pure stereo uses the Global bank; no bank selection is shown');
+                let resolved = bankId;
+                if (bankId === 'all') {
+                    if (!roles.length) return fail('No configured area banks');
+                } else if (!active[bankId]) {
+                    const owning = Object.values(active).find(bank => bank.roles.includes(bankId));
+                    if (!owning) return fail(`Unknown bank ${bankId}`);
+                    resolved = owning.id;
+                }
+                config.selected_bank = resolved;
             } else if (mutation.kind === 'set_bank_preset') {
                 const bank = outputStateCatalog().modes[mode].banks[mutation.bank_id];
                 if (!bank) return fail(`Unknown bank ${mutation.bank_id}`);
-                try { updateDemoBanks(config, bank.roles, mutation); } catch (error) { return fail(error.message); }
+                if (bank.id !== 'global' && ['preset', 'preset_a', 'preset_b'].some(key => mutation[key] === 'Direct')) {
+                    return fail('Direct is available only in the Global bank');
+                }
+                try { updateDemoBanks(config, bank.roles, mutation, mode); } catch (error) { return fail(error.message); }
             } else if (mutation.kind === 'switch_all_banks') {
                 const roles = outputStateCatalog().modes[mode].topology.roles;
-                try { updateDemoBanks(config, roles, mutation); } catch (error) { return fail(error.message); }
+                try { switchDemoAllBanks(config, roles, mutation.active_side); } catch (error) { return fail(error.message); }
             } else if (mutation.kind === 'set_processing') {
                 const settings = config.processing[mutation.role];
                 if (!settings) return fail(`Unknown role ${mutation.role}`);
@@ -2551,6 +3550,28 @@
                 }
                 for (const key of ['level_db', 'alignment_ms', 'polarity']) {
                     if (mutation[key] !== undefined && mutation[key] !== null) settings[key] = mutation[key];
+                }
+                if (mutation.level_cal_db) {
+                    try { settings.level_cal_db = mergeLevelCal(settings.level_cal_db, mutation.level_cal_db); } catch (error) { return fail(error.message); }
+                }
+            } else if (mutation.kind === 'set_level_calibration') {
+                if (!Number.isInteger(mutation.state_revision) || mutation.state_revision !== outputStateStore.revision) {
+                    return { error: 'Level Matching configuration changed; measure again', status: 409 };
+                }
+                if (mutation.measurement_job_id) {
+                    const job = levelMatchJobs[mutation.measurement_job_id];
+                    if (!job || job.cancel_requested || job.result.state_revision !== mutation.state_revision
+                        || job.result.mode !== mode || JSON.stringify(job.result.values) !== JSON.stringify(mutation.values)) {
+                        return { error: 'Level Matching configuration changed; measure again', status: 409 };
+                    }
+                }
+                if (!mutation.values || typeof mutation.values !== 'object' || !Object.keys(mutation.values).length) {
+                    return fail('values must map roles to level calibration slots');
+                }
+                for (const [role, slots] of Object.entries(mutation.values)) {
+                    const settings = config.processing[role];
+                    if (!settings) return fail(`Role ${role} has no output processing in output mode ${mode}`);
+                    try { settings.level_cal_db = mergeLevelCal(settings.level_cal_db, slots); } catch (error) { return fail(error.message); }
                 }
             } else if (mutation.kind === 'set_subwoofers') {
                 const roles = outputStateCatalog().modes[mode].topology.sub_roles;
@@ -2565,10 +3586,13 @@
                 }
                 if (mutation.sub_filters !== undefined && mutation.sub_filters !== null) {
                     if (typeof mutation.sub_filters !== 'object') return fail('Sub crossover overrides must be an object keyed by side');
-                    for (const [side, definition] of Object.entries(mutation.sub_filters)) {
-                        if (side !== 'left' && side !== 'right') return fail('Sub crossover overrides must be keyed by left and right');
-                        if (definition === null) delete config.bass_management.sub_filters[side];
-                        else config.bass_management.sub_filters[side] = { ...definition };
+                    const overrideKeys = mode === 'surround' ? SURROUND_GROUPS : ['left', 'right'];
+                    for (const [key, definition] of Object.entries(mutation.sub_filters)) {
+                        if (!overrideKeys.includes(key)) return fail(mode === 'surround'
+                            ? 'Sub crossover overrides must be keyed by the Surround speaker groups'
+                            : 'Sub crossover overrides must be keyed by left and right');
+                        if (definition === null) delete config.bass_management.sub_filters[key];
+                        else config.bass_management.sub_filters[key] = { ...definition };
                     }
                 }
                 for (const role of roles) Object.assign(config.processing[role], mutation.processing[role]);
@@ -2577,10 +3601,16 @@
                     return fail('extras must be an object');
                 }
                 config.extras = mutation.extras;
+            } else if (mutation.kind === 'set_av_sync') {
+                if (Object.keys(mutation).some(key => !['kind', 'mode', 'target_ms'].includes(key))
+                    || typeof mutation.target_ms !== 'number' || !Number.isFinite(mutation.target_ms)
+                    || mutation.target_ms < 0 || mutation.target_ms > 20000) return fail('AV Sync target must be between 0 and 20000 ms');
+                config.av_sync.target_ms = mutation.target_ms;
             } else {
                 return fail(`Unknown mutation kind: ${mutation.kind}`);
             }
             outputStateStore.revision += 1;
+            syncDspToState();
             const catalog = outputStateCatalog();
             const topology = catalog.modes[catalog.active_mode].topology;
             return j({ status: 'ok', revision: catalog.revision, active_mode: catalog.active_mode,
@@ -2634,6 +3664,16 @@
                 sub_roles: [...(config.topology.sub_roles || [])],
                 sample_rate_hz: 48000, ways });
         }
+        if (p === '/api/audio/src') {
+            if (post) {
+                if (!['low', 'standard', 'high'].includes(body.mode)) return err('SRC mode must be low, standard or high', 400);
+                srcMode = body.mode;
+            }
+            return j({ mode: srcMode, modes: ['low', 'standard', 'high'], available: true,
+                error: null, effective_nodes: [], simulated: true, startup_reserve_ms: 750,
+                startup_timeout_ms: 3750,
+                fifo_frames: 65536, sizing_provisional: true });
+        }
         if (p === '/api/audio/samplerate') {
             if (post) {
                 const mode = String(body.mode || 'auto');
@@ -2659,6 +3699,41 @@
             }
             return j(samplerate);
         }
+        if (p === '/api/audio/custom-mapping') {
+            if (method === 'PUT' && (!body || typeof body !== 'object' || Array.isArray(body))) {
+                return err('Invalid JSON body, expected {"name": <string?>, "channels": {<channel>: <input number>}}', 400);
+            }
+            const resolved = resolveCustomMappingDevice(
+                method === 'PUT' ? body.device : (query.has('device') ? query.get('device') : undefined));
+            if (resolved.error) return err(resolved.error, 400);
+            const { device } = resolved;
+            if (method === 'GET') return j(customMappingPayload(device));
+            if (method === 'PUT') {
+                const result = validateCustomMapping(body.name, body.channels, device.suffixes.length);
+                if (result.error) return err(result.error, 400);
+                customMappings[device.base] = result.mapping;
+                return j(customMappingPayload(device));
+            }
+            if (method === 'DELETE') {
+                if (!customMappings[device.base]) return err('No custom mapping is saved for this audio device', 404);
+                const key = customMappingKey(device.base);
+                delete customMappings[device.base];
+                sourceAutoArmed = sourceAutoArmed.filter((item) => item !== key);
+                if (sourceMode === 'external-input' && selectedSourceInputKey === key) {
+                    sourceMode = 'app-playback';
+                    selectedSourceInputKey = SOURCE_INPUTS[0].key;
+                }
+                return j(customMappingPayload(device));
+            }
+        }
+        if (p === '/api/audio/source-auto' && post) {
+            const key = String(body.inputKey || body.input_key || '');
+            if (typeof body.enabled !== 'boolean') return err('enabled must be a boolean', 400);
+            if (key !== 'stdin-input' && !sourceInputByKey(key)) return err('Unknown input: ' + key, 400);
+            sourceAutoArmed = sourceAutoArmed.filter((item) => item !== key);
+            if (body.enabled) sourceAutoArmed.push(key);
+            return jSource();
+        }
         if (p === '/api/audio/source-mode') {
             if (post) {
                 const mode = String(body.mode || '');
@@ -2670,7 +3745,7 @@
                     // backend pausing every app renderer for external input.
                     S.stop();
                     sourceMode = mode;
-                    return j(sourceOverview());
+                    return jSource();
                 }
                 if (mode === 'external-input') {
                     const input = (inputKey && sourceInputByKey(inputKey))
@@ -2680,11 +3755,16 @@
                     selectedSourceInputKey = input.key;
                     S.stop();
                     sourceMode = mode;
-                    return j(sourceOverview());
+                    return jSource();
+                }
+                if (mode === 'stdin-input') {
+                    S.stop();
+                    sourceMode = mode;
+                    return jSource();
                 }
                 sourceMode = 'app-playback';
                 if (inputKey && sourceInputByKey(inputKey)) selectedSourceInputKey = inputKey;
-                return j(sourceOverview());
+                return jSource();
             }
             return j(sourceOverview());
         }
@@ -2736,80 +3816,100 @@
 
         // ── DSP ─────────────────────────────────────────────────────────
         if (p === '/api/dsp/presets') return j(dspPayload());
-        if (p === '/api/dsp/presets/load' && post) {
-            const name = String(body.preset_name || body.name || 'Direct');
-            if (dspPresets.find(pr => pr.name === name)) dspActivePreset = name;
-            syncDspToState();
-            return j({ success: true, active_preset: dspActivePreset, message: 'Preset "' + dspActivePreset + '" loaded' });
+        if (post && /^\/api\/dsp\/presets\/(?:create-|import-|combine$)/.test(p)) {
+            const name = [body.presetName, body.preset_name, body.name]
+                .map(value => String(value || '').trim().replace(/\.json$/i, '').trim())
+                .find(value => value === 'Direct' || value === 'Neutral');
+            if (name === 'Direct' || name === 'Neutral') return err(`Preset "${name}" is a built-in preset and cannot be overwritten`, 400);
         }
         if (p === '/api/dsp/presets/create-peq' && post) {
             const name = String(body.presetName || body.preset_name || '').trim();
             if (!name) return err('Preset name required', 400);
-            if (!dspPresets.find(pr => pr.name === name)) {
-                dspPresets.push({
-                    name,
-                    filename: name + '.json',
-                    path: '/demo/presets/' + name + '.json',
-                    source_presets: [],
-                    peq: body.peq && body.peq.params ? { enabled: true, params: body.peq.params } : null,
-                });
-            }
+            const target = demoBankTarget(body);
+            if (target.error) return err(target.error, target.status);
+            if (target.conflict) return j({ detail: target.conflict }, 409);
+            addDemoPreset(name, body, { peq: body.peq && body.peq.params ? { enabled: true, params: body.peq.params } : null });
             syncDspToState();
-            const created = { success: true, preset: { name } };
-            const binding = assignDemoBankTarget(body, name);
-            if (binding && binding.error) return err(binding.error, binding.status);
-            if (binding && binding.conflict) {
-                created.bank = { assigned: false, created: name };
-                return j(created, 409);
-            }
-            if (binding) created.bank = binding;
-            return j(created);
+            return j(demoCreatedPresetResponse(name, body, target.binding));
         }
         if (p === '/api/dsp/presets/create-with-ir' && post) {
-            const name = String(body.preset_name || body.name || 'Convolver Preset').trim() || 'Convolver Preset';
-            if (!dspPresets.find(pr => pr.name === name)) {
-                dspPresets.push({ name, filename: name + '.json', path: '/demo/presets/' + name + '.json', source_presets: [], convolver: true });
+            const ir = demoUploadFile(body);
+            const irExt = demoUploadExtension(demoUploadFileName(ir));
+            if (!ir) return err('An IR file is required', 400);
+            if (irExt !== '.irs' && irExt !== '.wav') {
+                return err(`Unsupported IR file type: ${irExt || 'no extension'} (use .irs or .wav)`, 400);
             }
+            if (Number(ir.size || 0) === 0) return err('The IR file is empty', 400);
+            const name = demoRequestPresetName(body);
+            if (!name) return err('preset_name is required', 400);
+            if (demoProtectedPresetName(name)) {
+                return err(`Preset "${name}" is a built-in preset and cannot be overwritten`, 400);
+            }
+            const target = demoBankTarget(body);
+            if (target.error) return err(target.error, target.status);
+            if (target.conflict) return j({ detail: target.conflict }, 409);
+            addDemoPreset(name, body, { convolver: true, kernel: demoUploadStem(ir) });
             syncDspToState();
-            const created = { success: true, preset: { name } };
-            const binding = assignDemoBankTarget(body, name);
-            if (binding && binding.error) return err(binding.error, binding.status);
-            if (binding && binding.conflict) {
-                created.bank = { assigned: false, created: name };
-                return j(created, 409);
-            }
-            if (binding) created.bank = binding;
-            return j(created);
+            return j(demoCreatedPresetResponse(name, body, target.binding));
         }
         if (p === '/api/dsp/presets/combine' && post) {
             const name = String(body.presetName || 'Combined Preset').trim();
             const presetNames = Array.isArray(body.presetNames) && body.presetNames.length
                 ? body.presetNames
                 : [body.preset1, body.preset2].filter(Boolean);
-            if (!dspPresets.find(pr => pr.name === name)) {
-                dspPresets.push({ name, filename: name + '.json', path: '/demo/presets/' + name + '.json', source_presets: presetNames });
+            // The sources and the result are presets of the bank the request names.
+            const owner = demoPresetOwner(body);
+            const missing = presetNames.find(source => !findDemoPreset(source, owner));
+            if (missing) return err(`Preset not found: ${missing}`, 404);
+            const groups = new Set(presetNames.map(source => findDemoPreset(source, owner).group).filter(Boolean));
+            if (owner.mode === 'surround' && groups.size > 1) {
+                return err(`Surround preset "${name}" mixes speaker groups; a preset holds the filters of one group`, 400);
             }
+            addDemoPreset(name, body, { source_presets: presetNames,
+                ...(owner.mode === 'surround' ? { layout: 'surround', group: [...groups][0] || null } : {}) });
             syncDspToState();
             return j({ success: true, preset: { name } });
         }
         if (p === '/api/dsp/presets/delete' && post) {
             const name = String(body.preset_name || body.name || '');
-            const pinned = new Set();
-            for (const config of Object.values(outputStateStore.modes)) {
-                for (const bank of Object.values(config.banks)) {
-                    for (const key of ['preset', 'preset_a', 'preset_b']) {
-                        if (bank[key]) pinned.add(bank[key]);
-                    }
+            if (name === 'Direct' || name === 'Neutral') return err(`Preset "${name}" is a built-in preset and cannot be deleted`, 400);
+            const owner = demoPresetOwner(body);
+            const idx = dspPresets.findIndex(pr => pr.name === name && pr.bank === owner.bank && pr.mode === owner.mode);
+            if (idx < 0) return err(`Preset not found: ${name}`, 404);
+            // Same release as the backend, in the slots of the preset's bank
+            // only: A falls back to Neutral, B clears, a bank listening to the
+            // deleted slot falls back to A. Global has its slots in one output
+            // mode, an area bank in every mode that routes it.
+            let released = false;
+            for (const [mode, config] of Object.entries(outputStateStore.modes)) {
+                const roles = owner.bank === 'global' ? (mode === owner.mode ? ['global'] : [])
+                    : (outputStateCatalog().modes[mode].banks[owner.bank]?.roles || []);
+                const holds = slot => isSelection(slot) ? Object.values(slot).includes(name) : slot === name;
+                const release = slot => isSelection(slot)
+                    ? Object.fromEntries(Object.entries(slot).map(([group, preset]) => [group, preset === name ? 'Neutral' : preset]))
+                    : slot === name ? 'Neutral' : slot;
+                for (const role of roles) {
+                    const bank = config.banks[role];
+                    if (!bank || ![bank.preset, bank.preset_a, bank.preset_b].some(holds)) continue;
+                    const side = demoBankSide(bank);
+                    const listened = bank.preset;
+                    bank.preset_a = release(bank.preset_a);
+                    if (isSelection(bank.preset_b)) bank.preset_b = release(bank.preset_b);
+                    else if (bank.preset_b === name) bank.preset_b = null;
+                    bank.preset = side === 'B' && bank.preset_b ? bank.preset_b
+                        : side === null && !holds(listened) ? listened : bank.preset_a;
+                    bank.active_side = side === 'B' && bank.preset_b ? 'B' : null;
+                    // The backend fills a cleared legacy B with Neutral when loading.
+                    if (bank.preset_b === null) bank.preset_b = mode === 'surround' && role === 'global'
+                        ? neutralSelection() : 'Neutral';
+                    released = true;
                 }
             }
-            if (pinned.has(name)) return err(`Preset "${name}" is used by an output bank and cannot be deleted`, 400);
-            const idx = dspPresets.findIndex(pr => pr.name === name);
-            if (idx >= 0 && name !== 'Direct' && name !== 'Neutral') dspPresets.splice(idx, 1);
-            if (dspActivePreset === name) dspActivePreset = 'Direct';
+            if (released) outputStateStore.revision += 1;
+            dspPresets.splice(idx, 1);
             syncDspToState();
             return j({ success: true });
         }
-        if (p === '/api/dsp/compare' && post) { dspCompare = { ...body }; return j({ ok: true }); }
         if (p === '/api/dsp/extras' && post) {
             // Same merge vocabulary as the backend
             // (merge_effects_extras_from_json): camelCase from the app and
@@ -2861,6 +3961,16 @@
             if (value !== undefined) section('tone_effect').enabled = toBool(value);
             value = pick('toneEffectMode', 'tone_effect_mode');
             if (value !== undefined) section('tone_effect').mode = String(value);
+            value = pick('upmixerEnabled', 'upmixer_enabled');
+            if (value !== undefined) section('upmixer').enabled = toBool(value);
+            value = pick('upmixerCenter', 'upmixer_center');
+            if (value !== undefined) params('upmixer').center = demoUpmixerStrength(value, 6);
+            value = pick('upmixerSurround', 'upmixer_surround');
+            if (value !== undefined) params('upmixer').surround = demoUpmixerStrength(value, 6);
+            value = pick('upmixerMode', 'upmixer_mode');
+            if (value !== undefined) params('upmixer').mode = demoUpmixerMode(value, 'fast');
+            value = pick('upmixerFftSize', 'upmixer_fft_size');
+            if (value !== undefined) params('upmixer').fftSize = demoUpmixerFftSize(value, 2048);
             syncDspToState();
             return j({ status: 'ok', ok: true, extras: dspExtras });
         }
@@ -2868,53 +3978,122 @@
             return j({ status: 'ok', extras: dspExtras, excluded_presets: [] });
         }
         if (p === '/api/dsp/presets/import-json' && post) {
-            const name = String(body.preset_name || body.name || 'Imported Preset').trim() || 'Imported Preset';
-            if (!dspPresets.find(pr => pr.name === name)) {
-                dspPresets.push({ name, filename: name + '.json', path: '/demo/presets/' + name + '.json', source_presets: [] });
+            const file = demoUploadFile(body);
+            if (!file) return err('A preset JSON file is required', 400);
+            // The uploaded file names the preset; a form field never does
+            // (dsp.api.import_dsp_preset_json passes the file name).
+            const name = demoUploadFileName(file).toLowerCase() === 'preset.json'
+                ? 'preset' : demoUploadStem(file);
+            if (!name) return err('Invalid preset name', 400);
+            if (demoProtectedPresetName(name)) {
+                return err(`Preset "${name}" is a built-in preset and cannot be overwritten`, 400);
             }
-            syncDspToState();
-            const binding = assignDemoBankTarget(body, name);
-            if (binding?.error) return err(binding.error, binding.status);
-            if (binding?.conflict) return j({ preset: { name }, bank: { assigned: false } }, 409);
-            return j({ success: true, preset: { name }, ...(binding ? { bank: binding } : {}) });
+            // The upload is read like the backend reads it: text first, then
+            // the payload shape, then the bank binding — a rejected import
+            // never leaves a preset behind.
+            return demoUploadText(file).then((text) => {
+                const problem = demoPresetPayloadError(text);
+                if (problem) return err(problem, 400);
+                const target = demoBankTarget(body);
+                if (target.error) return err(target.error, target.status);
+                if (target.conflict) return j({ detail: target.conflict }, 409);
+                addDemoPreset(name, body, demoImportedFilters(text));
+                syncDspToState();
+                return j(demoCreatedPresetResponse(name, body, target.binding));
+            });
         }
         if (p === '/api/dsp/presets/import-bundle' && post) {
-            const name = String(body.preset_name || body.name || 'Imported Bundle').trim() || 'Imported Bundle';
-            if (!dspPresets.find(pr => pr.name === name)) {
-                dspPresets.push({ name, filename: name + '.json', path: '/demo/presets/' + name + '.json', source_presets: [] });
+            const file = demoUploadFile(body);
+            if (!file) return err('A preset bundle is required', 400);
+            if (demoUploadExtension(demoUploadFileName(file)) !== '.zip') {
+                return err('Preset bundles are .zip archives', 400);
             }
-            syncDspToState();
-            const binding = assignDemoBankTarget(body, name);
-            if (binding?.error) return err(binding.error, binding.status);
-            if (binding?.conflict) return j({ preset: { name }, bank: { assigned: false } }, 409);
-            return j({ success: true, preset: { name }, ...(binding ? { bank: binding } : {}) });
+            // The demo reads the archive's first local entry instead of
+            // unpacking it: enough for the backend's naming rule (a member
+            // named preset.json falls back to the upload's own name) and for
+            // rejecting a file that is not a ZIP at all.
+            return demoUploadHead(file, 4096).then((head) => {
+                if (!head.startsWith('PK')) return err('Invalid ZIP archive', 400);
+                const member = demoZipFirstName(head);
+                const fallback = demoUploadStem(file);
+                const name = (member && member.toLowerCase().endsWith('.json') && !['preset.json', 'manifest.json'].includes(member.toLowerCase())
+                    ? member.replace(/\.json$/i, '').trim() : fallback);
+                if (!name) return err('Invalid preset name', 400);
+                if (demoProtectedPresetName(name)) {
+                    return err(`Preset "${name}" is a built-in preset and cannot be overwritten`, 400);
+                }
+                const target = demoBankTarget(body);
+                if (target.error) return err(target.error, target.status);
+                if (target.conflict) return j({ detail: target.conflict }, 409);
+                addDemoPreset(name, body);
+                syncDspToState();
+                return j({ ...demoCreatedPresetResponse(name, body, target.binding), irs: [] });
+            });
         }
         if (p === '/api/dsp/presets/import-filter-dual' && post) {
-            const name = String(body.preset_name || body.name || 'Dual Filter Preset').trim() || 'Dual Filter Preset';
-            if (!dspPresets.find(pr => pr.name === name)) {
-                dspPresets.push({ name, filename: name + '.json', path: '/demo/presets/' + name + '.json', source_presets: [], convolver: true });
+            const name = String(body.preset_name || body.name || '').trim();
+            if (!name) return err('preset_name is required', 400);
+            // Upload kind per side (dsp.api._detect_upload_kind): .txt is REW
+            // text, .irs/.wav a convolver; anything else is refused.
+            const kindOf = (upload) => {
+                if (!upload) return null;
+                const ext = demoUploadExtension(demoUploadFileName(upload));
+                if (ext === '.txt') return 'rew-text';
+                if (ext === '.irs' || ext === '.wav') return 'convolver';
+                return 'unsupported';
+            };
+            const leftFile = demoUploadFile(body, 'left_file');
+            const rightFile = demoUploadFile(body, 'right_file');
+            const leftKind = kindOf(leftFile);
+            const rightKind = kindOf(rightFile);
+            const badUpload = [leftFile, rightFile].find(file => kindOf(file) === 'unsupported');
+            if (badUpload) return err(`Unsupported file type: ${demoUploadFileName(badUpload)}`, 400);
+            if (!!leftKind !== !!rightKind) return err('Provide both Left and Right files, or neither', 400);
+            const dualConvolver = leftKind === 'convolver' && rightKind === 'convolver';
+            const leftText = String(body.left_text || '').trim();
+            const rightText = String(body.right_text || '').trim();
+            if (!dualConvolver && (!leftText || !rightText)) {
+                return err('Provide Left and Right REW text, or Left and Right .irs/.wav files', 400);
             }
+            const left = dualConvolver ? null : demoRewPeqParse(leftText);
+            if (left && left.error) return err(left.error, 400);
+            const right = dualConvolver ? null : demoRewPeqParse(rightText);
+            if (right && right.error) return err(right.error, 400);
+            const target = demoBankTarget(body);
+            if (target.error) return err(target.error, target.status);
+            if (target.conflict) return j({ detail: target.conflict }, 409);
+            if (dualConvolver) {
+                addDemoPreset(name, body, { convolver: true, kernel: demoUploadStem(leftFile) });
+                syncDspToState();
+                return j(demoCreatedPresetResponse(name, body, target.binding,
+                    { import_kind: 'dual-convolver', ir: demoUploadFileName(leftFile) }));
+            }
+            addDemoPreset(name, body, { peq: { enabled: true, params: {
+                channelMode: 'dual', eqMode: 'IIR', leftBands: left.bands, rightBands: right.bands,
+            } } });
             syncDspToState();
-            const binding = assignDemoBankTarget(body, name);
-            if (binding?.error) return err(binding.error, binding.status);
-            if (binding?.conflict) return j({ preset: { name }, bank: { assigned: false } }, 409);
-            return j({ success: true, preset: { name }, ...(binding ? { bank: binding } : {}) });
+            return j(demoCreatedPresetResponse(name, body, target.binding,
+                { import_kind: 'dual-peq', ir: null }));
         }
         if (p === '/api/dsp/presets/import-rew-peq' && post) {
-            const name = String(body.preset_name || body.name || 'REW PEQ Preset').trim() || 'REW PEQ Preset';
-            if (!dspPresets.find(pr => pr.name === name)) {
-                dspPresets.push({ name, filename: name + '.json', path: '/demo/presets/' + name + '.json', source_presets: [], peq: { enabled: true, params: { channelMode: 'dual', eqMode: 'IIR', leftBands: [], rightBands: [] } } });
-            }
-            syncDspToState();
-            const created = { success: true, preset: { name } };
-            const binding = assignDemoBankTarget(body, name);
-            if (binding && binding.error) return err(binding.error, binding.status);
-            if (binding && binding.conflict) {
-                created.bank = { assigned: false, created: name };
-                return j(created, 409);
-            }
-            if (binding) created.bank = binding;
-            return j(created);
+            const name = String(body.preset_name || body.name || '').trim();
+            if (!name) return err('preset_name is required', 400);
+            const file = demoUploadFile(body);
+            if (!file) return err('A REW PEQ text file is required', 400);
+            // dsp.api reads the uploaded text and runs it through the same
+            // parser as the dual import before the preset exists.
+            return demoUploadText(file).then((text) => {
+                const parsed = demoRewPeqParse(text);
+                if (parsed.error) return err(parsed.error, 400);
+                const target = demoBankTarget(body);
+                if (target.error) return err(target.error, target.status);
+                if (target.conflict) return j({ detail: target.conflict }, 409);
+                addDemoPreset(name, body, { peq: { enabled: true, params: {
+                    channelMode: 'stereo-linked', eqMode: 'IIR', bands: parsed.bands,
+                } } });
+                syncDspToState();
+                return j(demoCreatedPresetResponse(name, body, target.binding));
+            });
         }
 
         // ── Measurements ────────────────────────────────────────────────
@@ -2974,16 +4153,18 @@
         if (p === '/api/measurements/start' && post) {
             const role = String(body.measurement_role || 'single');
             const channel = String(body.channel || 'left');
-            const id = S.startMeasurement({ role, channel, mode: outputMode.mode, seed: 1 + Math.random() * 50 });
+            const group = String(body.measurement_group || '');
+            const bank = String(body.measurement_bank || '');
+            const id = S.startMeasurement({ role, channel, group, bank, mode: outputMode.mode, seed: 1 + Math.random() * 50 });
             return j({ job: { id, job_kind: 'single', status: 'running', progress_pct: 0, message: 'Sweep starting…' } });
         }
         const measJobMatch = p.match(/^\/api\/measurements\/jobs\/([^/]+)$/);
         if (measJobMatch) {
+            // A finished job only reports its result: the real store keeps a
+            // run only after "Save current" (the save route below), so a
+            // wizard's step captures never reach the saved list.
             const payload = S.jobPayload(measJobMatch[1]);
             if (!payload) return err('Job not found');
-            if (payload.status === 'completed' && payload.result && payload.result.measurement) {
-                if (!savedMeasurements.find(m => m.id === payload.result.measurement.id)) savedMeasurements.unshift(payload.result.measurement);
-            }
             return j({ job: payload });
         }
         const measCancel = p.match(/^\/api\/measurements\/jobs\/([^/]+)\/cancel$/);
@@ -3059,8 +4240,6 @@
             }
             const inputKey = pick('selectedInputKey', 'input_key');
             if (inputKey !== undefined) measurementSettings.selectedInputKey = String(inputKey || '');
-            const rate = pick('measurementSampleRate', 'measurement_sample_rate');
-            if (rate !== undefined) measurementSettings.measurementSampleRate = Number(rate) || 48000;
             return j({ status: 'ok', measurement_settings: { ...measurementSettings } });
         }
         // Calibration + house-curve files: the demo ships the .104 mic
@@ -3127,7 +4306,90 @@
         if (p === '/api/measurements/spl-calibration/apply' && post) {
             const result = S.splApplyCalibration(body.measured_spl_db);
             if (result.error) return err(result.error, 400);
+            // Like the backend, the applied calibration lives in the loudness extras.
+            dspExtras.loudness.params.calibration = result.calibration;
+            syncDspToState();
             return j(result);
+        }
+        if (p === '/api/measurements/level-match') {
+            const status = levelMatchStatus(String(query.get('bank_id') || ''));
+            return status.error ? err(status.error, 400) : j(status.payload);
+        }
+        if (p === '/api/measurements/level-match/start' && post) {
+            const status = levelMatchStatus(String(body.bank_id || ''));
+            if (status.error) return err(status.error, 400);
+            if (!status.referenceReady) return err('Measure Front L/R first to set the level reference', 409);
+            const { scope } = status;
+            levelMatchEntries[scope.mode] = scope.mode === 'surround' ? levelMatchRoutedEntries(scope.mode) : {};
+            const bucket = (levelMatchEntries[scope.mode] = levelMatchEntries[scope.mode] || {});
+            for (const role of scope.members) {
+                const slot = scope.slotForRole(role);
+                bucket[`${slot}:${role}`] = { role, slot, family: scope.family,
+                    raw_db: levelMatchRoleRaw(role), measured_at: new Date().toISOString() };
+            }
+            const id = 'demo_levelmatch_' + (++levelMatchSeq);
+            levelMatchJobs[id] = { id, status: 'completed', mode: scope.mode, bank_id: String(body.bank_id), slot: scope.slot,
+                progress: { step: scope.units.length, total: scope.units.length, label: scope.units[scope.units.length - 1] },
+                result: { mode: scope.mode, values: levelMatchDerive(scope.mode), measured_roles: scope.members.slice().sort(), state_revision: outputStateStore.revision },
+                error: null, cancel_requested: false };
+            return j({ status: 'ok', job: levelMatchJobs[id] });
+        }
+        if (p === '/api/measurements/level-match/reset' && post) {
+            const status = levelMatchStatus(String(body.bank_id || ''));
+            if (status.error) return err(status.error, 400);
+            const { scope } = status;
+            const bucket = levelMatchEntries[scope.mode] || {};
+            for (const key of Object.keys(bucket)) if (scope.mode !== 'surround' || bucket[key].family === scope.family) delete bucket[key];
+            // Reset the mode family, including legacy Stereo bank trims.
+            const values = {};
+            if (scope.mode === 'surround') {
+                for (const role of scope.roles) values[role] = { [scope.frontRoles.includes(role) ? 'global' : 'bank']: 0 };
+            } else {
+                for (const role of scope.members) values[role] = { global: 0, bank: 0 };
+            }
+            return j({ status: 'ok', mode: scope.mode, bank_id: String(body.bank_id), state_revision: outputStateStore.revision, values });
+        }
+        const levelMatchJob = p.match(/^\/api\/measurements\/level-match\/jobs\/([^/]+)$/);
+        if (levelMatchJob) {
+            const job = levelMatchJobs[levelMatchJob[1]];
+            return job ? j({ status: 'ok', job }) : err('Level Matching job not found', 404);
+        }
+        const levelMatchCancel = p.match(/^\/api\/measurements\/level-match\/jobs\/([^/]+)\/cancel$/);
+        if (levelMatchCancel && post) {
+            const job = levelMatchJobs[levelMatchCancel[1]];
+            if (job) job.cancel_requested = true;
+            return job ? j({ status: 'ok', job }) : err('Level Matching job not found', 404);
+        }
+        if (p === '/api/measurements/polarity-check') {
+            const status = polarityCheckStatus(String(query.get('bank_id') || ''));
+            if (status.error) return err(status.error, 400);
+            return j({ status: 'ok', mode: status.scope.mode, bank_id: String(query.get('bank_id')),
+                units: status.units.map(unit => unit.label), job: polarityCheckLast });
+        }
+        if (p === '/api/measurements/polarity-check/start' && post) {
+            const status = polarityCheckStatus(String(body.bank_id || ''));
+            if (status.error) return err(status.error, 400);
+            const id = 'demo_polarity_' + (++polarityCheckSeq);
+            const rows = status.units.map(unit => ({
+                label: unit.label, roles: unit.roles.slice(),
+                verdict: unit.roles.some(role => polarityCheckReversed.has(role)) ? 'reversed' : 'correct',
+                reason: '', phase_cos: unit.roles.some(role => polarityCheckReversed.has(role)) ? -0.97 : 0.97, snr_db: 41.0, inverted: false }));
+            polarityCheckJobs[id] = { id, status: 'completed', mode: status.scope.mode, bank_id: String(body.bank_id),
+                progress: { step: rows.length, total: rows.length, label: rows[rows.length - 1].label },
+                result: { mode: status.scope.mode, rows, all_reversed: rows.length > 1 && rows.every(row => row.verdict === 'reversed') },
+                error: null, cancel_requested: false };
+            polarityCheckLast = polarityCheckJobs[id];
+            return j({ status: 'ok', job: polarityCheckJobs[id] });
+        }
+        const polarityCheckJob = p.match(/^\/api\/measurements\/polarity-check\/jobs\/([^/]+)$/);
+        if (polarityCheckJob) {
+            const job = polarityCheckJobs[polarityCheckJob[1]];
+            return job ? j({ status: 'ok', job }) : err('Polarity Check job not found', 404);
+        }
+        const polarityCheckCancel = p.match(/^\/api\/measurements\/polarity-check\/jobs\/([^/]+)\/cancel$/);
+        if (polarityCheckCancel && post) {
+            const job = polarityCheckJobs[polarityCheckCancel[1]];
+            return job ? j({ status: 'ok', job }) : err('Polarity Check job not found', 404);
         }
         if (p === '/api/measurements/auto-sub-optimize/start' && post) {
             const id = 'demo_autosub_' + (++autoSubSeq);
