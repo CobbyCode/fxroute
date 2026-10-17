@@ -156,6 +156,33 @@ class MeasurementJobSetupTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(resolve({"electrical_reference_candidates": []}, "left"), [])
         self.assertEqual(resolve({"mic": 1, "electrical_reference": None}, "left"), [])
 
+    def test_stereo_resolver_considers_both_side_references(self):
+        resolve = MeasurementStore._resolve_electrical_reference_input_channels
+        split = {"mic": 1, "electrical_reference": 7,
+                 "electrical_reference_left": 7, "electrical_reference_right": 8}
+        self.assertEqual(resolve(split, "stereo"), [7, 8])
+        self.assertEqual(resolve(split, "left"), [7])
+        self.assertEqual(resolve(split, "right"), [8])
+        self.assertEqual(resolve({**split, "electrical_reference_candidates": []}, "stereo"), [7, 8])
+        self.assertEqual(resolve({**split, "electrical_reference_candidates": [8]}, "stereo"), [8])
+        self.assertEqual(resolve({**split, "electrical_reference_left": None}, "stereo"), [8])
+        self.assertEqual(resolve({**split, "electrical_reference_right": None}, "stereo"), [7])
+        self.assertEqual(resolve({**split, "electrical_reference_right": 7}, "stereo"), [7])
+        self.assertEqual(resolve({"mic": 1, "electrical_reference": 4}, "stereo"), [4])
+        self.assertEqual(resolve({"mic": 1, "electrical_reference": None}, "stereo"), [])
+
+    def test_stereo_disabled_reason_applies_only_without_reference_candidates(self):
+        disabled_reason = MeasurementStore._electrical_reference_disabled_reason
+        channels = {"mic": 1, "electrical_reference_left": None, "electrical_reference_right": 8,
+                    "reference_disabled_reason_left": "Left reference is the microphone input.",
+                    "reference_disabled_reason_right": "",
+                    "reference_disabled_reason": "Left reference is the microphone input."}
+        self.assertEqual(disabled_reason(channels, "stereo"), "")
+        self.assertEqual(disabled_reason(channels, "left"), "Left reference is the microphone input.")
+        self.assertEqual(disabled_reason(channels, "right"), "")
+        self.assertEqual(disabled_reason({**channels, "electrical_reference_right": None}, "stereo"),
+                         "Left reference is the microphone input.")
+
     async def test_candidate_channels_are_stored_for_one_simultaneous_take(self):
         with tempfile.TemporaryDirectory() as tempdir:
             store = MeasurementStore(home=Path(tempdir))

@@ -1112,8 +1112,8 @@ class MeasurementStore:
         use_electrical_reference = electrical_reference_channel_index is not None and electrical_reference_channel_index != mic_input_channel_index
         # One simultaneous take can carry several configured loopback channels;
         # the store's electrical-reference evaluation then admits the channel
-        # that actually carries the sweep. Outside that mode the list holds the
-        # legacy single per-side reference and nothing changes.
+        # that actually carries the sweep. Side-specific captures without an
+        # explicit candidate list keep their single per-side reference.
         electrical_reference_channel_indexes = (
             [
                 channel_index
@@ -2031,10 +2031,16 @@ class MeasurementStore:
         An explicit candidate list (one simultaneous take over several configured
         loopback channels) wins and is de-duplicated, never filtered by side: the
         channel that carries the sweep is decided from the capture evidence, not
-        from the speaker side.  Every other job keeps the legacy single per-side
-        reference, so the manual sweep path is unchanged.
+        from the speaker side. Stereo captures also consider both configured
+        side references; left/right captures keep their single per-side reference.
         """
         configured = input_channels.get("electrical_reference_candidates")
+        has_explicit_candidates = isinstance(configured, (list, tuple)) and bool(configured)
+        if not has_explicit_candidates and str(channel or "").strip().lower() == "stereo":
+            configured = [
+                cls._resolve_electrical_reference_input_channel(input_channels, side)
+                for side in ("left", "right")
+            ]
         if isinstance(configured, (list, tuple)) and configured:
             candidates: list[int] = []
             for value in configured:
@@ -2054,6 +2060,11 @@ class MeasurementStore:
         input_channels: dict[str, Any],
         channel: str | None,
     ) -> str:
+        if str(channel or "").strip().lower() == "stereo":
+            # A disabled sibling must not invalidate another recorded candidate.
+            if cls._resolve_electrical_reference_input_channels(input_channels, channel):
+                return ""
+            return str(input_channels.get("reference_disabled_reason") or "").strip()
         side = cls._electrical_reference_side(channel)
         if f"reference_disabled_reason_{side}" in input_channels:
             return str(input_channels.get(f"reference_disabled_reason_{side}") or "").strip()

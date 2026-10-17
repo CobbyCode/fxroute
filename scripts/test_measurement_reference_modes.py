@@ -79,6 +79,7 @@ class MeasurementReferenceModeTests(unittest.TestCase):
             playback_path = self.store.playbacks_dir / capture_path.name
             rate, playback = self.store._load_wav_array(playback_path)
             program = playback[:, 1] if "-right" in capture_path.stem else playback[:, 0]
+            host_reference = np.concatenate([np.zeros(rate // 2), program * 0.25, np.zeros(rate // 2)])
             if self.reference_filters:
                 program = apply_band(program, self.reference_filters)
             reference = np.concatenate([np.zeros(rate // 2), program * 0.25, np.zeros(rate // 2)])
@@ -90,9 +91,10 @@ class MeasurementReferenceModeTests(unittest.TestCase):
                 capture[:, 0] = mic
                 carriers = self.reference_carriers(capture_path) if callable(self.reference_carriers) else self.reference_carriers
                 for index in carriers:
-                    capture[:, index] = np.clip(reference * 10.0, -1.0, 1.0) if self.clip_electrical_reference else reference
+                    if index < count:
+                        capture[:, index] = np.clip(reference * 10.0, -1.0, 1.0) if self.clip_electrical_reference else reference
             else:
-                capture[:, 0] = reference
+                capture[:, 0] = host_reference
                 capture[:, 1] = mic
             self.store._write_wav(capture_path, capture, rate)
         return SimpleNamespace(returncode=0, communicate=lambda **kw: ("", ""), poll=lambda: 0)
@@ -197,6 +199,65 @@ class MeasurementReferenceModeTests(unittest.TestCase):
                 self.assertTrue(analysis["reference_path"]["electrical_reference_used"])
                 self.assertEqual(analysis["reference_path"]["electrical_reference_input_channel"], channel)
                 self.assertEqual(analysis["clock"]["timing_channel"], f"input_{channel}_electrical_reference")
+
+    def stereo_sub_job(self, bank):
+        job = self.job(bank)
+        job["channel"] = "stereo"
+        job["input_channels"].update(
+            electrical_reference=7, electrical_reference_left=7, electrical_reference_right=8)
+        self.reference_filters = [crossover_spec("lowpass", 80.0)]
+        return job
+
+    def test_stereo_subs_admit_either_configured_reference_without_recapture(self):
+        for bank in ("sub1", "sub2"):
+            for carrier in (7, 8):
+                with self.subTest(bank=bank, carrier=carrier):
+                    job = self.stereo_sub_job(bank)
+                    self.reference_carriers = [carrier - 1]
+                    recordings_before = self.recordings
+                    result = self.store._execute_capture_job(job)
+                    reference = result["analysis"]["reference_path"]
+                    self.assertTrue(reference["electrical_reference_used"])
+                    self.assertFalse(reference.get("electrical_reference_fallback", False))
+                    self.assertEqual(reference["electrical_reference_input_channel"], carrier)
+                    self.assertEqual(result["capture"]["electrical_reference_input_channel"], carrier)
+                    self.assertEqual(result["_electrical_reference_channel_index"], carrier - 1)
+                    self.assertEqual(self.recordings - recordings_before, 1)
+                    candidates = reference.get("electrical_reference_candidates", [])
+                    self.assertEqual([item["input_channel"] for item in candidates], [7, 8])
+                    self.assertEqual([item["usable"] for item in candidates], [carrier == 7, carrier == 8])
+
+    def test_stereo_sub_falls_back_when_both_configured_references_are_invalid(self):
+        for carriers, clipped in (([], False), ([6, 7], True)):
+            with self.subTest(carriers=carriers, clipped=clipped):
+                job = self.stereo_sub_job("sub2")
+                self.reference_carriers = carriers
+                self.clip_electrical_reference = clipped
+                recordings_before = self.recordings
+                result = self.store._execute_capture_job(job)
+                reference = result["analysis"]["reference_path"]
+                self.assertTrue(reference["electrical_reference_fallback"])
+                self.assertFalse(reference["electrical_reference_used"])
+                self.assertIsNone(result["capture"]["electrical_reference_input_channel"])
+                self.assertFalse(result["_use_electrical_reference"])
+                self.assertEqual(self.recordings - recordings_before, 2)
+
+    def test_stereo_disabled_sibling_does_not_override_the_admitted_reference(self):
+        job = self.stereo_sub_job("sub2")
+        reason = "Mic input and electrical reference L input are the same channel; reference compensation disabled."
+        job["input_channels"].update(
+            electrical_reference=8, electrical_reference_left=None,
+            reference_disabled_reason=reason, reference_disabled_reason_left=reason,
+            reference_disabled_reason_right="")
+        self.reference_carriers = [7]
+        result = self.store._execute_capture_job(job)
+        reference = result["analysis"]["reference_path"]
+        self.assertTrue(reference["electrical_reference_used"])
+        self.assertFalse(reference.get("electrical_reference_fallback", False))
+        self.assertEqual(reference["electrical_reference_input_channel"], 8)
+        self.assertTrue(result["_use_electrical_reference"])
+        self.assertEqual(result["_electrical_reference_channel_index"], 7)
+        self.assertEqual(self.recordings, 1)
 
     def test_changed_admitted_channel_uses_per_sweep_analysis(self):
         job = self.candidate_job()
