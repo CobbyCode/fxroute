@@ -5321,7 +5321,7 @@ build_native_surround_input() {
   [[ -f "$build_script" ]] || die "Missing Surround input build script: $build_script"
   prepare_target_user_directory "$INSTALL_ROOT/native_surround/build"
   pkg_install "${packages[@]}"
-  run_as_target_user_in_install "bash $(shell_quote "$build_script")" || die "Surround input build failed"
+  run_as_target_user bash "$build_script" || die "Surround input build failed"
   [[ -x "$binary" ]] || die "Surround input binary missing after build: $binary"
   pass "FXRoute Surround input built"
 }
