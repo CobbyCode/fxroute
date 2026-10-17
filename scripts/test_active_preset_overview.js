@@ -97,7 +97,7 @@ assert.deepEqual(ui.allBanksCompareOverview(catalog('surround', { global: {}, ma
 assert.deepEqual(ui.allBanksCompareOverview(null), []);
 
 // Rendered into the compare badge: only banks outside the current selection.
-function render(state) {
+function renderElements(state) {
     const elements = {
         effectsCompareRow: { style: {} },
         effectsCompareA: { innerHTML: '' },
@@ -115,8 +115,9 @@ function render(state) {
         showToast: () => {},
     });
     BankUI.renderEffectsCompare();
-    return elements.effectsCompareBanks.innerHTML;
+    return elements;
 }
+const render = state => renderElements(state).effectsCompareBanks.innerHTML;
 const chips = (html) => [...html.matchAll(/<span class="effects-compare-bank( is-selected)?" data-tooltip="([^"]*)">.*?<\/span><\/span>/g)]
     .map(match => ({ selected: !!match[1], tooltip: match[2],
         text: match[0].replace(/<[^>]+>/g, '') }));
@@ -149,6 +150,70 @@ assert.deepEqual(chips(render({ outputSystem: { catalog: allCatalog }, dsp: { pr
 assert.match(render({ outputSystem: { catalog: catalog('stereo-sub', { global: bank('Global', 'Neutral'),
     main: bank('Main L/R', null) }) }, dsp: { presets } }), /Main L\/R<\/span> <span class="effects-compare-bank-preset">Per-channel</);
 assert.equal(render({ outputSystem: { catalog: null }, dsp: { presets, compare: {}, active_preset: 'Neutral' } }), '');
+
+// Easy hides only Neutral area chips, using the listened preset, not an inactive B.
+const mixedCatalog = catalog('stereo-sub', {
+    global: bank('Global', CONV, 'B'), main: abBank('Main L/R', 'Neutral', CONV),
+    sub1: bank('Sub 1', 'PEQ', 'B'), sub2: bank('Sub 2', 'PEQ', 'B'),
+});
+for (const expert of [undefined, false, true]) {
+    const before = JSON.stringify(mixedCatalog);
+    const html = render({ outputSystem: { catalog: mixedCatalog, expert }, dsp: { presets } });
+    assert.deepEqual(chips(html).map(chip => chip.text), expert
+        ? ['Main L/R Neutral', 'Sub 1/2 PEQ'] : ['Sub 1/2 PEQ'],
+    `expert=${expert}: only Expert includes Neutral area chips`);
+    assert.equal(JSON.stringify(mixedCatalog), before, 'chip rendering never changes the catalog');
+}
+
+// All-Neutral Easy has no area chips, including merged Sub 1/2; Expert keeps them.
+const neutralCatalog = catalog('surround', {
+    global: bank('Global', 'Neutral'), main: bank('Front L/R', 'Neutral'),
+    sub1: bank('Sub 1', 'Neutral'), sub2: bank('Sub 2', 'Neutral'),
+});
+assert.equal(render({ outputSystem: { catalog: neutralCatalog, expert: false }, dsp: { presets } }), '');
+assert.deepEqual(chips(render({ outputSystem: { catalog: neutralCatalog, expert: true }, dsp: { presets } }))
+    .map(chip => chip.text), ['Front L/R Neutral', 'Sub 1/2 Neutral']);
+
+// Global status is preserved in both views, including Neutral and Direct.
+for (const preset of ['Neutral', 'Direct', CONV]) {
+    for (const expert of [false, true]) {
+        const globalCatalog = catalog('stereo-sub', {
+            global: bank('Global', preset), main: bank('Main L/R', 'Neutral'),
+        }, 'main');
+        assert.deepEqual(chips(render({ outputSystem: { catalog: globalCatalog, expert }, dsp: { presets } }))
+            .map(chip => chip.tooltip), [`Global: ${preset}`]);
+    }
+}
+
+// A view switch updates existing chips only; all other A/B fields stay unchanged.
+{
+    const state = { outputSystem: { catalog: mixedCatalog, expert: false }, dsp: { presets } };
+    const elements = renderElements(state);
+    const otherCompareFields = () => JSON.stringify(Object.fromEntries(Object.entries(elements)
+        .filter(([key]) => key !== 'effectsCompareBanks')));
+    const before = otherCompareFields();
+    state.outputSystem.expert = true;
+    BankUI.renderEffectsCompare();
+    assert.deepEqual(chips(elements.effectsCompareBanks.innerHTML).map(chip => chip.text),
+        ['Main L/R Neutral', 'Sub 1/2 PEQ']);
+    assert.equal(otherCompareFields(), before, 'Expert changes no other A/B output');
+    state.outputSystem.expert = false;
+    BankUI.renderEffectsCompare();
+    assert.deepEqual(chips(elements.effectsCompareBanks.innerHTML).map(chip => chip.text), ['Sub 1/2 PEQ']);
+    assert.equal(otherCompareFields(), before, 'returning to Easy changes no other A/B output');
+
+    const main = mixedCatalog.modes['stereo-sub'].banks.main;
+    main.preset = CONV;
+    main.active_side = 'B';
+    BankUI.renderEffectsCompare();
+    assert.deepEqual(chips(elements.effectsCompareBanks.innerHTML).map(chip => chip.text),
+        ['Main L/R Conv LR…233313', 'Sub 1/2 PEQ'], 'a newly active area filter appears in Easy');
+    main.preset = 'Neutral';
+    main.active_side = 'A';
+    BankUI.renderEffectsCompare();
+    assert.deepEqual(chips(elements.effectsCompareBanks.innerHTML).map(chip => chip.text),
+        ['Sub 1/2 PEQ'], 'returning an area bank to Neutral removes its chip');
+}
 
 // The page carries the container inside the Listening/Chain badge.
 const page = fs.readFileSync(path.join(__dirname, '../static/index.html'), 'utf8');

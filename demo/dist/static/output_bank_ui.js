@@ -552,7 +552,9 @@
         const mod = outputState();
         const entries = catalog && typeof mod?.activePresetOverview === 'function'
             ? mod.activePresetOverview(catalog) : [];
-        const html = entries.map((entry) => {
+        const expert = !!deps.getState().outputSystem?.expert;
+        const visible = entries.filter(entry => expert || entry.ids.includes('global') || entry.preset !== 'Neutral');
+        const html = visible.map((entry) => {
             const name = entry.preset || 'Per-channel';
             return `<span class="effects-compare-bank" data-tooltip="${deps.escapeHtml(`${entry.label}: ${name}`)}">`
                 + `<span class="effects-compare-bank-key">${deps.escapeHtml(entry.label)}</span> `
