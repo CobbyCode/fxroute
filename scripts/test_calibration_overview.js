@@ -51,6 +51,11 @@ async function main() {
     assert.deepEqual(summary.levels, [{ label: 'L', minDb: -2, maxDb: -2 }, { label: 'R', minDb: -3, maxDb: -1 }]);
     assert.match(text(overview.overviewHtml(summary)), /L −2\.0 R −3\.0…−1\.0 dB/);
 
+    summary = overview.summarize(catalog('surround', ['center_low', 'center_mid', 'center_high'], [], {
+        center_low: processing(0, 0, -2), center_mid: processing(-1, 0, -2), center_high: processing(-3, 0, -2),
+    }), null, null);
+    assert.deepEqual(summary.levels, [{ label: 'C', minDb: -2, maxDb: -2 }]);
+
     // Effective delay: the engine readback, a dash while it is not ready.
     assert.equal(overview.summarize(null, null, { latency: { ready: true, actual_ms: 753.32 } }).delayMs, 753.32);
     assert.equal(overview.summarize(null, null, { latency: { ready: false, actual_ms: 12 } }).delayMs, null);

@@ -202,6 +202,19 @@ class SurroundMeasurementTests(unittest.TestCase):
         self.link(fixture, routing, route)
         self.assert_links(fixture, set())
 
+    def test_global_multiway_center_excites_fc_once_and_keeps_all_center_ways(self):
+        for ways in (['center_low', 'center_high'], ['center_low', 'center_mid', 'center_high']):
+            with self.subTest(ways=ways):
+                self.state = set_crossover(self.state, 'surround', True)
+                self.state = set_mode_routing(self.state, 'surround', 'device',
+                    ['left_low', 'left_high', 'right_low', 'right_high', *ways, 'sub1', 'sub2'])
+                self.plan = self.compile(self.state)
+                self.layout = layout_from_plan(self.plan, resolve_ir=lambda *_: self.fail('Unexpected IR'))
+                fixture, routing, route = self.route('global', group='center')
+                self.link(fixture, routing, route)
+                self.assert_links(fixture, {(f'{PLAY}:output_FL', 'fxroute_dsp:input_3')})
+                self.assertEqual(fixture.runtime['output_mask'], 0b1111)
+
     def test_bank_only_layout_routes_are_not_confused_with_output_indices(self):
         for name, channel, side in (("center", 2, "FL"), ("side_l", 4, "FL"),
                                     ("side_r", 5, "FR"), ("rear_l", 6, "FL"), ("rear_r", 7, "FR")):

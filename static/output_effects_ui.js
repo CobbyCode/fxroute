@@ -915,7 +915,7 @@ function updateEffectsUpmixerUi() {
     const catalog = deps.getState().outputSystem?.catalog;
     const surround = catalog?.active_mode === 'surround';
     const roles = catalog?.modes?.[catalog?.active_mode]?.topology?.roles;
-    const hasCenter = Array.isArray(roles) && roles.includes('center');
+    const hasCenter = Array.isArray(roles) && roles.some(role => role === 'center' || role.startsWith('center_'));
     const enabled = !!deps.getElements().effectsUpmixerEnabled?.checked;
     if (deps.getElements().effectsUpmixerRow) {
         deps.getElements().effectsUpmixerRow.classList.toggle('hidden', !surround);

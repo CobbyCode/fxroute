@@ -407,7 +407,7 @@ class DSPManager:
         if not definition.get("enabled") or not any("input_positions" in output for output in outputs):
             return None
         names = {output["name"] for output in outputs}
-        destinations = {"center_out": int("center" in names),
+        destinations = {"center_out": int(any(name == "center" or name.startswith("center_") for name in names)),
                         "side_out": int(bool(names & {"side_l", "side_r"})),
                         "rear_out": int(bool(names & {"rear_l", "rear_r"}))}
         if not any(destinations.values()):

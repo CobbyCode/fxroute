@@ -31,6 +31,15 @@ assert.deepEqual(ui.bankOptions({ topology: { mode: 'stereo-sub', roles: ['main_
 // Speaker groups reuse the sub link scheme: linked groups share the crossover.
 assert.deepEqual(ui.surroundGroups({ roles: ['left_low', 'right_low', 'center', 'rear_l', 'rear_r', 'sub1'] }),
     ['front', 'center', 'rear']);
+const centerConfig = { selected_bank: 'global', topology: { mode: 'surround',
+    roles: ['left_low', 'left_high', 'right_low', 'right_high', 'center_low', 'center_mid', 'center_high', 'sub1'],
+    sub_roles: ['sub1'] } };
+assert.deepEqual(ui.surroundGroups(centerConfig.topology), ['front', 'center']);
+const centerArea = ui.measurementArea({ active_mode: 'surround', modes: { surround: centerConfig } }, 'global', 'center');
+assert.equal(centerArea.group, 'center');
+assert.equal(centerArea.channel_mode, 'mono');
+assert.equal(centerArea.available, true);
+assert.deepEqual(centerArea.sides, []);
 const bass = { frequency_hz: 80, family: 'linkwitz-riley', slope_db_oct: 24, main_highpass_enabled: true,
     sub_link: false, sub_filters: { rear: { frequency_hz: 120, family: 'butterworth', slope_db_oct: 12, highpass_enabled: false } } };
 assert.deepEqual(ui.bassCrossoverForGroup(bass, 'rear'),

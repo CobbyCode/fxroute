@@ -309,6 +309,7 @@
         for (const role of roles || []) {
             const key = role.startsWith('left_') ? (surround ? 'fl' : 'l')
                 : role.startsWith('right_') ? (surround ? 'fr' : 'r')
+                : surround && role.startsWith('center_') ? 'c'
                 : (surround ? SURROUND_METER_KEYS : STEREO_METER_KEYS)[role];
             if (!key) return [];
             found.add(key);

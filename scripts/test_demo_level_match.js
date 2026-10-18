@@ -74,5 +74,20 @@ async function request(url, body) {
     assert.equal(activeRun.data.job.result.values.left_low.global, -2.5);
     assert.ok(!('rear_l' in activeRun.data.job.result.values));
 
+    const current = (await request('/api/audio/output-state')).data;
+    const centerAssignments = ['left_low', 'left_high', 'right_low', 'right_high',
+        'center_low', 'center_mid', 'center_high', 'sub1', ...Array(10).fill('off')];
+    assert.equal((await request('/api/audio/output-state/apply', {
+        expected_revision: current.revision,
+        mutation: { kind: 'set_routing', mode: 'surround', assignments: centerAssignments } })).status, 200);
+    const allScope = (await request('/api/measurements/level-match?bank_id=global')).data;
+    assert.deepEqual(allScope.units, ['left', 'right', 'center_low']);
+    const centerScope = (await request('/api/measurements/level-match?bank_id=center_mid')).data;
+    assert.deepEqual(centerScope.units, ['center_low']);
+    const centerRun = await request('/api/measurements/level-match/start', { bank_id: 'center_mid' });
+    assert.equal(centerRun.status, 200);
+    const values = centerRun.data.job.result.values;
+    assert.deepEqual(values.center_low, values.center_mid);
+    assert.deepEqual(values.center_mid, values.center_high);
     console.log('demo level match ok');
 })().catch((error) => { console.error(error); process.exit(1); });

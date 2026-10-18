@@ -47,6 +47,7 @@
     function speakerKey(role) {
         if (role.startsWith('left_')) return 'fl';
         if (role.startsWith('right_')) return 'fr';
+        if (role.startsWith('center_')) return 'c';
         return SPEAKER_KEYS[role] || null;
     }
 

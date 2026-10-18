@@ -31,4 +31,5 @@ def output_state_topology(state: dict, mode: str, output_key: str, channels: int
     return {"mode": topology.mode, "crossover_enabled": topology.crossover_enabled, "roles": list(topology.roles),
             "sub_roles": list(topology.sub_roles), "sub_mode": topology.sub_mode,
             "left_ways": list(topology.left_ways), "right_ways": list(topology.right_ways),
+            "center_ways": list(topology.center_ways), "center_way_count": topology.center_way_count,
             "way_count": topology.way_count, "issues": list(topology.issues)}

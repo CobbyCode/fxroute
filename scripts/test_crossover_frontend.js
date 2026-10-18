@@ -19,6 +19,17 @@ assert.deepEqual(
 assert.deepEqual(
     Crossover.orderedWays({ left_mid: 1, left_low_mid: 1, left_low: 1, left_high: 1 }),
     ['left_low', 'left_low_mid', 'left_mid', 'left_high']);
+assert.deepEqual(Crossover.orderedWays({ center_high: {}, center_low: {}, center_mid: {}, left_low: {} }),
+    ['left_low', 'center_low', 'center_mid', 'center_high']);
+assert.deepEqual(Crossover.starterValues(3, ['center']), {
+    center_low: { lowpass: { family: 'linkwitz-riley', slope_db_oct: 24, frequency_hz: 300 } },
+    center_mid: { highpass: { family: 'linkwitz-riley', slope_db_oct: 24, frequency_hz: 300 },
+        lowpass: { family: 'linkwitz-riley', slope_db_oct: 24, frequency_hz: 2500 } },
+    center_high: { highpass: { family: 'linkwitz-riley', slope_db_oct: 24, frequency_hz: 2500 } },
+});
+assert.equal(Crossover.starterFrequency(3, 'center_mid', 'lowpass'), 2500);
+assert.equal(Crossover.mirrorRole('center_low'), null);
+assert.equal(Crossover.isLowWayRole('center_low'), true);
 
 assert.deepEqual(Crossover.applicableFilters('left_low'), ['lowpass']);
 assert.deepEqual(Crossover.applicableFilters('right_high'), ['highpass']);
@@ -28,6 +39,12 @@ assert.deepEqual(Crossover.applicableFilters('left_low_mid'), ['highpass', 'lowp
 // Sub-owned Low high-pass: with routed subs and Main highpass on, the Low
 // way additionally shows the sub crossover (read-only, owned by the Sub tile).
 const bass80 = { frequency_hz: 80, main_highpass_enabled: true };
+const centerBass = { ...bass80, sub_link: false, sub_filters: {
+    center: { family: 'bessel', slope_db_oct: 18, frequency_hz: 120, highpass_enabled: true } } };
+assert.deepEqual(Crossover.derivedHighpassForRole('center_low', centerBass, ['sub1'], 'surround'),
+    { family: 'bessel', slope_db_oct: 18, frequency_hz: 120 });
+assert.equal(Crossover.derivedHighpassForRole('center_low', { ...centerBass, sub_filters: {
+    center: { ...centerBass.sub_filters.center, highpass_enabled: false } } }, ['sub1'], 'surround'), null);
 assert.deepEqual(Crossover.bassHighpass(bass80, ['sub1']), {
     family: 'linkwitz-riley', slope_db_oct: 24, frequency_hz: 80 });
 assert.equal(Crossover.bassHighpass(bass80, []), null);
@@ -89,6 +106,14 @@ assert.deepEqual(
 
 function stubTabs() {
     return { innerHTML: '', dataset: {}, addEventListener() {} };
+}
+for (const linked of [false, true]) {
+    const tabs = stubTabs();
+    Crossover.renderWayTabs(tabs, ['left_low', 'right_low', 'center_low', 'center_high'],
+        'center_high', () => {}, linked);
+    assert.equal((tabs.innerHTML.match(/<button/g) || []).length, linked ? 3 : 4);
+    assert.match(tabs.innerHTML, /Center · Low/);
+    assert.match(tabs.innerHTML, /data-crossover-way="center_high" class="crossover-tab is-active"/);
 }
 {
     // Linked: two tabs for a 2-way pair, canonical left data values, and
@@ -526,6 +551,38 @@ function initCrossoverUI(state, elements, extra = {}) {
     }
 }
 (async () => {
+{
+    // The Center is mono: L/R link must never hide or discard its own trim.
+    const state = crossoverFixtureState();
+    state.crossover.activeWay = 'center_low';
+    state.crossover.linkLR = true;
+    const config = state.outputSystem.catalog.modes['stereo-sub'];
+    config.topology.center_way_count = 3;
+    config.processing.center_low = {};
+    initCrossoverUI(state, crossoverFixtureElements());
+    const mutation = CrossoverUI.collectCrossoverWayMutation();
+    assert.equal(mutation.role, 'center_low');
+    assert.equal(mutation.level_db, 1.5);
+    assert.equal(mutation.alignment_ms, 0.25);
+    assert.equal(mutation.polarity, 'invert');
+}
+{
+    // Existing initialized front filters do not block first-time Center defaults.
+    const state = crossoverFixtureState();
+    const config = state.outputSystem.catalog.modes['stereo-sub'];
+    config.topology.center_way_count = 3;
+    config.processing = { ...Crossover.starterValues(2), center_low: {}, center_mid: {}, center_high: {} };
+    const applied = [];
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = async () => ({ ok: true, json: async () => ({ ways: {} }) });
+    initCrossoverUI(state, crossoverFixtureElements(), {
+        applyMutation: async (_kind, fields) => { applied.push(fields); return { ok: true }; },
+    });
+    await CrossoverUI.maybeApplyCrossoverStarters();
+    globalThis.fetch = realFetch;
+    assert.deepEqual(applied.map(fields => fields.role), ['center_low', 'center_mid', 'center_high']);
+    assert.equal(applied[1].lowpass.frequency_hz, 2500);
+}
 {
     // Typed and stepper-dispatched changes (two decimals at most, enforced on
     // the field by the shared number-field rule) are saved as shown.

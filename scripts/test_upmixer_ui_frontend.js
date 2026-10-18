@@ -136,6 +136,12 @@ assert.equal(Effects.normalizeEffectsUpmixerFftSize(undefined, 1024), 1024);
     assert.ok(!hidden(elements.effectsUpmixerDetails), 'enabled: the details are shown');
     assert.ok(!hidden(elements.effectsUpmixerCenterWrap), 'Center routed: Center control visible');
 
+    for (const ways of [['center_low', 'center_high'], ['center_low', 'center_mid', 'center_high']]) {
+        state.outputSystem.catalog = catalog('surround', ['left_low', 'left_high', 'right_low', 'right_high', ...ways]);
+        Effects.updateEffectsUpmixerUi();
+        assert.ok(!hidden(elements.effectsUpmixerCenterWrap), 'multiway Center keeps its strength control');
+    }
+
     // Front + Rear + subs, no Center: only the Center control goes away.
     state.outputSystem.catalog = catalog('surround', ['main_l', 'main_r', 'rear_l', 'rear_r', 'sub1', 'sub2']);
     Effects.updateEffectsUpmixerUi();

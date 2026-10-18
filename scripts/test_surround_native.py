@@ -8,9 +8,11 @@ import subprocess
 import tempfile
 import unittest
 import wave
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
 DEPS = ["libebur128", "lilv-0", "samplerate", "speexdsp"]
 AVAILABLE = subprocess.run(["pkg-config", "--exists", *DEPS], check=False).returncode == 0
 
@@ -32,6 +34,45 @@ class SurroundNativeTests(unittest.TestCase):
             data = array.array("f")
             data.frombytes((path / "output").read_bytes())
             return [data[i::outputs] for i in range(outputs)]
+
+    def test_multiway_center_renders_fc_through_each_band_without_front_leakage(self):
+        from test_center_crossover import center_state, compile_plan, shape
+        from audio.output_state import set_output_processing
+        from dsp.native_config import layout_from_plan
+        from dsp.manager import DSPManager
+
+        for ways in (('low', 'high'), ('low', 'mid', 'high')):
+            with self.subTest(ways=ways), tempfile.TemporaryDirectory() as directory:
+                state = center_state(ways)
+                split = 2000 if len(ways) == 2 else 300
+                state = set_output_processing(state, 'surround', 'center_low', lowpass=shape(split))
+                state = set_output_processing(state, 'surround', 'center_high',
+                                              highpass=shape(2000 if len(ways) == 2 else 2500))
+                if len(ways) == 3:
+                    state = set_output_processing(state, 'surround', 'center_mid',
+                                                  highpass=shape(300), lowpass=shape(2500))
+                plan = compile_plan(state)
+                layout = layout_from_plan(plan, resolve_ir=lambda *_: {})
+                manager = DSPManager(home=Path(directory))
+                text = manager.compile_engine_text(layout, preset_name='Direct',
+                    extras_override={'limiter': {'enabled': False}})
+                levels = {}
+                for frequency in (150, 1000, 7000):
+                    samples = []
+                    for index in range(9600):
+                        frame = [0.0] * 8
+                        frame[2] = 0.1 * math.sin(2 * math.pi * frequency * index / 48000)
+                        samples.extend(frame)
+                    rendered = self.process(text, samples, len(layout))
+                    self.assertTrue(all(max(abs(value) for value in channel) < 1e-9 for channel in rendered[:4]))
+                    levels[frequency] = [math.sqrt(sum(value * value for value in channel[-4800:]) / 4800)
+                                         for channel in rendered[4:4 + len(ways)]]
+                self.assertGreater(levels[150][0], 0.04)
+                self.assertGreater(levels[7000][-1], 0.04)
+                self.assertGreater(levels[150][0], levels[150][-1] * 100)
+                self.assertGreater(levels[7000][-1], levels[7000][0] * 100)
+                if len(ways) == 3:
+                    self.assertGreater(levels[1000][1], 0.05)
 
     def test_lfe_bypasses_bass_filter_but_shares_trim_delay_polarity(self):
         text = """rate 1000

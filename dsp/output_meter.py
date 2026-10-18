@@ -43,6 +43,8 @@ def _position_key(mode: str, role: str) -> str | None:
         return "fl" if surround else "l"
     if role.startswith("right_"):
         return "fr" if surround else "r"
+    if surround and role.startswith("center_"):
+        return "c"
     return (_SURROUND_KEYS if surround else _STEREO_KEYS).get(role)
 
 

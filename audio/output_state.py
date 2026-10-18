@@ -424,7 +424,15 @@ def set_crossover(state: dict, mode: str, enabled: bool) -> dict:
     domain = (*roles_for_mode(mode), *roles_for_mode(mode, crossover_enabled=True), "off")
     config["crossover_enabled"] = enabled
     for key, assignments in config["routing"].items():
-        config["routing"][key] = [mapping.get(role, role if role in domain else "off") for role in assignments]
+        device_mapping = dict(mapping)
+        # A full-range Center stays full-range unless dormant ways restore its split.
+        # A Low-only draft stays dormant rather than becoming a full-range speaker.
+        if mode == "surround" and any(role in ("center_mid", "center_high") for role in assignments):
+            if enabled and "center_low" not in assignments:
+                device_mapping["center"] = "center_low"
+            elif not enabled and "center" not in assignments:
+                device_mapping["center_low"] = "center"
+        config["routing"][key] = [device_mapping.get(role, role if role in domain else "off") for role in assignments]
         for role in config["routing"][key]:
             if role != "off":
                 config["banks"].setdefault(role, BankState().to_dict())

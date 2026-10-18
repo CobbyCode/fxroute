@@ -414,6 +414,7 @@
     // not simulated here.
     const speakerWays = ['left_low', 'left_low_mid', 'left_mid', 'left_high', 'right_low',
         'right_low_mid', 'right_mid', 'right_high'];
+    const centerWays = ['center_low', 'center_mid', 'center_high'];
     const subRoles = ['sub_l', 'sub_r', 'sub1', 'sub2'];
     // Surround roles beyond the front pair, in routing order (mirrors
     // audio/output_topology.py SURROUND_SPEAKERS). Sub L / Sub R are not
@@ -425,7 +426,8 @@
     const SURROUND_GROUPS = ['front', 'center', 'side', 'rear'];
     function outputStateRoles(mode) {
         const fronts = outputStateStore.modes[mode].crossover_enabled ? speakerWays : ['main_l', 'main_r'];
-        if (mode === 'surround') return [...fronts, ...surroundSpeakers, 'sub1', 'sub2'];
+        if (mode === 'surround') return [...fronts,
+            ...(outputStateStore.modes[mode].crossover_enabled ? centerWays : []), ...surroundSpeakers, 'sub1', 'sub2'];
         return [...fronts, ...(mode === 'stereo-sub' ? subRoles : [])];
     }
     const neutralBank = () => ({ preset: 'Neutral', preset_a: 'Neutral', preset_b: 'Neutral', active_side: 'A' });
@@ -445,7 +447,7 @@
     }
     function demoSurroundGroup(role) {
         if (/^(main_[lr]|left_|right_)/.test(role)) return 'front';
-        return role === 'center' ? 'center' : String(role).replace(/_[lr]$/, '');
+        return role === 'center' || centerWays.includes(role) ? 'center' : String(role).replace(/_[lr]$/, '');
     }
     // Mirror of output_state._group_slot.
     function demoGroupSlot(slot, group, name) {
@@ -736,6 +738,14 @@
             : subs.length === 2 ? 'dual-mono' : 'unsupported';
         const issues = [];
         let wayCount = null;
+        const center = roles.filter(role => centerWays.includes(role));
+        let centerWayCount = null;
+        if (center.length) {
+            if (roles.includes('center')) issues.push('Center routing cannot mix full-range and crossover ways');
+            else if (![['center_low', 'center_high'], centerWays].some(set => JSON.stringify(set) === JSON.stringify(center))) {
+                issues.push('Center crossover requires complete Low/High or Low/Mid/High ways');
+            } else centerWayCount = center.length;
+        }
         // Surround checks first, like derive_topology: the summary line
         // reports the first problem, so the order decides what the user reads.
         if (mode === 'surround' && subs.includes('sub2') && !subs.includes('sub1')) {
@@ -768,7 +778,8 @@
         }
         return { mode, crossover_enabled: enabled, roles, sub_roles: subs, sub_mode: subMode,
             left_ways: roles.filter(role => role.startsWith('left_')),
-            right_ways: roles.filter(role => role.startsWith('right_')), way_count: wayCount, issues };
+            right_ways: roles.filter(role => role.startsWith('right_')), way_count: wayCount,
+            center_ways: center, center_way_count: centerWayCount, issues };
     }
     // Routed layout of the active output mode on the selected device: what the
     // footer's multichannel meter follows (roles in engine output order).
@@ -795,7 +806,8 @@
             const config = outputStateStore.modes[mode];
             const surround = mode === 'surround';
             const routing = fixedStereo ? ['main_l', 'main_r']
-                : (config.routing[key] || (config.crossover_enabled ? [] : ['main_l', 'main_r'])).slice();
+                : (config.routing[key] || (config.crossover_enabled ? [] : ['main_l', 'main_r']))
+                    .map(role => !config.crossover_enabled && centerWays.includes(role) ? 'off' : role);
             const effectiveCrossover = fixedStereo ? false : config.crossover_enabled;
             const topology = outputStateTopology(mode, routing.slice(0, channels || routing.length), effectiveCrossover);
             const banks = {};
@@ -825,7 +837,8 @@
         for (const mode of OUTPUT_STATE_MODES) {
             deviceRouting[mode] = fixedStereo ? ['main_l', 'main_r']
                 : (outputStateStore.modes[mode].routing[key]
-                || (outputStateStore.modes[mode].crossover_enabled ? [] : ['main_l', 'main_r'])).slice();
+                || (outputStateStore.modes[mode].crossover_enabled ? [] : ['main_l', 'main_r']))
+                    .map(role => !outputStateStore.modes[mode].crossover_enabled && centerWays.includes(role) ? 'off' : role);
         }
         return {
             status: 'ok', revision: outputStateStore.revision, active_mode: outputStateStore.active_mode,
@@ -2090,7 +2103,8 @@
     const levelMatchEntries = {};
     const levelMatchJobs = {};
     let levelMatchSeq = 0;
-    const levelMatchRoleRaw = (role) => levelMatchRaw[role] ?? (role.startsWith('left_') ? -20.0 : -21.8);
+    const levelMatchRoleRaw = (role) => levelMatchRaw[role]
+        ?? (role.startsWith('center_') ? -22.5 : role.startsWith('left_') ? -20.0 : -21.8);
     function levelMatchScope(bankId) {
         const catalog = outputStateCatalog();
         const mode = catalog.active_mode;
@@ -2106,6 +2120,10 @@
         if (!members.length) return { error: 'Level Matching needs a routed speaker' };
         const isFront = members.every(front);
         if (surround && isFront) members = roles.filter(front);
+        else if (surround && !wholeMode) {
+            const group = demoSurroundGroup(members[0]);
+            members = roles.filter(role => demoSurroundGroup(role) === group);
+        }
         const slot = surround && !isFront && !wholeMode ? 'bank' : 'global';
         const slotForRole = (role) => surround && !front(role) ? 'bank' : 'global';
         const groups = surround ? ['front', 'center', 'side', 'rear'].map(group =>
@@ -2162,7 +2180,8 @@
             const roles = members.filter(role => side(role) === label);
             if (roles.length) units.push({ label, roles });
         }
-        for (const role of members.filter(role => side(role) === 'mono')) units.push({ label: role, roles: [role] });
+        const mono = members.filter(role => side(role) === 'mono');
+        if (mono.length) units.push({ label: mono[0], roles: mono });
         return units;
     }
     function polarityCheckStatus(bankId) {
@@ -2177,8 +2196,9 @@
         const bank = config.banks[bankId];
         if (!bank) return { error: `Bank ${bankId} is not an active speaker bank` };
         const scope = { mode: catalog.active_mode, members: bankId === 'global' ? roles : bank.roles };
-        if (scope.mode === 'surround' && scope.members.every(role => /^(main_[lr]|left_|right_)/.test(role))) {
-            scope.members = roles.filter(role => /^(main_[lr]|left_|right_)/.test(role));
+        if (scope.mode === 'surround' && scope.members.length) {
+            const group = demoSurroundGroup(scope.members[0]);
+            scope.members = roles.filter(role => !subRoles.includes(role) && demoSurroundGroup(role) === group);
         }
         return { scope, units: polarityCheckUnits(scope.members) };
     }
@@ -3477,7 +3497,13 @@
                     : { left_low: 'main_l', right_low: 'main_r' };
                 const allowed = outputStateRoles(mode);
                 for (const [key, assignments] of Object.entries(config.routing)) {
-                    config.routing[key] = assignments.map(role => mapping[role] || (allowed.includes(role) ? role : 'off'));
+                    const deviceMapping = { ...mapping };
+                    if (mode === 'surround' && assignments.some(role => ['center_mid', 'center_high'].includes(role))) {
+                        if (mutation.enabled && !assignments.includes('center_low')) deviceMapping.center = 'center_low';
+                        else if (!mutation.enabled && !assignments.includes('center')) deviceMapping.center_low = 'center';
+                    }
+                    config.routing[key] = assignments.map(role => deviceMapping[role]
+                        || (allowed.includes(role) || (mode === 'surround' && centerWays.includes(role)) ? role : 'off'));
                     for (const role of config.routing[key]) {
                         if (role !== 'off' && !config.banks[role]) {
                             config.banks[role] = neutralBank();
@@ -3498,7 +3524,9 @@
                 const allowed = new Set([...outputStateRoles(mode), 'off']);
                 if (assignments.some(role => !allowed.has(role))) return fail('Routing contains an invalid role');
                 const key = outputEntry(selectedOutput()).key;
-                config.routing[key] = [...assignments, ...(config.routing[key] || []).slice(assignments.length)];
+                const stored = config.routing[key] || [];
+                config.routing[key] = [...assignments.map((role, index) => role === 'off' && !config.crossover_enabled
+                    && centerWays.includes(stored[index]) ? stored[index] : role), ...stored.slice(assignments.length)];
                 for (const role of assignments) {
                     if (role !== 'off' && !config.banks[role]) {
                         config.banks[role] = neutralBank();
@@ -3630,15 +3658,18 @@
             const hasSubs = (config.topology.sub_roles || []).length > 0;
             const stereoPair = config.topology.sub_mode === 'stereo';
             const derivedHighpassFor = (role) => {
-                if (!hasSubs || bass.main_highpass_enabled !== true) return null;
-                const shape = bassCrossoverForSide(bass, subSideForRole(role), stereoPair);
+                if (!hasSubs) return null;
+                const groupShape = catalog.active_mode === 'surround' && bass.sub_link === false
+                    ? bass.sub_filters?.[demoSurroundGroup(role)] : null;
+                if (groupShape ? !groupShape.highpass_enabled : bass.main_highpass_enabled !== true) return null;
+                const shape = groupShape || bassCrossoverForSide(bass, subSideForRole(role), stereoPair);
                 const frequency = Number(shape.frequency_hz);
                 if (!Number.isFinite(frequency) || frequency < 40 || frequency > 200) return null;
                 return { family: shape.family, slope_db_oct: shape.slope_db_oct, frequency_hz: Math.round(frequency) };
             };
             for (const [role, settings] of Object.entries(catalog.modes[catalog.active_mode].processing)) {
                 if (!config.crossover_enabled || !config.topology.roles.includes(role)) continue;
-                if (!role.startsWith('left_') && !role.startsWith('right_')) continue;
+                if (!speakerWays.includes(role) && !centerWays.includes(role)) continue;
                 const points = [];
                 const derivedHighpass = derivedHighpassFor(role);
                 const way = role.split('_').slice(1).join('_');

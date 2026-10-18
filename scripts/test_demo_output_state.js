@@ -324,5 +324,27 @@ async function request(url, body) {
         bank_mode: 'surround', bank_id: 'global' });
     assert.equal((await request('/api/dsp/presets')).presets.find(entry => entry.name === 'Rears').group, 'rear');
 
+    await surroundApply({ kind: 'set_crossover', enabled: true });
+    for (const center of [['center_low', 'center_high'], ['center_low', 'center_mid', 'center_high']]) {
+        const assignments = ['left_low', 'left_high', 'right_low', 'right_high', ...center, 'sub1'];
+        assignments.push(...Array(18 - assignments.length).fill('off'));
+        const applied = await surroundApply({ kind: 'set_routing', assignments });
+        assert.equal(applied.live_applied, true);
+        const config = (await request('/api/audio/output-state')).modes.surround;
+        assert.equal(config.topology.center_way_count, center.length);
+        assert.deepEqual(config.topology.center_ways, center);
+        assert.equal(config.banks.center_low.channel_mode, 'mono');
+        const response = await request('/api/audio/output-state/crossover-response');
+        assert.ok(response.ways.center_low);
+        assert.ok(response.ways.center_high);
+        await surroundApply({ kind: 'set_crossover', enabled: false });
+        assert.deepEqual((await request('/api/audio/output-state')).device.routing.surround.slice(4, 4 + center.length),
+            ['center', ...Array(center.length - 1).fill('off')]);
+        await surroundApply({ kind: 'set_crossover', enabled: true });
+        assert.deepEqual((await request('/api/audio/output-state')).device.routing.surround.slice(4, 4 + center.length), center);
+    }
+    const incomplete = await surroundApply({ kind: 'set_routing',
+        assignments: ['left_low', 'left_high', 'right_low', 'right_high', 'center_low', 'off', 'off', 'sub1'] });
+    assert.equal(incomplete.live_applied, false);
     console.log('Demo output-state flow passed');
 })().catch(error => { console.error(error); process.exitCode = 1; });

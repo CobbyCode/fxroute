@@ -16,6 +16,7 @@ SURROUND_GROUPS = ("front", "center", "side", "rear")
 SUB_ROLES = ("sub_l", "sub_r", "sub1", "sub2")
 WAYS = ("low", "low_mid", "mid", "high")
 SPEAKER_ROLES = tuple(f"{side}_{way}" for side in ("left", "right") for way in WAYS)
+CENTER_ROLES = ("center_low", "center_mid", "center_high")
 MAX_CHANNELS = 32
 _WAY_SETS = (("low", "high"), ("low", "mid", "high"), WAYS)
 
@@ -27,7 +28,7 @@ def roles_for_mode(mode: str, *, crossover_enabled: bool = False) -> tuple[str, 
         raise ValueError("Crossover enabled must be a boolean")
     fronts = SPEAKER_ROLES if crossover_enabled else MAIN_ROLES
     if mode == "surround":
-        return fronts + SURROUND_SPEAKERS + ("sub1", "sub2")
+        return fronts + (CENTER_ROLES if crossover_enabled else ()) + SURROUND_SPEAKERS + ("sub1", "sub2")
     return fronts + (SUB_ROLES if mode == "stereo-sub" else ())
 
 
@@ -42,6 +43,8 @@ def surround_group(role: str) -> str:
     """Surround bass-management group of a speaker role (fronts include ways)."""
     if role in MAIN_ROLES or role in SPEAKER_ROLES:
         return "front"
+    if role in CENTER_ROLES:
+        return "center"
     if role in SURROUND_SPEAKERS:
         return role.split("_")[0]
     raise ValueError(f"Role {role} belongs to no Surround speaker group")
@@ -102,6 +105,8 @@ class OutputTopology:
     way_count: int | None
     issues: tuple[str, ...]
     crossover_enabled: bool = False
+    center_ways: tuple[str, ...] = ()
+    center_way_count: int | None = None
 
     @property
     def bank_ids(self) -> tuple[str, ...]:
@@ -136,6 +141,15 @@ def derive_topology(mode: str, assignments: object, *, channels: int | None = No
         issues.append("At most two distinct sub roles are supported")
     left = tuple(role for role in roles if role.startswith("left_"))
     right = tuple(role for role in roles if role.startswith("right_"))
+    center = tuple(role for role in roles if role in CENTER_ROLES)
+    center_way_count = None
+    if center:
+        if "center" in active:
+            issues.append("Center routing cannot mix full-range and crossover ways")
+        elif tuple(role.removeprefix("center_") for role in center) not in _WAY_SETS[:2]:
+            issues.append("Center crossover requires complete Low/High or Low/Mid/High ways")
+        else:
+            center_way_count = len(center)
     way_count = None
     if not crossover_enabled:
         if not set(MAIN_ROLES).issubset(active):
@@ -149,4 +163,5 @@ def derive_topology(mode: str, assignments: object, *, channels: int | None = No
             issues.append("Left and Right crossover ways must match")
         else:
             way_count = len(left_names)
-    return OutputTopology(mode, roles, subs, sub_mode, left, right, way_count, tuple(issues), crossover_enabled)
+    return OutputTopology(mode, roles, subs, sub_mode, left, right, way_count, tuple(issues),
+                          crossover_enabled, center, center_way_count)

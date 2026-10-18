@@ -507,9 +507,38 @@ def main() -> int:
             page.wait_for_timeout(900)
             surround_roles = page.locator('#settings-routing-out-1 option').all_text_contents()
             check(f"Surround offers the surround roles ({surround_roles})",
-                  surround_roles == ['Off', 'Low L', 'Low-Mid L', 'Mid L', 'High L',
-                                     'Low R', 'Low-Mid R', 'Mid R', 'High R', 'Center',
-                                     'Side L', 'Side R', 'Rear L', 'Rear R', 'Sub 1', 'Sub 2'])
+                   surround_roles == ['Off', 'Low L', 'Low-Mid L', 'Mid L', 'High L',
+                                      'Low R', 'Low-Mid R', 'Mid R', 'High R',
+                                      'Center Low', 'Center Mid', 'Center High', 'Center',
+                                      'Side L', 'Side R', 'Rear L', 'Rear R', 'Sub 1', 'Sub 2'])
+            for ways in (['center_low', 'center_high'], ['center_low', 'center_mid', 'center_high']):
+                page.evaluate("""async ways => {
+                    const assignments = ['left_low', 'left_high', 'right_low', 'right_high', ...ways, 'sub1'];
+                    assignments.push(...Array(18 - assignments.length).fill('off'));
+                    await applyOutputSystemMutation('set_routing', { mode: 'surround', assignments }, false);
+                    await maybeApplyCrossoverStarters();
+                    toggleSettingsPanel(false);
+                    switchTab('effects');
+                }""", ways)
+                page.locator(f'[data-crossover-way="{ways[-1]}"]').click()
+                check(f"{len(ways)}-way Center tabs", page.locator('[data-crossover-way^="center_"]').count() == len(ways))
+                check(f"{len(ways)}-way Center header", f'{len(ways)}-Way Center' in page.locator('#effects-crossover-summary').inner_text())
+                if not page.locator('#effects-crossover-link').is_checked():
+                    page.locator('#effects-crossover-link').check()
+                check('Center trim stays visible with Link L/R', page.locator('#effects-crossover-trim-group').is_visible())
+                center = page.evaluate("""() => {
+                    const catalog = state.outputSystem.catalog;
+                    return { area: FXRouteOutputState.measurementArea(catalog, 'global', 'center'),
+                        filter: catalog.modes.surround.processing.center_high.highpass };
+                }""")
+                check('Global Center remains mono', center['area']['group'] == 'center' and center['area']['channel_mode'] == 'mono')
+                check('Center starter filters initialized', center['filter'] is not None)
+            page.set_viewport_size({'width': 390, 'height': 844})
+            page.locator('[data-crossover-way="center_mid"]').click()
+            page.locator('#effects-crossover-card').scroll_into_view_if_needed()
+            page.screenshot(path=str(shots / 'center-crossover-mobile.png'))
+            check('Center mobile layout has no page overflow', page.evaluate('document.documentElement.scrollWidth <= innerWidth'))
+            page.evaluate('toggleSettingsPanel(true)')
             pick('#settings-output-mode-select', 'stereo')
             page.wait_for_timeout(700)
             check("Stereo uses only stereo roles", page.locator('#settings-routing-out-1 option').all_text_contents() == ['Off', 'Main L', 'Main R'])

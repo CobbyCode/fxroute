@@ -9,12 +9,12 @@ from fastapi import HTTPException
 from audio.filter_banks import bank_catalog, resolve_bank, selected_bank, summarize_all_banks
 from audio.output_context import output_state_device, output_state_topology
 from audio.output_state import (
-    FILTER_SLOPES, bass_crossover_for_side, roles_for_mode,
+    FILTER_SLOPES, bass_crossover_for_group, bass_crossover_for_side, roles_for_mode,
     routing_for_device, select_bank, set_av_sync, set_bank_preset, set_bass_management,
     set_crossover, set_mode_extras, set_mode_routing, set_output_processing,
     shared_bass_crossover, switch_all_banks, switch_mode,
 )
-from audio.output_topology import MODES, side_for_role
+from audio.output_topology import CENTER_ROLES, MODES, SPEAKER_ROLES, side_for_role, surround_group
 from dsp.crossover import design_crossover
 from dsp.manager import DSPManager
 
@@ -197,12 +197,19 @@ def _crossover_bass_highpass(mode_config: dict, topology: dict, role: str) -> di
     """Include the DSP's derived bass high-pass in the displayed way response."""
     bass = (mode_config or {}).get("bass_management") or {}
     sub_roles = (topology or {}).get("sub_roles") or []
-    if not sub_roles or bass.get("main_highpass_enabled") is not True:
+    if not sub_roles:
         return None
     try:
-        definition = (bass_crossover_for_side(bass, side_for_role(role))
-                      if (topology or {}).get("sub_mode") == "stereo"
-                      else shared_bass_crossover(bass))
+        if topology.get("mode") == "surround":
+            definition, enabled = bass_crossover_for_group(bass, surround_group(role))
+            if not enabled:
+                return None
+        else:
+            if bass.get("main_highpass_enabled") is not True:
+                return None
+            definition = (bass_crossover_for_side(bass, side_for_role(role))
+                          if (topology or {}).get("sub_mode") == "stereo"
+                          else shared_bass_crossover(bass))
         frequency = float(definition["frequency_hz"])
     except (TypeError, ValueError, KeyError):
         return None
@@ -266,7 +273,7 @@ def crossover_response(state: dict, overview: dict, status: dict) -> dict:
     for role, settings in mode_config["processing"].items():
         if not topology["crossover_enabled"] or role not in topology["roles"]:
             continue
-        if not (role.startswith("left_") or role.startswith("right_")):
+        if role not in (*SPEAKER_ROLES, *CENTER_ROLES):
             continue
         bass_highpass = _crossover_bass_highpass(mode_config, topology, role)
         ways[role] = {

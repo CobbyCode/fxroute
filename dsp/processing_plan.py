@@ -53,11 +53,13 @@ _SPEAKER_POSITIONS = {"main_l": 0, "main_r": 1, "center": 2,
 
 
 def _surround_speaker(role: str) -> str:
-    """Speaker position a role reproduces; crossover ways play their front side."""
+    """Speaker position a role reproduces, shared by all its crossover ways."""
     if role.startswith("left_"):
         return "main_l"
     if role.startswith("right_"):
         return "main_r"
+    if role.startswith("center_"):
+        return "center"
     return role
 
 

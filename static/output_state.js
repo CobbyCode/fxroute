@@ -53,7 +53,7 @@ function surroundGroups(topology) {
     const roles = Array.isArray(topology?.roles) ? topology.roles : [];
     const present = {
         front: roles.some(role => /^(main_[lr]|left_|right_)/.test(role)),
-        center: roles.includes('center'),
+        center: roles.some(role => role === 'center' || role.startsWith('center_')),
         side: roles.includes('side_l') || roles.includes('side_r'),
         rear: roles.includes('rear_l') || roles.includes('rear_r'),
     };
@@ -208,6 +208,7 @@ function topologySummary(topology) {
         bits.push(topo.mode === 'surround' ? 'Surround' : 'Stereo');
     }
     const sub = subModeLabel(topo.sub_mode);
+    if (topo.center_way_count) bits.push(`Center ${topo.center_way_count}-Way`);
     if (sub) bits.push(sub);
     let text = bits.join(' · ');
     if (issues.length) text += ` — ${issues[0]}`;

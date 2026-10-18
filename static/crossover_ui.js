@@ -90,9 +90,9 @@
         if (!settings) return [];
         const bass = modeConfig.bass_management || {};
         const subRoles = modeConfig.topology?.sub_roles || [];
-        const applicable = mod.applicableFilters(active, { bass, subRoles });
+        const applicable = mod.applicableFilters(active, { bass, subRoles, mode: catalog.active_mode });
         const derived = !settings.highpass && mod.derivedHighpassForRole
-            ? mod.derivedHighpassForRole(active, bass, subRoles) : null;
+            ? mod.derivedHighpassForRole(active, bass, subRoles, catalog.active_mode) : null;
         const kinds = [];
         if (applicable.includes('highpass') && !derived && settings.highpass) kinds.push('highpass');
         if (applicable.includes('lowpass') && settings.lowpass) kinds.push('lowpass');
@@ -133,7 +133,7 @@
         const busy = deps.getState().crossover.busy || deps.getState().outputSystem.busy;
         const bass = modeConfig.bass_management || {};
         const subRoles = modeConfig.topology?.sub_roles || [];
-        const bassContext = { bass, subRoles };
+        const bassContext = { bass, subRoles, mode: catalog.active_mode };
         // Derived sub high-pass for the Low way: owned by the Subwoofer tile,
         // displayed read-only here. Falls back to the response payload when the
         // catalog is momentarily stale after a sub save. The response carries the
@@ -145,13 +145,13 @@
         const responseDerived = mod.isLowWayRole && mod.isLowWayRole(active)
             ? (response.ways?.[active]?.derived_highpass || null) : null;
         const catalogDerived = mod.derivedHighpassForRole
-            ? mod.derivedHighpassForRole(active, bass, subRoles) : null;
+            ? mod.derivedHighpassForRole(active, bass, subRoles, catalog.active_mode) : null;
         const derivedHighpass = (!settings.highpass && (catalogDerived || responseDerived)) || null;
         // Linked pairs share one tab per way ("L/R · Low"); unlinked pairs go
         // back to separate L/R tabs. The checkbox keeps its place regardless.
         // Link is off by default and couples only the crossover filters; Trim
         // (Level/Align/Polarity) stays per-way and is hidden while linked.
-        const linkedCrossover = deps.getState().crossover.linkLR === true;
+        const linkedCrossover = deps.getState().crossover.linkLR === true && !!mod.mirrorRole(active);
         mod.renderWayTabs(deps.getElements().effectsCrossoverTabs, roles, active, (role) => {
             // A linked pair shares one tab carrying the canonical left role:
             // re-picking the visible pair keeps the current side, otherwise the
@@ -159,7 +159,7 @@
             const mate = mod.mirrorRole ? mod.mirrorRole(deps.getState().crossover.activeWay) : null;
             deps.getState().crossover.activeWay = (linkedCrossover && mate === role) ? deps.getState().crossover.activeWay : role;
             renderCrossoverTile();
-        }, linkedCrossover);
+        }, deps.getState().crossover.linkLR === true);
         if (deps.getElements().effectsCrossoverGraph) {
             const view = (root && root.FXRouteCrossoverView) || null;
             if (view) view.drawCrossoverResponse(deps.getElements().effectsCrossoverGraph, response.ways, active,
@@ -263,13 +263,14 @@
             deps.getElements().effectsCrossoverPolarity.value = settings.polarity || 'normal';
             deps.getElements().effectsCrossoverPolarity.disabled = busy;
         }
-        const wayCount = modeConfig.topology?.way_count || 0;
+        const centerWay = active.startsWith('center_');
+        const wayCount = (centerWay ? modeConfig.topology?.center_way_count : modeConfig.topology?.way_count) || 0;
         // The bass high-pass is per side for an unlinked stereo sub pair, so the
         // active way decides which side's crossover the header shows.
-        const summaryBass = mod.bassHighpass ? mod.bassHighpass(bass, subRoles, active) : null;
+        const summaryBass = mod.bassHighpass ? mod.bassHighpass(bass, subRoles, active, catalog.active_mode) : null;
         if (deps.getElements().effectsCrossoverSummary) {
             const base = wayCount
-                ? `${wayCount}-Way Stereo System`
+                ? centerWay ? `${wayCount}-Way Center` : `${wayCount}-Way Stereo System`
                 : 'Configure speaker ways in Output Routing first.';
             const parts = [base];
             if (summaryBass && wayCount) parts.push(`Sub HPF ${summaryBass.frequency_hz} Hz`);
@@ -383,7 +384,7 @@
         if (!mod || !catalog || !active) return null;
         const modeConfig = catalog.modes[catalog.active_mode] || {};
         const bassContext = { bass: modeConfig.bass_management || {},
-            subRoles: modeConfig.topology?.sub_roles || [] };
+            subRoles: modeConfig.topology?.sub_roles || [], mode: catalog.active_mode };
         const applicable = mod.applicableFilters(active, bassContext);
         const readFreq = (el, fallback) => {
             if (!el || el.value === '' || el.value === null) return fallback;
@@ -393,9 +394,10 @@
         // The sub-owned Low high-pass is display-only: never persist it as a
         // stored way filter, even though the input shows its frequency.
         const derivedHighpass = !current.highpass && mod.derivedHighpassForRole
-            ? mod.derivedHighpassForRole(active, bassContext.bass, bassContext.subRoles) : null;
+            ? mod.derivedHighpassForRole(active, bassContext.bass, bassContext.subRoles, catalog.active_mode) : null;
         const highpassEnabled = applicable.includes('highpass') && !derivedHighpass;
-        const wayCount = modeConfig.topology?.way_count || 0;
+        const wayCount = (active.startsWith('center_')
+            ? modeConfig.topology?.center_way_count : modeConfig.topology?.way_count) || 0;
         const build = (kind, previous, enabled, freqEl, familyEl, slopeEl) => {
             if (!enabled) return previous ?? null;
             // Off clears the filter; the way then runs open in that direction.
@@ -417,7 +419,7 @@
         // Linked L/R maintains only the shared crossover filters. Trim
         // (Level/Align/Polarity) stays per-way and hidden while linked, so it
         // is omitted from the mutation and the backend keeps stored values.
-        const linked = deps.getState().crossover.linkLR === true;
+        const linked = deps.getState().crossover.linkLR === true && !!mod.mirrorRole(active);
         const mutation = {
             kind: 'set_processing',
             mode: catalog.active_mode,
@@ -479,19 +481,22 @@
         const modeConfig = catalog.modes[catalog.active_mode] || {};
         const wayCount = modeConfig.topology?.way_count || 0;
         if (![2, 3, 4].includes(wayCount)) return false;
-        let starters;
+        let starterGroups;
         try {
-            starters = mod.starterValues(wayCount);
+            starterGroups = [mod.starterValues(wayCount)];
+            if ([2, 3].includes(modeConfig.topology?.center_way_count)) {
+                starterGroups.push(mod.starterValues(modeConfig.topology.center_way_count, ['center']));
+            }
         } catch (e) {
             return false;
         }
         const processing = modeConfig.processing || {};
-        const roles = Object.keys(starters);
-        const allEmpty = roles.length > 0 && roles.every((role) => {
+        const starters = Object.assign({}, ...starterGroups.filter(group => Object.keys(group).every(role => {
             const current = processing[role] || {};
             return !current.highpass && !current.lowpass;
-        });
-        if (!allEmpty) return false;
+        })));
+        const roles = Object.keys(starters);
+        if (!roles.length) return false;
         deps.getState().crossover.busy = true;
         renderCrossoverTile();
         try {
@@ -501,7 +506,7 @@
                     { mode: catalog.active_mode, role, highpass: wanted.highpass ?? null, lowpass: wanted.lowpass ?? null },
                     false, { quiet: true });
             }
-            deps.showToast(`Starter values applied (${wayCount}-way).`, 'success');
+            deps.showToast('Starter values applied.', 'success');
             await fetchCrossoverResponse();
         } finally {
             deps.getState().crossover.busy = false;
