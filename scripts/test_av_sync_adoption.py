@@ -28,7 +28,7 @@ except ModuleNotFoundError as exc:
 
 class AdoptionTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
-        directory = tempfile.TemporaryDirectory(dir='/tmp/opencode')
+        directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         self.manager = make_manager(directory.name)
         self.service = make_service(directory.name, self.manager)

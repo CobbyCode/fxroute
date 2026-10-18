@@ -13,7 +13,7 @@ from test_measurement_job_lifecycle import _make_store
 
 class ValidationTests(unittest.IsolatedAsyncioTestCase):
     async def test_store_validates_before_marking_worker_result_completed(self):
-        with tempfile.TemporaryDirectory(dir='/tmp/opencode') as directory, patch.dict(
+        with tempfile.TemporaryDirectory() as directory, patch.dict(
                 'os.environ', {'XDG_CONFIG_HOME': directory, 'XDG_STATE_HOME': directory}):
             store = _make_store(directory)
             async def enter():

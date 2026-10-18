@@ -54,7 +54,7 @@ class PrivatePipeWireTests(unittest.TestCase):
         if production and (not switches or quantum != 768):
             self.fail("production verification only supports the rapid-switch tests at quantum 768")
         seconds = float(os.environ.get("SURROUND_LIVE_SECONDS", "8")) if switches else 1.8
-        with tempfile.TemporaryDirectory(prefix="surround-live-", dir="/tmp/opencode") as temporary:
+        with tempfile.TemporaryDirectory(prefix="surround-live-") as temporary:
             base = Path(temporary)
             env = {**os.environ, "PIPEWIRE_RUNTIME_DIR": str(base), "XDG_RUNTIME_DIR": str(base),
                    "PIPEWIRE_REMOTE": "pipewire-0", "PIPEWIRE_DEBUG": "1"}

@@ -14,7 +14,9 @@ Khadas/VIM1S stays internal and gets no public image.
 
 ### Release provenance
 
-- Source stand: `main` @ `48520ed7` plus the `CHANGELOG.md` finalization.
+- Source stand: `main` @ `fc13ebd7` (tag `v1.0-beta14`), including
+  `c4172742` (Surround ingress build through the target-user helper) and
+  `fc13ebd7` (implicit output link repair on a fresh installation).
   No Armbian, installer-image, or live-converter changes this cycle;
   `install.sh`/`uninstall.sh` ship the SRC converter plugin handling and
   the surround ingress helper build.
@@ -331,6 +333,14 @@ Khadas/VIM1S stays internal and gets no public image.
   and bundle import, measurement/job files are written atomically, and the
   legacy v1 overview sync and flat preset-loader paths have been removed in
   favor of serialized v2 output-state graph writes.
+- A fresh installation without a saved output selection left the implicit
+  output's DSP links unrepaired after the device or graph restarted: the
+  output-authority repair saw no output and did nothing. It now resolves the
+  current PipeWire default as the implicit output and repairs its links,
+  without saving a selection or changing the system default.
+- The installer's Surround ingress build runs `build.sh` as the target user
+  through the plain command helper; the call used the undefined
+  `run_as_target_user_in_install` wrapper, so the build was never dispatched.
 
 ### Installer, demo and maintenance
 

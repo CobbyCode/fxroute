@@ -135,7 +135,7 @@ async def _run(job: dict[str, Any], target: dict, scope: dict) -> None:
     table = dependencies.get_table()
     try:
         state = dependencies.get_output_state()
-        stored = _routed_entries(target, table.entries(mode))
+        stored = _routed_entries(target, await asyncio.to_thread(table.entries, mode))
         fresh: dict[str, dict] = {}
         fingerprint: dict | None = None
         async with _capture_scope(job, target, scope, state) as capture:
@@ -181,7 +181,7 @@ async def _run(job: dict[str, Any], target: dict, scope: dict) -> None:
             raise asyncio.CancelledError(f"{LABEL} was cancelled")
         if dependencies.get_output_state()["revision"] != state["revision"]:
             raise RuntimeError("Level Matching output state changed; run again")
-        table.save_entries(mode, merged)
+        await asyncio.to_thread(table.save_entries, mode, merged)
         job["_commit_target"] = target
         job["_commit_fingerprint"] = fingerprint
         job["result"] = {"mode": mode, "values": derived,
@@ -249,7 +249,8 @@ def mark_result_applied(mutation: dict) -> None:
 @router.get("/api/measurements/level-match")
 async def get_level_match(bank_id: str):
     target, scope = await asyncio.to_thread(_resolve_scope, bank_id)
-    entries = _routed_entries(target, _dependencies().get_table().entries(target["mode"]))
+    entries = _routed_entries(
+        target, await asyncio.to_thread(_dependencies().get_table().entries, target["mode"]))
     valid = level_match.valid_entries(entries)
     try:
         trims = level_match.derive_slot_values(entries)
@@ -280,7 +281,8 @@ async def start_level_match(
     _slot.ensure_startable(auto_sub_active=dependencies.auto_sub_active())
     target, scope = await asyncio.to_thread(_resolve_scope, bank_id)
     _slot.ensure_startable(auto_sub_active=dependencies.auto_sub_active())
-    if not _reference_ready(target, scope, dependencies.get_table().entries(target["mode"])):
+    entries = await asyncio.to_thread(dependencies.get_table().entries, target["mode"])
+    if not _reference_ready(target, scope, entries):
         raise HTTPException(status_code=409, detail="Measure Front L/R first to set the level reference")
     job = speaker_sweep.new_job(
         "level-match", mode=target["mode"], bank_id=bank_id, units=scope["units"], slot=scope["slot"],
@@ -300,8 +302,12 @@ async def reset_level_match(bank_id: str = Form(...)):
     _slot.ensure_startable(auto_sub_active=dependencies.auto_sub_active())
     table = dependencies.get_table()
     mode = target["mode"]
-    table.save_entries(mode, level_match.drop_family(table.entries(mode), scope["family"])
-                       if mode == "surround" else {})
+    entries = await asyncio.to_thread(table.entries, mode) if mode == "surround" else {}
+    # The worker hop yields; a job started in the meantime must not be cleared.
+    _slot.ensure_startable(auto_sub_active=dependencies.auto_sub_active())
+    await asyncio.to_thread(
+        table.save_entries, mode,
+        level_match.drop_family(entries, scope["family"]) if mode == "surround" else {})
     return {"status": "ok", "mode": mode, "bank_id": bank_id, "state_revision": target["revision"],
             "values": level_match.zero_slot_values(mode, target["roles"], scope)}
 

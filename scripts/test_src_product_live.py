@@ -15,6 +15,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -172,7 +173,8 @@ def main():
     if os.environ.get("FXROUTE_SRC_LIVE") != "1":
         print("SKIP: real product SRC acceptance requires FXROUTE_SRC_LIVE=1 on the audio host")
         return
-    directory = Path(os.environ.get("FXROUTE_SRC_EVIDENCE_DIR", "/tmp/opencode/product-src-live"))
+    directory = Path(os.environ.get("FXROUTE_SRC_EVIDENCE_DIR",
+                                   Path(tempfile.gettempdir()) / "product-src-live"))
     directory.mkdir(parents=True, exist_ok=True)
     saved = {p: http(p) for p in ("/api/audio/source-mode", "/api/audio/samplerate", "/api/audio/src", "/api/status")}
     assert not saved["/api/status"]["playing"], "Stop playback before live acceptance"

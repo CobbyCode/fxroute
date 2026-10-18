@@ -12,7 +12,7 @@ SCRIPT = Path(__file__).with_name('test-ubuntu-iso.sh')
 
 class HarnessTest(unittest.TestCase):
     def setUp(self):
-        self.temp = tempfile.TemporaryDirectory(prefix='fxroute-harness-', dir='/tmp/opencode')
+        self.temp = tempfile.TemporaryDirectory(prefix='fxroute-harness-')
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         self.env = dict(os.environ, FXROUTE_UBUNTU_TEST_DIR=str(self.root),

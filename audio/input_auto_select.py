@@ -195,7 +195,7 @@ class InputProbe:
                     frames = numpy.frombuffer(bytes(pending[:block_bytes]), dtype="<i4").reshape(-1, 2)
                     del pending[:block_bytes]
                     now = self._monotonic()
-                    self._detector.observe_block(now, analyze_block(frames), self._read_lock(now))
+                    self._detector.observe_block(now, analyze_block(frames), await self._read_lock(now))
         finally:
             if await process_stop.stop_command_child_cancellation_safe(
                 proc, PROBE_STOP_GRACE_SECONDS, cleanup_log="Input probe pw-record stop failed",
@@ -221,12 +221,13 @@ class InputProbe:
                         raise
                     await asyncio.sleep(PROBE_LINK_RETRY_SECONDS)
 
-    def _read_lock(self, now: float) -> bool | None:
+    async def _read_lock(self, now: float) -> bool | None:
+        """Polled digital lock state; the ALSA ioctl runs on a worker thread."""
         if not self.spec.digital or self.spec.card is None:
             return None
         if now - self._lock_read_at >= LOCK_POLL_SECONDS:
             self._lock_read_at = now
-            self._lock_state = read_digital_lock(self.spec.card)
+            self._lock_state = await asyncio.to_thread(read_digital_lock, self.spec.card)
         return self._lock_state
 
 

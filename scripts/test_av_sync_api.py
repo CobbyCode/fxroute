@@ -21,7 +21,7 @@ from test_output_state_api import audio_context, FakeRequest, make_manager, make
 
 class ApiTests(unittest.IsolatedAsyncioTestCase):
     async def test_target_mutation_is_revision_checked_and_mode_specific(self):
-        with tempfile.TemporaryDirectory(dir='/tmp/opencode') as directory:
+        with tempfile.TemporaryDirectory() as directory:
             service = make_service(directory, make_manager(directory))
             with audio_context(service):
                 await main.apply_audio_output_state(FakeRequest({'expected_revision': 0,
@@ -35,7 +35,7 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(raised.exception.status_code, 409)
 
     async def test_target_api_rejects_forged_basis_and_nonfinite_values(self):
-        with tempfile.TemporaryDirectory(dir='/tmp/opencode') as directory:
+        with tempfile.TemporaryDirectory() as directory:
             service = make_service(directory, make_manager(directory))
             with audio_context(service):
                 for payload in ({'target_ms': True}, {'target_ms': float('nan')},
@@ -135,7 +135,7 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
                    'worker_delay_max_us': 3900, 'worker_reserve_min_us': 17433,
                    'input_queue_peak_frames': 1024, 'late_frames': 7,
                    'underrun_frames': 7, 'queued_muted_frames': 351, 'transport_faults': 0}
-        with tempfile.TemporaryDirectory(dir='/tmp/opencode') as directory:
+        with tempfile.TemporaryDirectory() as directory:
             helper._status_path = Path(directory) / 'status.json'
             helper._status_path.write_text(json.dumps({**metrics, 'codec': 'pcm',
                 'lookahead_frames': 2050, 'live_latency_frames': 2818, 'untrusted_field': 'ignored'}))

@@ -128,8 +128,7 @@ class DigitalInput:
                     raise ValueError("Digital ingress capture ports must be distinct")
                 self._source_name = source
                 self._request = request
-                temporary_root = "/tmp/opencode" if Path("/tmp/opencode").is_dir() else None
-                self._status_dir = Path(tempfile.mkdtemp(prefix="fxroute-digital-", dir=temporary_root))
+                self._status_dir = Path(tempfile.mkdtemp(prefix="fxroute-digital-"))
                 self._status_path = self._status_dir / "status.json"
                 await self._spawn()
                 async with asyncio.timeout(3):

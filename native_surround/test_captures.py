@@ -11,7 +11,8 @@ import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parent
-CAPTURES = Path(os.environ.get("SURROUND_CAPTURE_ROOT", "/tmp/opencode"))
+CAPTURES = Path(os.environ.get("SURROUND_CAPTURE_ROOT",
+                              Path(tempfile.gettempdir()) / "surround-captures"))
 BUS = ["FL", "FR", "FC", "LFE", "SL", "SR", "BL", "BR"]
 
 

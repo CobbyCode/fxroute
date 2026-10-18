@@ -315,7 +315,7 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_latency_json_is_accepted_by_the_real_control_client(self):
         runtime = DSPRuntime(object())
-        with tempfile.TemporaryDirectory(prefix='av-sync-', dir='/tmp/opencode') as directory:
+        with tempfile.TemporaryDirectory(prefix='av-sync-') as directory:
             server = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
             client = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
             server.bind(f'{directory}/server')

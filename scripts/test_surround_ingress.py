@@ -570,17 +570,28 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
             with mock.patch.object(self.module.pw_link, "run_pw_link_command", side_effect=command):
                 try:
                     await adapter.start("left", "MONO", "MONO", right_source="right")
+                    status_dir = adapter._status_dir
+                    self.assertIsNotNone(status_dir)
+                    self.assertTrue(status_dir.is_dir())
+                    self.assertNotIn("/tmp/opencode", status_dir.parts)
                     pid = adapter.process.pid
                     self.assertEqual(edges, {("left:capture_MONO", "fxroute_surround_input:carrier_L"),
                                              ("right:capture_MONO", "fxroute_surround_input:carrier_R")})
                     await adapter.start("left", "MONO", "MONO", right_source="right")
                     self.assertEqual(adapter.process.pid, pid)
                     await adapter.start("left", "MONO", "MONO", right_source="other")
+                    self.assertFalse(status_dir.exists())
+                    status_dir = adapter._status_dir
+                    self.assertIsNotNone(status_dir)
+                    self.assertTrue(status_dir.is_dir())
                     self.assertNotEqual(adapter.process.pid, pid)
                     self.assertEqual(edges, {("left:capture_MONO", "fxroute_surround_input:carrier_L"),
                                              ("other:capture_MONO", "fxroute_surround_input:carrier_R")})
                 finally:
                     await adapter.stop()
+            self.assertFalse(status_dir.exists())
+            self.assertIsNone(adapter._status_dir)
+            self.assertIsNone(adapter._status_path)
 
 
 if __name__ == "__main__":

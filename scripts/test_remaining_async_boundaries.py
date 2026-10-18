@@ -303,6 +303,34 @@ class AsyncBoundaryTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(caught.exception.status_code, 409)
         self.assertEqual(writes, [])
 
+    async def test_level_match_store_io_off_loop(self):
+        scope = {"family": "main", "slot": "global", "units": [], "requires_reference": False}
+        target = {"mode": "surround", "roles": ["main_l"], "revision": 1}
+        entry = {"role": "main_l", "slot": "global", "family": "main", "raw_db": 0.0,
+                 "measured_at": "2026-10-15T12:00:00", "fingerprint": {}}
+        table = SimpleNamespace(entries=self.probe({"main_l@global": dict(entry)}),
+                                save_entries=self.probe(None))
+        deps = SimpleNamespace(get_table=lambda: table, auto_sub_active=lambda: False,
+                               get_store=lambda: None)
+        with patch.object(level_api, "_dependencies", return_value=deps), \
+                patch.object(level_api, "_resolve_scope", return_value=(target, scope)), \
+                patch.object(level_api, "_slot", JobSlot("regression")):
+            self.assertEqual((await level_api.get_level_match(bank_id="main"))["mode"], "surround")
+            await level_api.reset_level_match(bank_id="main")
+        self.assertEqual(len(self.seen), 3, "two reads and one write")
+        self.assert_off_loop()
+
+    async def test_input_auto_select_alsa_lock_read_off_loop(self):
+        from audio import input_auto_select as auto_select
+        spec = auto_select.ProbeSpec(source_name="source", left_channel="FL", right_channel="FR",
+                                     rate=48000, card=3, digital=True)
+        probe = auto_select.InputProbe(spec, SimpleNamespace())
+        with patch.object(auto_select, "read_digital_lock", side_effect=self.probe(True)):
+            self.assertIs(await probe._read_lock(0.0), True)
+            self.assertIs(await probe._read_lock(0.5), True)
+        self.assertEqual(len(self.seen), 1, "the polled lock read is cached between reads")
+        self.assert_off_loop()
+
     async def test_spl_profile_and_capability_reads_off_loop(self):
         manager = SimpleNamespace(load_global_extras=lambda: {"loudness": {}})
         deps = SimpleNamespace(require_dsp_manager=lambda: manager, get_dsp_manager=lambda: manager,

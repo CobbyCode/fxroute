@@ -102,7 +102,7 @@ class LiveQueueTests(unittest.TestCase):
     def test_safety_watermark_late_discard_and_quantum_reserve(self):
         if subprocess.run(["pkg-config", "--exists", *DEPS]).returncode:
             self.skipTest("missing native Surround build dependencies; build on .104")
-        with tempfile.TemporaryDirectory(prefix="surround-queue-", dir="/tmp/opencode") as directory:
+        with tempfile.TemporaryDirectory(prefix="surround-queue-") as directory:
             source = Path(directory) / "queue.c"
             binary = Path(directory) / "queue"
             source.write_text(HARNESS)

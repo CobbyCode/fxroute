@@ -16,13 +16,15 @@ Run manually after output-system UI changes or through scripts/run_tests.sh:
 import argparse
 import pathlib
 import sys
+import tempfile
 
 from demo_server_test_support import demo_server
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--shots", default="/tmp/opencode/fxroute-output-shots")
+    parser.add_argument("--shots",
+                        default=str(pathlib.Path(tempfile.gettempdir()) / "fxroute-output-shots"))
     args = parser.parse_args()
     shots = pathlib.Path(args.shots)
     shots.mkdir(parents=True, exist_ok=True)

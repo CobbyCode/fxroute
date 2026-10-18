@@ -267,6 +267,30 @@ class OutputAuthorityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.default, "alsa_output.B")
         self.assertFalse(persistence._audio_output_selection_path().exists())
 
+    def test_pactl_failure_reports_no_reconciled_output(self):
+        """A dead PipeWire server yields None instead of raising into the watcher."""
+        def failing_on(broken):
+            def command(args):
+                if list(args) == broken:
+                    raise RuntimeError("PipeWire is down")
+                return self.command(args)
+            return command
+
+        cases = (
+            ("saved selection inventory", True, ["pactl", "list", "sinks", "short"]),
+            ("saved selection default", True, ["pactl", "get-default-sink"]),
+            ("implicit output", False, ["pactl", "list", "sinks", "short"]),
+        )
+        for label, saved, broken in cases:
+            with self.subTest(case=label):
+                if saved:
+                    persistence._save_audio_output_selection("alsa_output.A")
+                else:
+                    persistence._audio_output_selection_path().unlink()
+                with mock.patch.object(overview, "_run_command", side_effect=failing_on(broken)):
+                    self.assertIsNone(overview.reconcile_selected_output_default())
+                self.assertEqual(self.default, "alsa_output.B")
+
     def test_fresh_install_never_promotes_the_internal_ingress_sink(self):
         persistence._audio_output_selection_path().unlink()
         self.default = "fxroute_dsp_sink"

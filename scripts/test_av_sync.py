@@ -147,7 +147,7 @@ class AVSyncTests(unittest.TestCase):
         self.assertEqual(latency_signature(plain), latency_signature(snapshot(0)))
 
     def test_odd_pcm24_data_is_padded_before_latency_metadata(self):
-        with tempfile.TemporaryDirectory(dir='/tmp/opencode') as directory:
+        with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'odd.wav'
             metadata = {'version': 1, 'algorithmic_frames': [0], 'intentional_frames': [0]}
             path.write_bytes(build_wav_bytes(1, 48000, 24, 1, b'\0\0\0', latency=metadata))

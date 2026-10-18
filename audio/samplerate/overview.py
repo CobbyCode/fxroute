@@ -1516,11 +1516,22 @@ def reconcile_selected_output_default() -> str | None:
     group key instead, and the PipeWire default tracks its primary member.
     Without a saved selection, return the implicit output for graph repair
     without persisting it or changing the system default.
+
+    A failing PipeWire query reports None instead of raising: the repair path
+    then skips this tick and retries once the server answers again.
     """
     selected = _load_audio_output_selection().get("selected_key")
     if not selected:
-        return _unselected_output_key()
-    sinks = _parse_pactl_sinks_short(_run_command(["pactl", "list", "sinks", "short"]))
+        try:
+            return _unselected_output_key()
+        except Exception as exc:
+            logger.warning("Implicit output is unavailable: %s", exc)
+            return None
+    try:
+        sinks = _parse_pactl_sinks_short(_run_command(["pactl", "list", "sinks", "short"]))
+    except Exception as exc:
+        logger.warning("Output inventory is unavailable: %s", exc)
+        return None
     live_names = [str(sink.get("name") or "") for sink in sinks]
     grouped = combined_key_for_selected_key(selected, live_names)
     if grouped and grouped != selected:
@@ -1543,7 +1554,11 @@ def reconcile_selected_output_default() -> str | None:
         if primary is None:
             return None
         default_target = primary
-    current = _run_command(["pactl", "get-default-sink"]).strip()
+    try:
+        current = _run_command(["pactl", "get-default-sink"]).strip()
+    except Exception as exc:
+        logger.warning("Current output default is unavailable: %s", exc)
+        return None
     if current != default_target:
         _set_default_sink(default_target)
         logger.info("Restored selected output default: previous=%s selected=%s", current, selected)
