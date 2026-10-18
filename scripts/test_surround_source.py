@@ -89,7 +89,9 @@ class SourceOrderTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse((await orchestrator.playback_graph_diagnosis(overview, target_rate=48000))["links_complete"])
 
     async def test_clock_borrow_keeps_previously_playing_app_paused(self):
-        adapter = _RuntimeOutputModeMixin()
+        class Adapter(_RuntimeSourceMixin, _RuntimeOutputModeMixin):
+            pass
+        adapter = Adapter()
         player = SimpleNamespace(state={"current_file": "music", "playing": True, "paused": False},
                                  set_pause=lambda paused: None)
         adapter._player = player

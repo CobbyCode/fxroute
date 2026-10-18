@@ -859,6 +859,7 @@ const radio = state.getPlayback();
     sameList(catalog0.capabilities.modes, ['stereo', 'stereo-sub', 'surround'], 'output modes');
     sameList(catalog0.capabilities.roles.surround,
         ['left_low', 'left_low_mid', 'left_mid', 'left_high', 'right_low', 'right_low_mid', 'right_mid', 'right_high',
+            'center_low', 'center_low_mid', 'center_mid', 'center_high',
             'center', 'side_l', 'side_r', 'rear_l', 'rear_r', 'sub1', 'sub2'], 'surround routing roles');
     assert.equal(surround0.crossover_enabled, true);
     assert.equal(surround0.selected_bank, 'all');
