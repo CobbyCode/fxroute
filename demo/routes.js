@@ -480,6 +480,7 @@
     const BANK_PAIR_LABELS = { main: 'Main L/R', low: 'Low L/R', low_mid: 'Low-Mid L/R',
         mid: 'Mid L/R', high: 'High L/R', sub: 'Sub L/R', side: 'Side L/R', rear: 'Rear L/R' };
     function bankLabel(bankId) {
+        if (bankId.startsWith('center_')) return `${bankId.slice(7).split('_').map(word => word.charAt(0).toUpperCase() + word.slice(1)).join('-')} C`;
         if (/^sub\d+$/.test(bankId)) return `Sub ${bankId.slice(3)}`;
         return String(bankId).split('_').map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(' ');
     }

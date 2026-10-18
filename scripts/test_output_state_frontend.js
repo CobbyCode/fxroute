@@ -60,6 +60,14 @@ assert.equal(OutputState.roleLabel('right_high'), 'High R');
 assert.equal(OutputState.roleLabel('global'), 'Global');
 assert.equal(OutputState.roleLabel('off'), 'Off');
 
+for (const [role, label] of Object.entries({
+    center_low: 'Low C', center_low_mid: 'Low-Mid C', center_mid: 'Mid C', center_high: 'High C',
+    center: 'Center',
+})) {
+    assert.equal(OutputState.roleLabel(role), label);
+    assert.equal(OutputState.roleLabel(role, 'surround'), label);
+}
+
 assert.deepEqual(OutputState.rolesForMode('stereo-sub', catalog().capabilities),
     ['main_l', 'main_r', 'sub_l', 'sub_r', 'sub1', 'sub2']);
 assert.deepEqual(OutputState.rolesForMode('surround', catalog().capabilities), []);

@@ -87,9 +87,9 @@ function roleLabel(roleId, mode) {
         return `${roleId.split('_').map(word => word.charAt(0).toUpperCase() + word.slice(1)).join('-')} L/R`;
     }
     if (roleId === 'off') return 'Off';
-    if (/^(left|right)_/.test(roleId)) {
+    if (/^(left|right|center)_/.test(roleId)) {
         const [side, ...way] = roleId.split('_');
-        return `${way.map(word => word.charAt(0).toUpperCase() + word.slice(1)).join('-')} ${side === 'left' ? 'L' : 'R'}`;
+        return `${way.map(word => word.charAt(0).toUpperCase() + word.slice(1)).join('-')} ${{ left: 'L', right: 'R', center: 'C' }[side]}`;
     }
     const raw = String(roleId || '').split('_').filter(Boolean);
     if (!raw.length) return String(roleId || '');

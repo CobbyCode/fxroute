@@ -94,7 +94,7 @@ assert.deepEqual(Crossover.sharedBassCrossover(unlinked),
 // single-sided ways keep their own tab.
 assert.equal(Crossover.wayKey('left_low_mid'), 'low_mid');
 assert.equal(Crossover.wayLabel('low'), 'Low');
-assert.equal(Crossover.wayLabel('low_mid'), 'Low Mid');
+assert.equal(Crossover.wayLabel('low_mid'), 'Low-Mid');
 assert.deepEqual(
     Crossover.pairedWays(['left_low', 'left_high', 'right_low', 'right_high']),
     [{ way: 'low', left: 'left_low', right: 'right_low' },
@@ -109,10 +109,12 @@ function stubTabs() {
 }
 for (const linked of [false, true]) {
     const tabs = stubTabs();
-    Crossover.renderWayTabs(tabs, ['left_low', 'right_low', 'center_low', 'center_high'],
+    Crossover.renderWayTabs(tabs, ['left_low', 'right_low', 'center_low', 'center_low_mid', 'center_mid', 'center_high'],
         'center_high', () => {}, linked);
-    assert.equal((tabs.innerHTML.match(/<button/g) || []).length, linked ? 3 : 4);
-    assert.match(tabs.innerHTML, /Center · Low/);
+    assert.equal((tabs.innerHTML.match(/<button/g) || []).length, linked ? 5 : 6);
+    for (const label of ['Low C', 'Low-Mid C', 'Mid C', 'High C']) {
+        assert.ok(tabs.innerHTML.includes(`>${label}</button>`), `Missing Center tab: ${label}`);
+    }
     assert.match(tabs.innerHTML, /data-crossover-way="center_high" class="crossover-tab is-active"/);
 }
 {

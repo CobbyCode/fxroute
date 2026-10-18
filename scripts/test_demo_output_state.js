@@ -334,12 +334,15 @@ async function request(url, body) {
         assert.equal(config.topology.center_way_count, center.length);
         assert.deepEqual(config.topology.center_ways, center);
         assert.equal(config.banks.center_low.channel_mode, 'mono');
+        const centerLabels = { center_low: 'Low C', center_mid: 'Mid C', center_high: 'High C' };
+        for (const role of center) assert.equal(config.banks[role].label, centerLabels[role]);
         const response = await request('/api/audio/output-state/crossover-response');
         assert.ok(response.ways.center_low);
         assert.ok(response.ways.center_high);
         await surroundApply({ kind: 'set_crossover', enabled: false });
         assert.deepEqual((await request('/api/audio/output-state')).device.routing.surround.slice(4, 4 + center.length),
             ['center', ...Array(center.length - 1).fill('off')]);
+        assert.equal((await request('/api/audio/output-state')).modes.surround.banks.center.label, 'Center');
         await surroundApply({ kind: 'set_crossover', enabled: true });
         assert.deepEqual((await request('/api/audio/output-state')).device.routing.surround.slice(4, 4 + center.length), center);
     }

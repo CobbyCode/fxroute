@@ -52,6 +52,8 @@ class CenterCrossoverTests(unittest.TestCase):
                 self.assertEqual(config['topology']['center_ways'], [f'center_{way}' for way in ways])
                 for way in ways:
                     self.assertEqual(config['banks'][f'center_{way}']['channel_mode'], 'mono')
+                    self.assertEqual(config['banks'][f'center_{way}']['label'],
+                                     {'low': 'Low C', 'mid': 'Mid C', 'high': 'High C'}[way])
                 self.assertNotIn('center_low', catalog['capabilities']['roles']['stereo'])
 
     def test_incomplete_or_mixed_center_never_activates(self):
@@ -71,6 +73,8 @@ class CenterCrossoverTests(unittest.TestCase):
                                              ['main_l', 'main_r', 'center']), 'surround')
         state = set_crossover(state, 'surround', True)
         self.assertEqual(routing_for_device(state, 'surround', 'device'), ['left_low', 'right_low', 'center'])
+        self.assertEqual(output_state_response(state, OVERVIEW)['modes']['surround']['banks']['center']['label'],
+                         'Center')
         state = set_mode_routing(state, 'surround', 'device', [*FRONTS, 'center', 'sub1'])
         plain = compile_plan(state)
         multi = compile_plan(center_state())

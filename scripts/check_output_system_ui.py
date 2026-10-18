@@ -509,7 +509,7 @@ def main() -> int:
             check(f"Surround offers the surround roles ({surround_roles})",
                    surround_roles == ['Off', 'Low L', 'Low-Mid L', 'Mid L', 'High L',
                                       'Low R', 'Low-Mid R', 'Mid R', 'High R',
-                                      'Center Low', 'Center Mid', 'Center High', 'Center',
+                                      'Low C', 'Mid C', 'High C', 'Center',
                                       'Side L', 'Side R', 'Rear L', 'Rear R', 'Sub 1', 'Sub 2'])
             for ways in (['center_low', 'center_high'], ['center_low', 'center_mid', 'center_high']):
                 page.evaluate("""async ways => {
@@ -522,9 +522,16 @@ def main() -> int:
                 }""", ways)
                 page.locator(f'[data-crossover-way="{ways[-1]}"]').click()
                 check(f"{len(ways)}-way Center tabs", page.locator('[data-crossover-way^="center_"]').count() == len(ways))
+                labels = {'center_low': 'Low C', 'center_mid': 'Mid C', 'center_high': 'High C'}
+                check(f"{len(ways)}-way Center tab labels",
+                      page.locator('[data-crossover-way^="center_"]').all_text_contents() == [labels[role] for role in ways])
+                bank_labels = page.locator('#effects-bank-select option').all_text_contents()
+                check(f"{len(ways)}-way Center bank labels", all(labels[role] in bank_labels for role in ways))
                 check(f"{len(ways)}-way Center header", f'{len(ways)}-Way Center' in page.locator('#effects-crossover-summary').inner_text())
                 if not page.locator('#effects-crossover-link').is_checked():
                     page.locator('#effects-crossover-link').check()
+                check('Center labels stay unchanged with Link L/R',
+                      page.locator('[data-crossover-way^="center_"]').all_text_contents() == [labels[role] for role in ways])
                 check('Center trim stays visible with Link L/R', page.locator('#effects-crossover-trim-group').is_visible())
                 center = page.evaluate("""() => {
                     const catalog = state.outputSystem.catalog;

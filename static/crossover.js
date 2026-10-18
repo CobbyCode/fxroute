@@ -58,7 +58,7 @@ function wayKey(role) {
 
 function wayLabel(way) {
     return String(way || '').split('_').map((word) =>
-        (word === 'low_mid' ? 'Low-Mid' : word.charAt(0).toUpperCase() + word.slice(1))).join(' ');
+        word.charAt(0).toUpperCase() + word.slice(1)).join('-');
 }
 
 // Linked view: one entry per way, pairing left/right roles. Order follows
@@ -258,12 +258,12 @@ function renderWayTabs(tabs, roles, activeRole, onSelect, linked) {
             const side = String(role).startsWith('left_') ? 'L' : 'R';
             return wayTabButton(role, `${side} · ${esc(wayLabel(pair.way))}`, role === activeRole);
         }).join('') + roles.filter(role => role.startsWith('center_')).map(role =>
-            wayTabButton(role, `Center · ${esc(wayLabel(wayKey(role)))}`, role === activeRole)).join('');
+            wayTabButton(role, `${esc(wayLabel(wayKey(role)))} C`, role === activeRole)).join('');
     } else {
         html = roles.map((role) => {
-            const label = role.split('_').slice(1).map((w) => (w === 'low_mid' ? 'Low-Mid' : w.charAt(0).toUpperCase() + w.slice(1))).join(' ');
-            const side = role.startsWith('center_') ? 'Center' : role.startsWith('left_') ? 'L' : 'R';
-            return wayTabButton(role, `${side} · ${esc(label)}`, role === activeRole);
+            const label = esc(wayLabel(wayKey(role)));
+            const side = role.startsWith('left_') ? 'L' : 'R';
+            return wayTabButton(role, role.startsWith('center_') ? `${label} C` : `${side} · ${label}`, role === activeRole);
         }).join('');
     }
     if (tabs.innerHTML !== html) tabs.innerHTML = html;

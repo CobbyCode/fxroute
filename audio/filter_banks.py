@@ -25,6 +25,8 @@ STEREO_PAIRS = {
 def bank_label(bank_id: str) -> str:
     if bank_id in STEREO_PAIRS:
         return f"{bank_id.replace('_', '-').title()} L/R"
+    if bank_id.startswith("center_"):
+        return f"{bank_id[7:].replace('_', '-').title()} C"
     if bank_id.startswith("sub") and bank_id[3:].isdigit():
         return f"Sub {bank_id[3:]}"
     return bank_id.replace("_", " ").title()

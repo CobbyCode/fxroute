@@ -10,7 +10,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from audio import output_state as state_api
-from audio.filter_banks import summarize_all_banks
+from audio.filter_banks import bank_definitions, summarize_all_banks
 from audio.output_topology import derive_topology
 from measurement.target import freeze_measurement_target, target_output_mask, sweep_output_masks
 
@@ -22,6 +22,12 @@ def sub_state():
 
 
 class FilterBankGroupsTests(unittest.TestCase):
+    def test_center_bank_names_use_way_then_speaker(self):
+        labels = {'center_low': 'Low C', 'center_low_mid': 'Low-Mid C',
+                  'center_mid': 'Mid C', 'center_high': 'High C', 'center': 'Center'}
+        definitions = bank_definitions(labels)
+        self.assertEqual({role: bank['label'] for role, bank in definitions.items()}, labels)
+
     def test_topology_groups_pairs_and_deduplicates_fanout(self):
         topology = derive_topology("stereo-sub", ["main_r", "sub_l", "main_l", "sub_r", "main_l"])
         self.assertEqual(topology.bank_ids, ("global", "main", "sub"))
