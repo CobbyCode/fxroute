@@ -41,23 +41,28 @@ class SurroundNativeTests(unittest.TestCase):
         from dsp.native_config import layout_from_plan
         from dsp.manager import DSPManager
 
-        for ways in (('low', 'high'), ('low', 'mid', 'high')):
+        for ways in (('low', 'high'), ('low', 'mid', 'high'), ('low', 'low_mid', 'mid', 'high')):
             with self.subTest(ways=ways), tempfile.TemporaryDirectory() as directory:
                 state = center_state(ways)
-                split = 2000 if len(ways) == 2 else 300
+                split = {2: 2000, 3: 300, 4: 200}[len(ways)]
                 state = set_output_processing(state, 'surround', 'center_low', lowpass=shape(split))
                 state = set_output_processing(state, 'surround', 'center_high',
-                                              highpass=shape(2000 if len(ways) == 2 else 2500))
+                                              highpass=shape({2: 2000, 3: 2500, 4: 3000}[len(ways)]))
                 if len(ways) == 3:
                     state = set_output_processing(state, 'surround', 'center_mid',
                                                   highpass=shape(300), lowpass=shape(2500))
+                if len(ways) == 4:
+                    state = set_output_processing(state, 'surround', 'center_low_mid',
+                                                  highpass=shape(200), lowpass=shape(800))
+                    state = set_output_processing(state, 'surround', 'center_mid',
+                                                  highpass=shape(800), lowpass=shape(3000))
                 plan = compile_plan(state)
                 layout = layout_from_plan(plan, resolve_ir=lambda *_: {})
                 manager = DSPManager(home=Path(directory))
                 text = manager.compile_engine_text(layout, preset_name='Direct',
                     extras_override={'limiter': {'enabled': False}})
                 levels = {}
-                for frequency in (150, 1000, 7000):
+                for frequency in (150, 400, 1000, 1500, 7000):
                     samples = []
                     for index in range(9600):
                         frame = [0.0] * 8
@@ -73,6 +78,11 @@ class SurroundNativeTests(unittest.TestCase):
                 self.assertGreater(levels[7000][-1], levels[7000][0] * 100)
                 if len(ways) == 3:
                     self.assertGreater(levels[1000][1], 0.05)
+                if len(ways) == 4:
+                    self.assertGreater(levels[400][1], 0.05)
+                    self.assertGreater(levels[1500][2], 0.05)
+                    self.assertGreater(levels[400][1], levels[400][-1] * 100)
+                    self.assertGreater(levels[1500][2], levels[1500][0] * 100)
 
     def test_lfe_bypasses_bass_filter_but_shares_trim_delay_polarity(self):
         text = """rate 1000

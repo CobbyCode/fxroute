@@ -414,7 +414,8 @@
     // not simulated here.
     const speakerWays = ['left_low', 'left_low_mid', 'left_mid', 'left_high', 'right_low',
         'right_low_mid', 'right_mid', 'right_high'];
-    const centerWays = ['center_low', 'center_mid', 'center_high'];
+    const centerWays = ['center_low', 'center_low_mid', 'center_mid', 'center_high'];
+    const crossoverWaySets = [['low', 'high'], ['low', 'mid', 'high'], ['low', 'low_mid', 'mid', 'high']];
     const subRoles = ['sub_l', 'sub_r', 'sub1', 'sub2'];
     // Surround roles beyond the front pair, in routing order (mirrors
     // audio/output_topology.py SURROUND_SPEAKERS). Sub L / Sub R are not
@@ -743,8 +744,8 @@
         let centerWayCount = null;
         if (center.length) {
             if (roles.includes('center')) issues.push('Center routing cannot mix full-range and crossover ways');
-            else if (![['center_low', 'center_high'], centerWays].some(set => JSON.stringify(set) === JSON.stringify(center))) {
-                issues.push('Center crossover requires complete Low/High or Low/Mid/High ways');
+            else if (!crossoverWaySets.some(set => JSON.stringify(set.map(way => `center_${way}`)) === JSON.stringify(center))) {
+                issues.push('Center crossover requires complete Low/High, Low/Mid/High, or Low/Low-Mid/Mid/High ways');
             } else centerWayCount = center.length;
         }
         // Surround checks first, like derive_topology: the summary line
@@ -763,10 +764,9 @@
         if (!enabled) {
             if (!roles.includes('main_l') || !roles.includes('main_r')) issues.push('Stereo routing requires Main L and Main R');
         } else {
-            const ways = ['low', 'low_mid', 'mid', 'high'];
             const left = roles.filter(r => r.startsWith('left_')).map(r => r.slice(5));
             const right = roles.filter(r => r.startsWith('right_')).map(r => r.slice(6));
-            const complete = [['low', 'high'], ['low', 'mid', 'high'], ways];
+            const complete = crossoverWaySets;
             const leftOk = complete.some(set => JSON.stringify(set) === JSON.stringify(left));
             const rightOk = complete.some(set => JSON.stringify(set) === JSON.stringify(right));
             if (!leftOk || !rightOk) {
@@ -3499,7 +3499,7 @@
                 const allowed = outputStateRoles(mode);
                 for (const [key, assignments] of Object.entries(config.routing)) {
                     const deviceMapping = { ...mapping };
-                    if (mode === 'surround' && assignments.some(role => ['center_mid', 'center_high'].includes(role))) {
+                    if (mode === 'surround' && assignments.some(role => centerWays.slice(1).includes(role))) {
                         if (mutation.enabled && !assignments.includes('center_low')) deviceMapping.center = 'center_low';
                         else if (!mutation.enabled && !assignments.includes('center')) deviceMapping.center_low = 'center';
                     }

@@ -19,8 +19,8 @@ assert.deepEqual(
 assert.deepEqual(
     Crossover.orderedWays({ left_mid: 1, left_low_mid: 1, left_low: 1, left_high: 1 }),
     ['left_low', 'left_low_mid', 'left_mid', 'left_high']);
-assert.deepEqual(Crossover.orderedWays({ center_high: {}, center_low: {}, center_mid: {}, left_low: {} }),
-    ['left_low', 'center_low', 'center_mid', 'center_high']);
+assert.deepEqual(Crossover.orderedWays({ center_high: {}, center_low: {}, center_mid: {}, left_low: {}, center_low_mid: {} }),
+    ['left_low', 'center_low', 'center_low_mid', 'center_mid', 'center_high']);
 assert.deepEqual(Crossover.starterValues(3, ['center']), {
     center_low: { lowpass: { family: 'linkwitz-riley', slope_db_oct: 24, frequency_hz: 300 } },
     center_mid: { highpass: { family: 'linkwitz-riley', slope_db_oct: 24, frequency_hz: 300 },
@@ -570,20 +570,31 @@ function initCrossoverUI(state, elements, extra = {}) {
 }
 {
     // Existing initialized front filters do not block first-time Center defaults.
-    const state = crossoverFixtureState();
-    const config = state.outputSystem.catalog.modes['stereo-sub'];
-    config.topology.center_way_count = 3;
-    config.processing = { ...Crossover.starterValues(2), center_low: {}, center_mid: {}, center_high: {} };
-    const applied = [];
-    const realFetch = globalThis.fetch;
-    globalThis.fetch = async () => ({ ok: true, json: async () => ({ ways: {} }) });
-    initCrossoverUI(state, crossoverFixtureElements(), {
-        applyMutation: async (_kind, fields) => { applied.push(fields); return { ok: true }; },
-    });
-    await CrossoverUI.maybeApplyCrossoverStarters();
-    globalThis.fetch = realFetch;
-    assert.deepEqual(applied.map(fields => fields.role), ['center_low', 'center_mid', 'center_high']);
-    assert.equal(applied[1].lowpass.frequency_hz, 2500);
+    for (const count of [2, 3, 4]) {
+        const state = crossoverFixtureState();
+        const config = state.outputSystem.catalog.modes['stereo-sub'];
+        config.topology.center_way_count = count;
+        const roles = { 2: ['center_low', 'center_high'], 3: ['center_low', 'center_mid', 'center_high'],
+            4: ['center_low', 'center_low_mid', 'center_mid', 'center_high'] }[count];
+        config.processing = { ...Crossover.starterValues(2), ...Object.fromEntries(roles.map(role => [role, {}])) };
+        const applied = [];
+        const realFetch = globalThis.fetch;
+        globalThis.fetch = async () => ({ ok: true, json: async () => ({ ways: {} }) });
+        initCrossoverUI(state, crossoverFixtureElements(), {
+            applyMutation: async (_kind, fields) => { applied.push(fields); return { ok: true }; },
+        });
+        await CrossoverUI.maybeApplyCrossoverStarters();
+        globalThis.fetch = realFetch;
+        assert.deepEqual(applied.map(fields => fields.role), roles);
+        if (count === 4) {
+            assert.equal(applied[0].lowpass.frequency_hz, 200);
+            assert.equal(applied[1].highpass.frequency_hz, 200);
+            assert.equal(applied[1].lowpass.frequency_hz, 800);
+            assert.equal(applied[2].highpass.frequency_hz, 800);
+            assert.equal(applied[2].lowpass.frequency_hz, 3000);
+            assert.equal(applied[3].highpass.frequency_hz, 3000);
+        }
+    }
 }
 {
     // Typed and stepper-dispatched changes (two decimals at most, enforced on

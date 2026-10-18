@@ -16,7 +16,7 @@ SURROUND_GROUPS = ("front", "center", "side", "rear")
 SUB_ROLES = ("sub_l", "sub_r", "sub1", "sub2")
 WAYS = ("low", "low_mid", "mid", "high")
 SPEAKER_ROLES = tuple(f"{side}_{way}" for side in ("left", "right") for way in WAYS)
-CENTER_ROLES = ("center_low", "center_mid", "center_high")
+CENTER_ROLES = tuple(f"center_{way}" for way in WAYS)
 MAX_CHANNELS = 32
 _WAY_SETS = (("low", "high"), ("low", "mid", "high"), WAYS)
 
@@ -146,8 +146,8 @@ def derive_topology(mode: str, assignments: object, *, channels: int | None = No
     if center:
         if "center" in active:
             issues.append("Center routing cannot mix full-range and crossover ways")
-        elif tuple(role.removeprefix("center_") for role in center) not in _WAY_SETS[:2]:
-            issues.append("Center crossover requires complete Low/High or Low/Mid/High ways")
+        elif tuple(role.removeprefix("center_") for role in center) not in _WAY_SETS:
+            issues.append("Center crossover requires complete Low/High, Low/Mid/High, or Low/Low-Mid/Mid/High ways")
         else:
             center_way_count = len(center)
     way_count = None

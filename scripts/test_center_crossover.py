@@ -11,7 +11,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from audio.output_api import crossover_response, output_state_response
 from audio.output_state import (default_output_state, routing_for_device, set_bass_management,
-                                set_crossover, set_mode_routing, set_output_processing, switch_mode)
+                                set_bank_preset, set_crossover, set_mode_routing, set_output_processing,
+                                switch_mode)
+from audio.output_state_store import OutputStateStore
 from audio.output_topology import derive_topology
 from dsp.manager import DSPManager
 from dsp.native_config import layout_from_plan
@@ -22,6 +24,7 @@ from measurement.target import freeze_measurement_target, target_input_mask, tar
 
 FRONTS = ['left_low', 'left_high', 'right_low', 'right_high']
 OVERVIEW = {'selected_output': {'key': 'device', 'channels': 16}}
+CENTER_WAY_SETS = (('low', 'high'), ('low', 'mid', 'high'), ('low', 'low_mid', 'mid', 'high'))
 
 
 def shape(frequency, family='linkwitz-riley', slope=24):
@@ -40,8 +43,8 @@ def compile_plan(state):
 
 
 class CenterCrossoverTests(unittest.TestCase):
-    def test_two_and_three_way_centers_have_independent_mono_banks(self):
-        for ways in (('low', 'high'), ('low', 'mid', 'high')):
+    def test_centers_have_independent_mono_banks_for_every_front_way_set(self):
+        for ways in CENTER_WAY_SETS:
             with self.subTest(ways=ways):
                 state = center_state(ways)
                 catalog = output_state_response(state, OVERVIEW)
@@ -53,11 +56,12 @@ class CenterCrossoverTests(unittest.TestCase):
                 for way in ways:
                     self.assertEqual(config['banks'][f'center_{way}']['channel_mode'], 'mono')
                     self.assertEqual(config['banks'][f'center_{way}']['label'],
-                                     {'low': 'Low C', 'mid': 'Mid C', 'high': 'High C'}[way])
+                                     {'low': 'Low C', 'low_mid': 'Low-Mid C', 'mid': 'Mid C', 'high': 'High C'}[way])
                 self.assertNotIn('center_low', catalog['capabilities']['roles']['stereo'])
 
     def test_incomplete_or_mixed_center_never_activates(self):
         for center in (['center_low'], ['center_mid', 'center_high'],
+                       ['center_low', 'center_low_mid', 'center_high'],
                        ['center', 'center_low', 'center_high']):
             with self.subTest(center=center):
                 topology = derive_topology('surround', [*FRONTS, *center], crossover_enabled=True)
@@ -82,16 +86,60 @@ class CenterCrossoverTests(unittest.TestCase):
         self.assertEqual(multi['outputs'][-1], plain['outputs'][-1])
 
     def test_toggle_restores_center_ports_and_retains_processing(self):
-        state = set_output_processing(center_state(('low', 'mid', 'high')), 'surround', 'center_mid',
-                                      highpass=shape(300), lowpass=shape(2500), level_db=-3)
-        disabled = set_crossover(state, 'surround', False)
-        self.assertEqual(routing_for_device(disabled, 'surround', 'device'),
-                         ['main_l', 'off', 'main_r', 'off', 'center', 'off', 'off', 'sub1'])
-        restored = set_crossover(disabled, 'surround', True)
-        self.assertEqual(routing_for_device(restored, 'surround', 'device'),
-                         [*FRONTS, 'center_low', 'center_mid', 'center_high', 'sub1'])
-        self.assertEqual(restored['modes']['surround']['processing']['center_mid'],
-                         state['modes']['surround']['processing']['center_mid'])
+        for ways in CENTER_WAY_SETS:
+            with self.subTest(ways=ways):
+                state = set_output_processing(center_state(ways), 'surround', 'center_low',
+                                              lowpass=shape(300), level_db=-3)
+                disabled = set_crossover(state, 'surround', False)
+                self.assertEqual(routing_for_device(disabled, 'surround', 'device'),
+                                 ['main_l', 'off', 'main_r', 'off', 'center',
+                                  *(['off'] * (len(ways) - 1)), 'sub1'])
+                restored = set_crossover(disabled, 'surround', True)
+                self.assertEqual(routing_for_device(restored, 'surround', 'device'),
+                                 [*FRONTS, *(f'center_{way}' for way in ways), 'sub1'])
+                for key in ('banks', 'processing'):
+                    for role, settings in state['modes']['surround'][key].items():
+                        self.assertEqual(restored['modes']['surround'][key][role], settings)
+
+    def test_four_way_filters_banks_and_trims_survive_storage_and_compile_like_fronts(self):
+        state = center_state(CENTER_WAY_SETS[-1])
+        definitions = {
+            'low': (None, shape(200, 'butterworth', 18)),
+            'low_mid': (shape(200, 'bessel', 12), shape(800, 'butterworth', 36)),
+            'mid': (shape(800), shape(3000, 'bessel', 24)),
+            'high': (shape(3000, 'linkwitz-riley', 48), None),
+        }
+        for index, (way, (highpass, lowpass)) in enumerate(definitions.items()):
+            state = set_output_processing(state, 'surround', f'center_{way}', highpass=highpass,
+                                          lowpass=lowpass, level_db=-index, alignment_ms=index / 2,
+                                          polarity='invert' if index % 2 else 'normal')
+        state = set_bank_preset(state, 'surround', 'center_low_mid', preset='Center band EQ')
+        with tempfile.TemporaryDirectory() as directory:
+            store = OutputStateStore(Path(directory) / 'output-state.json')
+            saved = store.commit(state, expected_revision=0)
+            loaded = store.load(required=True)
+        self.assertEqual(loaded, saved)
+        self.assertEqual(loaded['modes']['surround']['banks']['center_low_mid']['preset'], 'Center band EQ')
+        response = crossover_response(loaded, OVERVIEW, {'active_rate': 48000})
+        plan = compile_plan(loaded)
+        layout = layout_from_plan(plan, resolve_ir=lambda *_: self.fail('Unexpected IR'))
+        for index, (way, (highpass, lowpass)) in enumerate(definitions.items()):
+            role = f'center_{way}'
+            row = plan['outputs'][4 + index]
+            self.assertEqual(row['role'], role)
+            self.assertEqual(row['routes'], [{'input': 2, 'gain': 1.0}])
+            self.assertEqual((row['gain_db'], row['delay_ms'], row['invert']),
+                             (-index, index / 2, bool(index % 2)))
+            self.assertTrue(response['ways'][role]['complete'])
+            self.assertEqual(response['ways'][role]['filters'], {'highpass': highpass, 'lowpass': lowpass})
+            self.assertEqual(len(response['ways'][role]['points']), 180)
+            front_state = set_output_processing(loaded, 'surround', 'left_low',
+                                                highpass=highpass, lowpass=lowpass)
+            front_layout = layout_from_plan(compile_plan(front_state), resolve_ir=lambda *_: {})
+            self.assertEqual(layout[4 + index]['sos'], front_layout[0]['sos'])
+        area = freeze_measurement_target(loaded, bank_id='center_low_mid', output_key='device', channels=16,
+                                        sample_rate_hz=48000, fingerprint='center-band')
+        self.assertEqual(area['measured_roles'], ['center_low_mid'])
 
     def test_toggle_preserves_incomplete_low_only_center_draft(self):
         state = center_state(('low',))
@@ -135,7 +183,7 @@ class CenterCrossoverTests(unittest.TestCase):
         self.assertIsNone(crossover_response(state, OVERVIEW, {})['ways']['center_low']['derived_highpass'])
 
     def test_global_center_and_level_matching_cover_all_ways_as_one_speaker(self):
-        for ways in (('low', 'high'), ('low', 'mid', 'high')):
+        for ways in CENTER_WAY_SETS:
             with self.subTest(ways=ways):
                 state = center_state(ways)
                 roles = [row['role'] for row in compile_plan(state)['outputs']]

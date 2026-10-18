@@ -325,7 +325,8 @@ async function request(url, body) {
     assert.equal((await request('/api/dsp/presets')).presets.find(entry => entry.name === 'Rears').group, 'rear');
 
     await surroundApply({ kind: 'set_crossover', enabled: true });
-    for (const center of [['center_low', 'center_high'], ['center_low', 'center_mid', 'center_high']]) {
+    for (const center of [['center_low', 'center_high'], ['center_low', 'center_mid', 'center_high'],
+        ['center_low', 'center_low_mid', 'center_mid', 'center_high']]) {
         const assignments = ['left_low', 'left_high', 'right_low', 'right_high', ...center, 'sub1'];
         assignments.push(...Array(18 - assignments.length).fill('off'));
         const applied = await surroundApply({ kind: 'set_routing', assignments });
@@ -334,11 +335,10 @@ async function request(url, body) {
         assert.equal(config.topology.center_way_count, center.length);
         assert.deepEqual(config.topology.center_ways, center);
         assert.equal(config.banks.center_low.channel_mode, 'mono');
-        const centerLabels = { center_low: 'Low C', center_mid: 'Mid C', center_high: 'High C' };
+        const centerLabels = { center_low: 'Low C', center_low_mid: 'Low-Mid C', center_mid: 'Mid C', center_high: 'High C' };
         for (const role of center) assert.equal(config.banks[role].label, centerLabels[role]);
         const response = await request('/api/audio/output-state/crossover-response');
-        assert.ok(response.ways.center_low);
-        assert.ok(response.ways.center_high);
+        for (const role of center) assert.ok(response.ways[role]);
         await surroundApply({ kind: 'set_crossover', enabled: false });
         assert.deepEqual((await request('/api/audio/output-state')).device.routing.surround.slice(4, 4 + center.length),
             ['center', ...Array(center.length - 1).fill('off')]);

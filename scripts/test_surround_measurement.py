@@ -203,7 +203,8 @@ class SurroundMeasurementTests(unittest.TestCase):
         self.assert_links(fixture, set())
 
     def test_global_multiway_center_excites_fc_once_and_keeps_all_center_ways(self):
-        for ways in (['center_low', 'center_high'], ['center_low', 'center_mid', 'center_high']):
+        for ways in (['center_low', 'center_high'], ['center_low', 'center_mid', 'center_high'],
+                     ['center_low', 'center_low_mid', 'center_mid', 'center_high']):
             with self.subTest(ways=ways):
                 self.state = set_crossover(self.state, 'surround', True)
                 self.state = set_mode_routing(self.state, 'surround', 'device',

@@ -14,7 +14,7 @@
     'use strict';
 
 const WAY_ORDER = ['left_low', 'left_low_mid', 'left_mid', 'left_high',
-    'right_low', 'right_low_mid', 'right_mid', 'right_high', 'center_low', 'center_mid', 'center_high'];
+    'right_low', 'right_low_mid', 'right_mid', 'right_high', 'center_low', 'center_low_mid', 'center_mid', 'center_high'];
 const SUB_ROLES = ['sub_l', 'sub_r', 'sub1', 'sub2'];
 const FAMILY_PREFIXES = { 'linkwitz-riley': 'LR', butterworth: 'BW', bessel: 'BS' };
 

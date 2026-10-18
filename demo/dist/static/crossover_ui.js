@@ -484,7 +484,7 @@
         let starterGroups;
         try {
             starterGroups = [mod.starterValues(wayCount)];
-            if ([2, 3].includes(modeConfig.topology?.center_way_count)) {
+            if ([2, 3, 4].includes(modeConfig.topology?.center_way_count)) {
                 starterGroups.push(mod.starterValues(modeConfig.topology.center_way_count, ['center']));
             }
         } catch (e) {

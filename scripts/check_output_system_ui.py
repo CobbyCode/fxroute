@@ -509,20 +509,25 @@ def main() -> int:
             check(f"Surround offers the surround roles ({surround_roles})",
                    surround_roles == ['Off', 'Low L', 'Low-Mid L', 'Mid L', 'High L',
                                       'Low R', 'Low-Mid R', 'Mid R', 'High R',
-                                      'Low C', 'Mid C', 'High C', 'Center',
+                                       'Low C', 'Low-Mid C', 'Mid C', 'High C', 'Center',
                                       'Side L', 'Side R', 'Rear L', 'Rear R', 'Sub 1', 'Sub 2'])
-            for ways in (['center_low', 'center_high'], ['center_low', 'center_mid', 'center_high']):
+            for ways in (['center_low', 'center_high'], ['center_low', 'center_mid', 'center_high'],
+                         ['center_low', 'center_low_mid', 'center_mid', 'center_high']):
                 page.evaluate("""async ways => {
                     const assignments = ['left_low', 'left_high', 'right_low', 'right_high', ...ways, 'sub1'];
                     assignments.push(...Array(18 - assignments.length).fill('off'));
                     await applyOutputSystemMutation('set_routing', { mode: 'surround', assignments }, false);
+                    for (const role of ways) {
+                        await applyOutputSystemMutation('set_processing',
+                            { mode: 'surround', role, highpass: null, lowpass: null }, false, { quiet: true });
+                    }
                     await maybeApplyCrossoverStarters();
                     toggleSettingsPanel(false);
                     switchTab('effects');
                 }""", ways)
                 page.locator(f'[data-crossover-way="{ways[-1]}"]').click()
                 check(f"{len(ways)}-way Center tabs", page.locator('[data-crossover-way^="center_"]').count() == len(ways))
-                labels = {'center_low': 'Low C', 'center_mid': 'Mid C', 'center_high': 'High C'}
+                labels = {'center_low': 'Low C', 'center_low_mid': 'Low-Mid C', 'center_mid': 'Mid C', 'center_high': 'High C'}
                 check(f"{len(ways)}-way Center tab labels",
                       page.locator('[data-crossover-way^="center_"]').all_text_contents() == [labels[role] for role in ways])
                 bank_labels = page.locator('#effects-bank-select option').all_text_contents()
@@ -533,15 +538,21 @@ def main() -> int:
                 check('Center labels stay unchanged with Link L/R',
                       page.locator('[data-crossover-way^="center_"]').all_text_contents() == [labels[role] for role in ways])
                 check('Center trim stays visible with Link L/R', page.locator('#effects-crossover-trim-group').is_visible())
-                center = page.evaluate("""() => {
+                center = page.evaluate("""ways => {
                     const catalog = state.outputSystem.catalog;
                     return { area: FXRouteOutputState.measurementArea(catalog, 'global', 'center'),
-                        filter: catalog.modes.surround.processing.center_high.highpass };
-                }""")
+                        filters: ways.map(role => {
+                            const settings = catalog.modes.surround.processing[role];
+                            return [settings.highpass?.frequency_hz ?? null, settings.lowpass?.frequency_hz ?? null];
+                        }) };
+                }""", ways)
                 check('Global Center remains mono', center['area']['group'] == 'center' and center['area']['channel_mode'] == 'mono')
-                check('Center starter filters initialized', center['filter'] is not None)
+                expected_filters = {2: [[None, 2000], [2000, None]],
+                                    3: [[None, 300], [300, 2500], [2500, None]],
+                                    4: [[None, 200], [200, 800], [800, 3000], [3000, None]]}
+                check(f'{len(ways)}-way Center starter filters initialized', center['filters'] == expected_filters[len(ways)])
             page.set_viewport_size({'width': 390, 'height': 844})
-            page.locator('[data-crossover-way="center_mid"]').click()
+            page.locator('[data-crossover-way="center_low_mid"]').click()
             page.locator('#effects-crossover-card').scroll_into_view_if_needed()
             page.screenshot(path=str(shots / 'center-crossover-mobile.png'))
             check('Center mobile layout has no page overflow', page.evaluate('document.documentElement.scrollWidth <= innerWidth'))

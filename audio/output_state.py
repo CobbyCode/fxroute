@@ -8,7 +8,7 @@ import math
 
 from audio.output_routing import device_key
 from audio.filter_banks import bank_definitions, owning_bank_ids, resolve_bank, summarize_banks
-from audio.output_topology import (MAIN_ROLES, MODES, SURROUND_GROUPS, derive_topology, dormant_roles,
+from audio.output_topology import (CENTER_ROLES, MAIN_ROLES, MODES, SURROUND_GROUPS, derive_topology, dormant_roles,
                                    roles_for_mode, validate_assignments)
 from dsp.banks import BankState, slot_presets
 from dsp.latency import default_av_sync, validate_av_sync
@@ -427,7 +427,7 @@ def set_crossover(state: dict, mode: str, enabled: bool) -> dict:
         device_mapping = dict(mapping)
         # A full-range Center stays full-range unless dormant ways restore its split.
         # A Low-only draft stays dormant rather than becoming a full-range speaker.
-        if mode == "surround" and any(role in ("center_mid", "center_high") for role in assignments):
+        if mode == "surround" and any(role in CENTER_ROLES[1:] for role in assignments):
             if enabled and "center_low" not in assignments:
                 device_mapping["center"] = "center_low"
             elif not enabled and "center" not in assignments:
