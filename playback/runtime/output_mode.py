@@ -271,6 +271,9 @@ class _RuntimeOutputModeMixin:
         previous_player = dict(snapshot.get("player") or {})
         previous_spotify = dict(snapshot.get("spotify") or {})
         if source_policy.is_mpv_source(request.source) and self._deps.player_is_running():
+            if await self._configure_mpv_channels() and previous_player.get("current_file"):
+                if not await self._deps.ensure_mpv_to_dsp_links():
+                    raise RuntimeError("MPV channel-mode ingress was not confirmed")
             previous_volume = previous_player.get("volume")
             if isinstance(previous_volume, (int, float)):
                 await self.set_source_volume(int(round(previous_volume)), transition_id)

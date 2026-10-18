@@ -48,6 +48,19 @@ GRAPH_NODE_BY_SOURCE = {
 _OUTPUT_CHANNELS = ("FL", "FR")
 
 
+def mpv_port_positions(io_text: str, channel_count: int | None = None) -> dict[str, str]:
+    """Resolve actual MPV ports; PipeWire calls the back pair RL/RR."""
+    suffixes = {line.strip().split(" -> ", 1)[0].removeprefix("mpv:output_") for line in io_text.splitlines()
+                if line.strip().startswith("mpv:output_")}
+    positions = {"FL": "FL", "FR": "FR", "FC": "FC", "LFE": "LFE",
+                 "SL": "SL", "SR": "SR", "RL": "BL", "RR": "BR"}
+    if not suffixes or not suffixes.issubset(positions):
+        return {}
+    if channel_count is not None and len(suffixes) != channel_count:
+        return {}
+    return {positions[suffix]: suffix for suffix in positions if suffix in suffixes}
+
+
 def is_known_source(source: str | None) -> bool:
     """Return whether ``source`` is one of the modeled playback sources."""
     return source in ALL_SOURCES

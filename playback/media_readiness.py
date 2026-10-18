@@ -23,6 +23,7 @@ from typing import Any, Callable, Optional
 
 import audio.sink_inputs as sink_inputs
 from audio import pw_link
+from playback.source_policy import mpv_port_positions
 from playback.spotify_watch import SPOTIFY_SINK_INPUT_RATE_STABILITY_POLLS
 
 logger = logging.getLogger(__name__)
@@ -343,8 +344,8 @@ async def wait_for_qobuz_sink_input_samplerate(
     )
 
 
-async def mpv_source_ports_present() -> bool:
-    """Read-only check: are the MPV stream ports and DSP sink ports exposed?
+async def mpv_source_ports_present(channel_count: int | None = None) -> bool:
+    """Read-only check for the complete semantic MPV layout and safe sink.
 
     The mpv PipeWire stream (and with it mpv:output_FL/FR) is published only
     once the stream actually opened after a staged ``loadfile``.  This check
@@ -355,11 +356,9 @@ async def mpv_source_ports_present() -> bool:
         links_text = await pw_link.run_pw_link_command("-io")
     except Exception:
         return False
-    return all(
+    return bool(mpv_port_positions(links_text, channel_count)) and all(
         port in links_text
         for port in (
-            "mpv:output_FL",
-            "mpv:output_FR",
             "fxroute_dsp_sink:playback_FL",
             "fxroute_dsp_sink:playback_FR",
         )

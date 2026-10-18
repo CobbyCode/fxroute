@@ -187,6 +187,7 @@ class GraphDiagnosisParallelReadsTest(unittest.IsolatedAsyncioTestCase):
             if args == ("-io",):
                 return (
                     "mpv:output_FL\n"
+                    "mpv:output_FR\n"
                     "fxroute_dsp_sink:playback_FL\n"
                     "fxroute_dsp_sink:playback_FR\n"
                     "fxroute_dsp_sink:monitor_FL\n"
@@ -211,6 +212,7 @@ class GraphDiagnosisParallelReadsTest(unittest.IsolatedAsyncioTestCase):
             output_mode_stereo="stereo",
             get_dsp_snapshot=lambda: {"active": True, "config": {
                 "output_routes": [[1, "playback_FL"], [2, "playback_FR"]]}},
+            get_runtime_player=lambda: None,
             helper_argument_sample_rate=lambda snapshot: 44100,
             resolve_source_producer_ports=None,
             contains_link=None,
@@ -227,6 +229,7 @@ class GraphDiagnosisParallelReadsTest(unittest.IsolatedAsyncioTestCase):
             {
                 "_deps": deps,
                 "playback_graph_diagnosis": orchestration_module.PlaybackOrchestrator.playback_graph_diagnosis,
+                "_mpv_positions": orchestration_module.PlaybackOrchestrator._mpv_positions,
             },
         )()
         overview = {

@@ -27,7 +27,7 @@ from audio.output_ports import HARDWARE_CHANNEL_ORDER, hardware_link_target
 from audio.pw_link import stop_command_child_cancellation_safe
 from common.run_to_completion import restore_after, run_to_completion
 from dsp.latency import latency_signature
-from playback.source_policy import GRAPH_NODE_BY_SOURCE
+from playback.source_policy import GRAPH_NODE_BY_SOURCE, mpv_port_positions
 
 # Sources that must reach the hardware only through the DSP output stage.
 DIRECT_SOURCE_NODES = tuple(dict.fromkeys(GRAPH_NODE_BY_SOURCE.values()))
@@ -715,6 +715,11 @@ class DSPRuntime:
             await self._remove_direct_source_links()
             if self._config is not None:
                 await self._reconcile_output_links(self._config)
+            if any(source.startswith("mpv:output_") for source, _ in self._mapped_ingress):
+                # A playlist boundary can change the decoded layout without an
+                # app transition; adopt the real ports here so the repair ends
+                # as a relink instead of a full engine rebuild.
+                await self._reconcile_ingress_links()
             if await self.verify():
                 return True
             if self._config is None:
@@ -1596,10 +1601,11 @@ class DSPRuntime:
                 await self.update_input_latency()
 
     async def set_mapped_ingress(self, edges: Sequence[tuple[str, str]]) -> None:
-        """Select analog multichannel ingress (custom input mapping); empty clears it.
+        """Select position-mapped PCM ingress; empty clears it.
 
-        ``edges`` are (capture port, engine input port) pairs from
-        ``mapped_ingress_edges``. The sink monitor stays linked to inputs 1/2.
+        MPV owns the Surround ingress exclusively: its automatically connected
+        stereo sink must not feed inputs 1/2 alongside the direct source ports.
+        Capture and STDIN mappings retain the measurement stereo tap.
         """
         self._mapped_ingress = tuple((str(source), str(target)) for source, target in edges)
         if self._engine_running():
@@ -1620,13 +1626,22 @@ class DSPRuntime:
 
     async def _reconcile_ingress_links(self, *, strict_mapped: bool = False) -> None:
         count = self._config.input_count if self._config else 2
-        desired = [PipeWireLink(f"{DSP_INGRESS_MONITOR_NODE}:{port}", f"{DSP_NODE_NAME}:input_{index + 1}")
-                   for index, port in enumerate(DSP_INGRESS_PORTS)]
+        mpv_mapped = any(source.startswith("mpv:output_") for source, _ in self._mapped_ingress)
+        if mpv_mapped and count == 8 and not strict_mapped:
+            # Native playlist boundaries can replace the layout without an
+            # app transition. The regular runtime watch follows the real ports.
+            ports = await self._run(("pw-link", "-o"))
+            positions = mpv_port_positions(ports.stdout) if ports.returncode == 0 else {}
+            if positions:
+                self._mapped_ingress = mapped_ingress_edges("mpv", positions, port_kind="output")
+        stereo = [PipeWireLink(f"{DSP_INGRESS_MONITOR_NODE}:{port}", f"{DSP_NODE_NAME}:input_{index + 1}")
+                  for index, port in enumerate(DSP_INGRESS_PORTS)]
+        desired = [] if mpv_mapped and count == 8 else list(stereo)
         if self._surround_input:
             desired.extend(PipeWireLink(source, target) for source, target in decoded_ingress_edges(count))
         engine_inputs = {f"{DSP_NODE_NAME}:input_{index + 1}" for index in range(count)}
         mapped = {PipeWireLink(source, target) for source, target in self._mapped_ingress
-                  if target in engine_inputs}
+                  if target in engine_inputs and not (mpv_mapped and count != 8)}
         desired.extend(sorted(mapped, key=lambda link: link.target))
         previously_mapped = {link for link in self._links
                              if link.target.startswith(f"{DSP_NODE_NAME}:input_")
@@ -1636,9 +1651,11 @@ class DSPRuntime:
         if result.returncode:
             raise RuntimeError(result.stderr or "Cannot inspect DSP ingress links")
         live = {PipeWireLink(source, target) for source, target in iter_pw_links(result.stdout)
-                if target.startswith(f"{DSP_NODE_NAME}:input_")
-                and (source.startswith("fxroute_surround_input:")
-                     or PipeWireLink(source, target) in previously_mapped)}
+                 if target.startswith(f"{DSP_NODE_NAME}:input_")
+                 and (source.startswith("fxroute_surround_input:")
+                      or source.startswith("mpv:output_")
+                      or PipeWireLink(source, target) in stereo
+                      or PipeWireLink(source, target) in previously_mapped)}
         for link in live - set(desired):
             disconnected = await self._run(("pw-link", "-d", link.source, link.target))
             if disconnected.returncode:
@@ -1731,6 +1748,16 @@ class DSPRuntime:
         if not self._links:
             return False
         result = await self._run(("pw-link", "-l"))
+        if self.surround_engine and any(p.startswith("mpv:output_") for p, _ in self._mapped_ingress):
+            if any(_contains_link(result.stdout, f"{DSP_INGRESS_MONITOR_NODE}:{port}",
+                                  f"{DSP_NODE_NAME}:input_{i + 1}") for i, port in enumerate(DSP_INGRESS_PORTS)):
+                return False
+            ports = await self._run(("pw-link", "-o"))
+            if ports.returncode:
+                return False
+            positions = mpv_port_positions(ports.stdout)
+            if positions and mapped_ingress_edges("mpv", positions, port_kind="output") != self._mapped_ingress:
+                return False
         desired = {link for link in self._links if link.source.startswith(f"{DSP_NODE_NAME}:output_")}
         return (result.returncode == 0
                 and not (self._direct_source_link_candidates()

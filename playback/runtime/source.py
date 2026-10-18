@@ -74,6 +74,13 @@ class _RuntimeSourceMixin:
     _staged_target_url: str | None
     _quieted_external_source: str | None
 
+    async def _configure_mpv_channels(self) -> bool:
+        configure = getattr(self._player, "set_surround_channels", None)
+        if not callable(configure):
+            return False
+        return await self._deps.drain_worker(
+            configure, bool(self._dsp_runtime is not None and self._dsp_runtime.surround_engine))
+
     async def _ensure_player_available(self) -> bool:
         """Ensure availability under coordinator ownership; report a restart."""
         if self._deps.player_is_running():
@@ -424,10 +431,17 @@ class _RuntimeSourceMixin:
         if request.graph_only:
             return
         if source_policy.is_external_source(request.source):
+            runtime = self._dsp_runtime
+            if runtime is not None:
+                mapped = runtime.snapshot().get("mapped_ingress") or ()
+                if any(p.startswith("mpv:output_") for p, _ in mapped):
+                    await runtime.release_mapped_ingress(mapped)
             return
         if await self._ensure_player_available():
             # A replacement process owns no media, even for a same-target request.
             request = replace(request, reload_source=bool(request.target_url))
+
+        channels_changed = await self._configure_mpv_channels()
 
         if not request.reload_source and not request.should_play:
             if not request.target_url:
@@ -440,6 +454,8 @@ class _RuntimeSourceMixin:
                         await self._deps.drain_worker(stop_playback)
                 return
             await self._deps.drain_worker(self._player.set_pause, True)
+            if channels_changed and not await self._deps.ensure_mpv_to_dsp_links():
+                raise RuntimeError("MPV channel-mode ingress was not confirmed")
             return
 
         set_volume = getattr(self._player, "set_volume", None)

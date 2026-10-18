@@ -2710,6 +2710,24 @@ def _dispatch_player_state_change(state: dict):
     )
 
 
+async def _release_idle_mpv_ingress(state: dict) -> None:
+    """Drop the direct Surround ingress once MPV holds no media.
+
+    The MPV ingress owns the engine inputs exclusively, so it must be
+    released when the stream ends or stops: otherwise the stale mapping
+    keeps the stereo sink tap unlinked and later SRC latency readbacks
+    fail with "Owned SRC ingress path is unavailable".
+    """
+    if state.get("current_file") or not state.get("idle_active"):
+        return
+    dsp = runtime.dsp_runtime
+    if dsp is None:
+        return
+    mapped = (dsp.snapshot() or {}).get("mapped_ingress") or ()
+    if any(str(port).startswith("mpv:output_") for port, _ in mapped):
+        await dsp.release_mapped_ingress(mapped)
+
+
 async def on_player_state_change(state: dict, event_commit_id: str | None = None):
     global queue_advancing
     callback_generation = _capture_playback_transition_epoch()
@@ -2818,6 +2836,8 @@ async def on_player_state_change(state: dict, event_commit_id: str | None = None
                 return
         finally:
             queue_advancing = False
+
+    await _release_idle_mpv_ingress(state)
 
     radio_reconnect.schedule(state)
     if runtime.source_transition_lock is None:

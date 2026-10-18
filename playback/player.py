@@ -81,6 +81,7 @@ class MPVWrapper:
         self._start_lock = threading.Lock()
         self._running = False
         self.process_generation = 0
+        self._surround_channels = False
         self._state = {
             "playing": False,
             "paused": False,
@@ -96,6 +97,7 @@ class MPVWrapper:
             "error": None,
             "end_reason": None,
             "end_entry_id": None,
+            "audio_output_params": None,
             "_seq": 0,
         }
         # Last published coherent state snapshot.  ``state`` serves this
@@ -121,6 +123,7 @@ class MPVWrapper:
             "idle-active": 5,
             "path": 6,
             "playlist-pos": 7,
+            "audio-out-params": 8,
         }
 
     def start(self):
@@ -159,6 +162,7 @@ class MPVWrapper:
                 error=None,
                 end_reason=None,
                 end_entry_id=None,
+                audio_output_params=None,
             )
             self._last_end_reason = None
             self._last_end_entry_id = None
@@ -198,7 +202,12 @@ class MPVWrapper:
 
         cmd = self._mpv_command(self.socket_path)
         logger.info(f"Starting mpv: {' '.join(cmd)}")
-        self.process = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=client_env())
+        environment = client_env()
+        props = environment.get("PIPEWIRE_PROPS", "").strip().removeprefix("{").removesuffix("}").strip()
+        # Keep decoder positions on the stream: the DSP side owns all remixing.
+        environment["PIPEWIRE_PROPS"] = (f"{props} stream.dont-remix=true channelmix.upmix=false").strip()
+        self.process = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=environment)
+        self._surround_channels = False
 
         timeout = 15
         start = time.time()
@@ -234,6 +243,7 @@ class MPVWrapper:
             "--network-timeout=15",
             "--prefetch-playlist=yes",
             "--audio-device=pipewire/fxroute_dsp_sink",
+            "--audio-channels=stereo",
             "--stream-lavf-o=reconnect=1,reconnect_streamed=1,reconnect_at_eof=1,reconnect_delay_max=5",
         ]
 
@@ -510,6 +520,12 @@ class MPVWrapper:
                     self._state["playlist_pos"] = playlist_pos
                     changed = True
 
+            elif name == "audio-out-params":
+                params = dict(data) if isinstance(data, dict) else None
+                if self._state.get("audio_output_params") != params:
+                    self._state["audio_output_params"] = params
+                    changed = True
+
             elif name == "idle-active":
                 idle_active = bool(data)
                 if self._state.get("idle_active") != idle_active:
@@ -642,7 +658,18 @@ class MPVWrapper:
             self._state["ended"] = False
             self._state["end_reason"] = None
             self._state["end_entry_id"] = None
+            self._state["audio_output_params"] = None
             self._notify_callbacks()
+
+    def set_surround_channels(self, enabled: bool) -> bool:
+        """Preserve decoder positions in Surround; downmix in stereo modes."""
+        with self.lock:
+            enabled = bool(enabled)
+            if self._surround_channels != enabled:
+                self.set_property("audio-channels", "auto" if enabled else "stereo")
+                self._surround_channels = enabled
+                return True
+            return False
 
     def set_volume(self, volume: int):
         """Set volume (0-100)."""

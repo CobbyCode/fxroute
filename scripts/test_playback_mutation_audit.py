@@ -221,7 +221,7 @@ def _reason(context: str, name: str) -> str | None:
             "_relink_missing_production_links",
             "establish_effects_and_helper", "relink_missing_production_links",
             "repair_stereo_output_links_once", "reconcile_subwoofer_links_only",
-            "rollback_output_mode_runtime",
+            "rollback_output_mode_runtime", "restore_output_mode_transport",
             "ensure_mpv_to_dsp_links",
         }
         or "_sync_locked" in context

@@ -29,7 +29,7 @@ from audio.output_ports import (
     warn_semantic_playback_fallback,
 )
 from playback.transition import PlaybackTransitionFailure, TransitionRequest, stable_graph_readbacks
-from dsp.runtime import physical_output_links
+from dsp.runtime import mapped_ingress_edges, physical_output_links
 from dsp.locks import DspSyncOwnership
 
 logger = logging.getLogger(__name__)
@@ -195,6 +195,12 @@ class PlaybackOrchestrator:
 
     def __init__(self, deps: PlaybackOrchestrationDeps):
         self._deps = deps
+
+    def _mpv_positions(self, io_text: str) -> dict[str, str]:
+        player = self._deps.get_runtime_player()
+        params = (player.state if player else {}).get("audio_output_params") or {}
+        count = params.get("channel-count")
+        return source_policy.mpv_port_positions(io_text, count if type(count) is int else None)
 
     def coordinator_source_rate(self, source: str, track: Mapping[str, Any] | None = None) -> int | None:
         track = track or {}
@@ -592,6 +598,14 @@ class PlaybackOrchestrator:
         source_targets = ("fxroute_dsp_sink:playback_FL", "fxroute_dsp_sink:playback_FR")
         snapshot = dict(self._deps.get_dsp_snapshot() or {}) if self._deps.get_dsp_snapshot else {}
         snapshot_config = snapshot.get("config") or {}
+        mpv_direct = source_policy.is_mpv_source(source) and snapshot_config.get("output_mode") == "surround"
+        if source_policy.is_mpv_source(source):
+            positions = self._mpv_positions(io_text)
+            source_edges = mapped_ingress_edges("mpv", positions, port_kind="output") if mpv_direct else tuple(
+                (f"mpv:output_{side}", f"fxroute_dsp_sink:playback_{side}") for side in ("FL", "FR")
+            ) if positions == {"FL": "FL", "FR": "FR"} else ()
+            source_ports = tuple(p for p, _ in source_edges)
+            source_targets = tuple(t for _, t in source_edges)
         # Resolve every real playback port of the device (playback_FL/FR/RL/RR
         # or playback_AUX0…): a direct source link to any of them is a bypass.
         cfg_ports = snapshot_config.get("hardware_ports") or ()
@@ -618,8 +632,16 @@ class PlaybackOrchestrator:
             ingress_targets += tuple(target for _, target in decoded)
         engine_input_count = 8 if (snapshot.get("config") or {}).get("output_mode") == "surround" else 2
         engine_inputs = {f"fxroute_dsp:input_{i + 1}" for i in range(engine_input_count)}
+        mpv_mapped = engine_input_count == 8 and any(
+            p.startswith("mpv:output_") for p, _ in snapshot.get("mapped_ingress") or ())
+        if mpv_mapped:
+            ingress_sources = ingress_sources[2:]
+            ingress_targets = ingress_targets[2:]
+        duplicate_ingress = mpv_mapped and any(self._deps.contains_link(link_text, p, t) for p, t in (
+            ("fxroute_dsp_sink:monitor_FL", "fxroute_dsp:input_1"),
+            ("fxroute_dsp_sink:monitor_FR", "fxroute_dsp:input_2")))
         for mapped_source, mapped_target in snapshot.get("mapped_ingress") or ():
-            if mapped_target in engine_inputs:
+            if mapped_target in engine_inputs and not (mapped_source.startswith("mpv:") and engine_input_count != 8):
                 ingress_sources += (mapped_source,)
                 ingress_targets += (mapped_target,)
         result["dsp_ports"] = all(port in io_text for port in (*ingress_targets, *dsp_ports))
@@ -656,7 +678,8 @@ class PlaybackOrchestrator:
             f"{link.source} -> {link.target}" for link in physical_output_links(link_text)
             if (link.source, link.target) not in desired_pairs
         ))
-        unwanted_links = result["direct_source_to_hw_present"] or result["unexpected_output_links"]
+        result["duplicate_ingress"] = bool(duplicate_ingress)
+        unwanted_links = result["direct_source_to_hw_present"] or result["unexpected_output_links"] or duplicate_ingress
         result["bypass_only"] = bool(native and unwanted_links)
         result["links_complete"] = bool(native and not unwanted_links)
         result["signature"] = json.dumps(result, sort_keys=True, default=list)
@@ -1047,19 +1070,26 @@ class PlaybackOrchestrator:
         return (await self.playback_graph_diagnosis(audio_overview, source=source, target_rate=target_rate, require_source=require_source))["links_complete"]
 
     async def ensure_mpv_to_dsp_links(self, timeout_ms: int | None = None) -> bool:
-        """Wait for MPV source ports, then reconcile only missing ingress links."""
-        if self._deps.mpv_source_ports_present is None:
-            raise RuntimeError("MPV source-port readiness is not configured")
-        expected = (
-            ("mpv:output_FL", "fxroute_dsp_sink:playback_FL"),
-            ("mpv:output_FR", "fxroute_dsp_sink:playback_FR"),
-        )
+        """Wait for the complete source layout, then establish its sole DSP route."""
+        runtime = self._deps.get_dsp_runtime()
+        surround = bool(runtime is not None and runtime.surround_engine)
         readiness_timeout = self._deps.source_port_readiness_timeout_ms if timeout_ms is None else timeout_ms
         readiness_deadline = time.monotonic() + max(readiness_timeout, 0) / 1000
-        while not await self._deps.mpv_source_ports_present():
+        while True:
+            try:
+                io_text = await self._deps.run_pw_link_command("-io")
+                positions = self._mpv_positions(io_text)
+                expected = mapped_ingress_edges("mpv", positions, port_kind="output") if surround else (
+                    ("mpv:output_FL", "fxroute_dsp_sink:playback_FL"),
+                    ("mpv:output_FR", "fxroute_dsp_sink:playback_FR"),
+                ) if positions == {"FL": "FL", "FR": "FR"} else ()
+                if expected and all(target in io_text for _, target in expected):
+                    break
+            except Exception:
+                pass
             if time.monotonic() >= readiness_deadline:
                 logger.warning(
-                    "Radio handoff MPV source ports did not appear within %s ms; skipping link repair",
+                    "MPV source layout did not appear within %s ms; skipping link repair",
                     readiness_timeout,
                 )
                 return False
@@ -1068,6 +1098,12 @@ class PlaybackOrchestrator:
         repair_deadline = time.monotonic() + self._deps.mpv_link_repair_timeout_ms / 1000
         while True:
             try:
+                if surround:
+                    await runtime.set_mapped_ingress(expected)
+                elif runtime is not None:
+                    mapped = runtime.snapshot().get("mapped_ingress") or ()
+                    if any(p.startswith("mpv:output_") for p, _ in mapped):
+                        await runtime.release_mapped_ingress(mapped)
                 links_text = await self._deps.run_pw_link_command("-l")
                 missing = [
                     (source, target)
@@ -1075,7 +1111,7 @@ class PlaybackOrchestrator:
                     if not self._deps.contains_link(links_text, source, target)
                 ]
                 if not missing:
-                    logger.info("Radio handoff MPV->DSP ingress links complete")
+                    logger.info("MPV DSP ingress complete: surround=%s positions=%s", surround, tuple(positions))
                     return True
                 for source, target in missing:
                     logger.info("Radio handoff repairing MPV->DSP ingress link: %s -> %s", source, target)

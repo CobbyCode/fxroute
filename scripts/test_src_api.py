@@ -135,7 +135,8 @@ class SrcApiTests(unittest.IsolatedAsyncioTestCase):
     def configure_playback(self, *, paused=False, loaded=True, source="local", native=False):
         self.player = Player(paused, loaded)
         self.stack.enter_context(patch.object(main.runtime, "player_instance", self.player))
-        dsp = SimpleNamespace(stop=AsyncMock(), verify=AsyncMock(return_value=True))
+        dsp = SimpleNamespace(stop=AsyncMock(), verify=AsyncMock(return_value=True),
+                              snapshot=lambda: {"active": True, "config": None, "mapped_ingress": []})
         self.stack.enter_context(patch.object(main.runtime, "dsp_runtime", dsp))
         self.track = {"id": "current", "source": source, "url": "/music/current.flac", "sample_rate_hz": 44100}
         self.stack.enter_context(patch.object(main.playback_state, "current_track_info", self.track if loaded else None))

@@ -45,6 +45,8 @@ def _links_text(mode: str, *, direct: bool = False, source: bool = True, complet
     ]
     if source:
         lines.extend([
+            "mpv:output_FL",
+            "mpv:output_FR",
             "mpv:output_FL -> fxroute_dsp_sink:playback_FL",
             "mpv:output_FR -> fxroute_dsp_sink:playback_FR",
         ])
