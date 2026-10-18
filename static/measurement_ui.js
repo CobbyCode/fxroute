@@ -40,7 +40,7 @@ const measurementConvolverCurves = {
     harman: { label: 'Harman-style', shortLabel: 'Harman', points: [[20, 5], [30, 4.5], [50, 4], [80, 3], [120, 2], [200, 1], [500, 0.5], [1000, 0], [2000, -1], [5000, -2.5], [10000, -4], [20000, -5]] },
     bk: { label: 'Bruel & Kjaer-style', shortLabel: 'BK', points: [[20, 2], [50, 2], [100, 1.5], [200, 1], [500, 0.5], [1000, 0], [2000, -0.5], [5000, -1.5], [10000, -2.5], [20000, -3.5]] },
 };
-const measurementConvolverTapOptions = [2048, 4096, 8192, 16384, 32768];
+const measurementConvolverTapOptions = [2048, 4096, 8192, 16384, 32768, 65536];
 const measurementConvolverTypeOptions = measurementConvolverPhaseModes.flatMap((phaseMode) => measurementConvolverTapOptions.map((taps) => ({
     key: `${phaseMode}_${taps}`,
     phaseMode,

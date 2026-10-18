@@ -74,6 +74,28 @@ class FormStub {
 }
 
 async function main() {
+    // Selection and saved state preserve every supported length in every phase.
+    for (const phaseMode of ['linear', 'minimum', 'minimum_aligned', 'hybrid_aligned']) {
+        for (const taps of [2048, 4096, 8192, 16384, 32768, 65536]) {
+            let state = makeState();
+            editor.init({ getState: () => state, getElements: () => ({}) });
+            editor.updateMeasurementConvolverField('phaseMode', phaseMode);
+            editor.updateMeasurementConvolverField('irLength', String(taps));
+            assert.equal(editor.getMeasurementConvolverFirLength(), taps, `${phaseMode} selects ${taps} taps`);
+            state = JSON.parse(JSON.stringify(state));
+            const restored = editor.ensureMeasurementConvolverState();
+            assert.equal(restored.irLength, String(taps), 'saved tap selection survives normalization');
+            assert.equal(restored.quality, `${phaseMode}_${taps}`);
+            for (const invalid of ['65535', '65537']) {
+                editor.updateMeasurementConvolverField('irLength', invalid);
+                assert.equal(editor.getMeasurementConvolverFirLength(), taps, 'unsupported adjacent lengths keep the selection');
+            }
+            editor.updateMeasurementConvolverField('quality', `${phaseMode}_65536`);
+            assert.equal(editor.getMeasurementConvolverFirLength(), 65536, 'legacy quality selection supports 65536 taps');
+        }
+    }
+    assert.equal(editor.getDefaultMeasurementConvolverState().irLength, '8192', 'default length stays unchanged');
+
     // 1. Invalidation keeps exact notices for target, range, phase, taps.
     const cases = [
         ['targetCurve', 'harman', /Target curve changed/],
@@ -274,6 +296,23 @@ async function main() {
         resolvePost({ ok: true, json: async () => ({ preset: { name: 'Room Conv' }, ir: {} }) });
         await pair;
     }
+    // 8. The new maximum survives Take, upload generation and saved stack metadata.
+    editor.updateMeasurementConvolverField('irLength', '65536');
+    visibleEntries = [sourceMeasurement('left', 48000), sourceMeasurement('right', 48000)];
+    editor.takeMeasurementConvolverToDraft('both');
+    assert.equal(drafts.left.metadata.irLength, 65536);
+    assert.equal(drafts.right.metadata.irLength, 65536);
+    calls.length = 0;
+    const longPair = editor.createMeasurementConvolverPresetFromDraft();
+    await new Promise((resolve) => setImmediate(resolve));
+    const longFields = calls.find((c) => c[0] === 'fetch')[2];
+    for (const key of ['left_file', 'right_file']) {
+        const wav = Buffer.from(await longFields.get(key).value.arrayBuffer());
+        assert.equal(wav.readUInt32LE(40) / 4, 65536, `${key} uploads all 65536 taps`);
+    }
+    resolvePost({ ok: true, json: async () => ({ preset: { name: 'Long Conv' }, ir: {} }) });
+    await longPair;
+    assert.equal(state.dsp.assistStack.at(-1).metadata.irLength, 65536);
     console.log('measurement convolver editor: ok');
 }
 main().catch((error) => { console.error(error); process.exitCode = 1; });

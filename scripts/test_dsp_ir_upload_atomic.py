@@ -9,6 +9,7 @@ successful upload replaces it fully.
 """
 
 import os
+import struct
 import sys
 import tempfile
 import unittest
@@ -19,7 +20,7 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from dsp.manager import DSPManager
+from dsp.manager import DSPManager, build_wav_bytes, parse_wav_frames
 
 
 class IrUploadAtomicTests(unittest.TestCase):
@@ -115,6 +116,36 @@ class IrUploadAtomicTests(unittest.TestCase):
         self.assertNotEqual(merged.read_bytes(), first_bytes)
         self.assertEqual(first["name"], second["name"])
         self.manager._validate_ir_file(merged)
+        self.assertEqual(self._stage_leftovers(), [])
+
+    def test_65536_tap_presets_keep_all_frames_after_reload(self):
+        left_data = struct.pack('<f', 0.5) + b'\0' * (65534 * 4) + struct.pack('<f', 0.25)
+        right_data = struct.pack('<f', -0.25) + b'\0' * (65534 * 4) + struct.pack('<f', -0.125)
+        left = self.home / 'long-left.wav'
+        right = self.home / 'long-right.wav'
+        left.write_bytes(build_wav_bytes(1, 48000, 32, 3, left_data))
+        right.write_bytes(build_wav_bytes(1, 48000, 32, 3, right_data))
+        single = self.manager.create_convolver_preset_with_upload('LongSingle', left, left.name)
+        dual = self.manager.create_convolver_preset_with_dual_uploads(
+            'LongDual', left, left.name, right, right.name)
+        reloaded = DSPManager(home=self.home)
+        for result, channels, first, last in (
+            (single, 1, (0.5,), (0.25,)),
+            (dual, 2, (0.5, -0.25), (0.25, -0.125)),
+        ):
+            with self.subTest(channels=channels):
+                preset = reloaded.library().read(result['preset']['name'])
+                self.assertEqual(preset['chain'][0]['params']['kernel'], result['ir']['basename'])
+                stored = parse_wav_frames(Path(result['ir']['path']))
+                self.assertEqual(stored['frames'], 65536)
+                self.assertEqual(stored['channels'], channels)
+                self.assertEqual(len(stored['data']), 65536 * channels * 4)
+                self.assertEqual(struct.unpack_from(f'<{channels}f', stored['data']), first)
+                self.assertEqual(struct.unpack_from(f'<{channels}f', stored['data'], 65535 * channels * 4), last)
+                compiled = reloaded.compile_engine_text(
+                    [{'name': 'FL', 'source': 0}, {'name': 'FR', 'source': 1}],
+                    preset_name=result['preset']['name'])
+                self.assertIn(result['ir']['path'], compiled)
         self.assertEqual(self._stage_leftovers(), [])
 
     def test_symlink_destination_is_blocked(self):

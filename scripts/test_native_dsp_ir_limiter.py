@@ -170,6 +170,41 @@ def test_source_has_no_rt_allocation_or_io_calls():
         assert all(forbidden not in body for body in bodies)
 
 
+def test_long_float32_ir_keeps_boundary_taps_in_stage_and_output_convolvers(tmp_path):
+    subprocess.run([str(ROOT / "native_dsp" / "build.sh")], check=True)
+    for count in (65535, 65536, 65537):
+        ir = tmp_path / f"boundary-{count}.wav"
+        taps = array.array("f", [0]) * (count * 2)
+        for index, left, right in ((0, 0.5, -0.25), (32767, 0.125, -0.0625),
+                                   (32768, -0.0625, 0.125), (count - 1, 0.25, -0.125)):
+            taps[index * 2] = left
+            taps[index * 2 + 1] = right
+        data = taps.tobytes()
+        ir.write_bytes(struct.pack('<4sI4s4sIHHIIHH4sI', b'RIFF', 36 + len(data), b'WAVE',
+                                   b'fmt ', 16, 3, 2, 48000, 48000 * 8, 8, 32,
+                                   b'data', len(data)) + data)
+        for location in ('stage', 'output'):
+            config = "rate 48000\ninputs 2\noutputs 2\nmatrix 0 0 1\nmatrix 1 1 1\n"
+            if location == 'stage':
+                config += (f'stage_begin 0 convolver native convolver\nparam path "{ir}"\n'
+                           'param wet_db 0\nparam dry_db -100\nparam input_gain_db 0\n'
+                           'param output_gain_db 0\nstage_end\n')
+            else:
+                for channel in (0, 1):
+                    config += f'oconv {channel} {channel} 0 -100 0 0 "{ir}"\n'
+            samples = array.array('f', [0]) * ((count + 257) * 2)
+            samples[0] = samples[1] = 1
+            started = time.monotonic()
+            output, _ = run(tmp_path, config, samples, quantum=173, timeout=2)
+            elapsed = time.monotonic() - started
+            assert elapsed < 2, (location, count, elapsed)
+            assert len(output) == len(samples)
+            for index, value in enumerate(output):
+                expected = taps[index] if index < len(taps) else 0.0
+                assert abs(value - expected) < 3e-5, (location, count, index // 2, index % 2, value, expected)
+            print(f"{location} {count} taps: exact stereo response in {elapsed:.3f}s")
+
+
 from native_test_runner import run_pytest_style_module
 
 if __name__ == "__main__":

@@ -9,7 +9,7 @@ const repoRoot = path.resolve(__dirname, '..');
 const dsp = require(path.join(repoRoot, 'static', 'measurement_dsp.js'));
 
 const SAMPLE_RATE = 48000;
-const TAP_LENGTHS = [8192, 16384, 32768];
+const TAP_LENGTHS = [2048, 4096, 8192, 16384, 32768, 65536];
 const PEAK_INDEX_TOLERANCE = 1;
 const MAX_START_TO_PEAK_RATIO = 0.05;
 const MAX_TAIL_RMS_DB = -65;
@@ -75,6 +75,14 @@ function checkHybridAlignedImpulse(length) {
     const tailDb = rmsDb(hybrid, tailStart, length);
     const minimumDiff = maxAbsDiff(hybrid, minimum);
 
+    assert.equal(hybrid.length, length, 'hybrid FIR must retain the full requested length');
+    assert.equal(minimum.length, length, 'minimum FIR must retain the full requested length');
+    const linear = dsp.buildMeasurementConvolverImpulse(analysis, SAMPLE_RATE, length, 0, 'linear');
+    assert.equal(linear.length, length, 'linear FIR must retain the full requested length');
+    for (const samples of [hybrid, minimum, linear]) {
+        assert.ok(samples.every(Number.isFinite), `FIR ${length} must contain only finite samples`);
+    }
+
     assert.ok(
         Math.abs(peak.index - expectedPeakIndex) <= PEAK_INDEX_TOLERANCE,
         `hybrid_aligned ${length} peak index ${peak.index}, expected around ${expectedPeakIndex}`,
@@ -96,7 +104,7 @@ function checkHybridAlignedImpulse(length) {
 }
 
 function checkHybridDistinctFromLinear() {
-    const length = TAP_LENGTHS[0];
+    const length = 8192;
     const hybrid = dsp.buildMeasurementConvolverImpulse(analysis, SAMPLE_RATE, length, 0, 'hybrid_aligned');
     const linear = dsp.buildMeasurementConvolverImpulse(analysis, SAMPLE_RATE, length, 0, 'linear');
     const linearDiff = maxAbsDiff(hybrid, linear);
@@ -205,12 +213,35 @@ async function checkFloat32WavExport() {
     return { formatTag: view.getUint16(20, true), bitsPerSample: view.getUint16(34, true), peak: diagnostics[0].payload.peakAfterExportReadback };
 }
 
+async function checkLongWavExport() {
+    const left = new Float32Array(65536);
+    const right = new Float32Array(65536);
+    left[0] = 0.5;
+    left[65535] = 0.25;
+    right[0] = -0.125;
+    right[65535] = -0.75;
+    for (const channels of [[left], [left, right]]) {
+        const buffer = await dsp.writeMeasurementConvolverWav(channels, SAMPLE_RATE).arrayBuffer();
+        const view = new DataView(buffer);
+        assert.equal(buffer.byteLength, 44 + 65536 * channels.length * 4);
+        assert.equal(view.getUint32(4, true), buffer.byteLength - 8, 'RIFF size includes all frames');
+        assert.equal(view.getUint16(22, true), channels.length);
+        assert.equal(view.getUint32(40, true), 65536 * channels.length * 4, 'WAV stores exactly 65536 frames');
+        channels.forEach((samples, channel) => {
+            assert.equal(view.getFloat32(44 + channel * 4, true), samples[0]);
+            assert.equal(view.getFloat32(44 + (65535 * channels.length + channel) * 4, true), samples[65535],
+                'the last tap must not be truncated or shifted');
+        });
+    }
+}
+
 async function main() {
     const hybridResults = TAP_LENGTHS.map(checkHybridAlignedImpulse);
     const linearResult = checkHybridDistinctFromLinear();
     const routingResult = checkMinimumAlignedRouting();
     const magnitudeResult = checkHybridTransitionMagnitudeResponse();
     const wavResult = await checkFloat32WavExport();
+    await checkLongWavExport();
 
     for (const result of hybridResults) {
         console.log(
