@@ -105,8 +105,10 @@ environment. `environment.d/80-fxroute-src.conf` also adds the runtime to the us
 service environment while retaining stock SPA locations. The configuration
 helper activates this environment for new services; the owned MPV/STDIN clients
 receive it explicitly. Common rules are installed under PipeWire client,
-daemon and Pulse drop-ins and WirePlumber ALSA/BlueZ rules. Existing provider
-ingress-target routing is unchanged.
+daemon and Pulse drop-ins and WirePlumber ALSA/BlueZ rules. A daemon node rule
+also binds the product `fxroute_dsp_sink` ingress unconditionally, so its
+constructor and relink behavior use the fixed converter even while idle.
+Existing provider ingress-target routing is unchanged.
 
 Readback reports unbound hardware or active stream adapters, missing parameters
 on running adapters and an older runtime generation as adapter errors. Unbound

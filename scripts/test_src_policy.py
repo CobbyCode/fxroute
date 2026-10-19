@@ -108,6 +108,27 @@ class SrcPolicyTests(unittest.TestCase):
         self.assertFalse(status["available"])
         self.assertIn("alsa_output.hw_test", status["error"])
 
+    def test_product_ingress_monitor_requires_the_fixed_converter_even_while_idle(self):
+        from types import SimpleNamespace
+        for state in ("running", "idle", "suspended"):
+            for bound in (False, True):
+                with self.subTest(state=state, bound=bound):
+                    props = {"node.name": "fxroute_dsp_sink", "media.class": "Audio/Sink"}
+                    params = {}
+                    if bound:
+                        props["audio.adapt.converter"] = self.policy.FACTORY
+                        params = {"Props": [{"params": ["fxroute.src.mode", "standard", "fxroute.src.error", 0]}]}
+                    dump = [{"id": 42, "type": "PipeWire:Interface:Node",
+                             "info": {"state": state, "props": props, "params": params}}]
+                    with (patch.object(self.policy.subprocess, "run", return_value=SimpleNamespace(stdout=json.dumps(dump))),
+                          patch.object(self.policy, "runtime_error", return_value=None)):
+                        status = self.policy.status()
+                    self.assertEqual(len(status["effective_nodes"]), 1)
+                    self.assertTrue(status["effective_nodes"][0]["expected"])
+                    self.assertEqual(status["available"], bound)
+                    if not bound:
+                        self.assertIn("fxroute_dsp_sink", status["error"])
+
     def test_no_observed_adapters_is_not_an_error(self):
         with (patch.object(self.policy, "runtime_error", return_value=None),
               patch.object(self.policy, "nodes", return_value=[])):

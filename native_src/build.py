@@ -176,6 +176,25 @@ def overlay(original):
              '\t\tspa_pod_builder_string(b, "fxroute.src.latency-ns");\n'
              '\t\tspa_pod_builder_long(b, this->resample_peaks ? 0 : fx_resample_latency_ns(&this->resample));\n'
              '\t\tspa_pod_builder_string(b, "resample.quality");')
+    # An unlinked input gets a quantum-limit EMPTY buffer that is consumed one
+    # quantum per cycle. A relink can replace it while in_offset is still set:
+    # the device path then drops the first block and the monitor copy reads
+    # behind the new buffer. Return DSP mixer silence every cycle, preserve
+    # finite raw silence, and bound the monitor copy to the unread chunk.
+    replace("\tbool draining = false, in_empty = this->out_offset == 0, out_empty;",
+            "\tbool draining = false, in_empty = this->out_offset == 0, out_empty, in_silent = true;")
+    replace("\t\t\t\tin_avail = flush_in = draining = true;\n\t\t\t\tin_empty = false;",
+            "\t\t\t\tin_avail = flush_in = draining = true;\n\t\t\t\tin_empty = in_silent = false;")
+    replace("\t\t\t\t\tmax_in = SPA_MIN(max_in, size / port->stride);\n",
+            "\t\t\t\t\tmax_in = SPA_MIN(max_in, size / port->stride);\n"
+            "\t\t\t\t\tif (!SPA_FLAG_IS_SET(bd->chunk->flags, SPA_CHUNK_FLAG_EMPTY))\n"
+            "\t\t\t\t\t\tin_silent = false;\n")
+    replace("\t\t\t\t\tmon_max = SPA_MIN(bd->maxsize / port->stride, max_in);",
+            "\t\t\t\t\tmon_max = SPA_MIN(bd->maxsize / port->stride,\n"
+            "\t\t\t\t\t\t\tmax_in - SPA_MIN(max_in, this->in_offset));")
+    replace("\tif (SPA_LIKELY(this->in_offset >= max_in || flush_in)) {",
+            "\tif (SPA_LIKELY(this->in_offset >= max_in || flush_in ||\n"
+            "\t    (in_silent && this->dir[SPA_DIRECTION_INPUT].mode == SPA_PARAM_PORT_CONFIG_MODE_dsp))) {")
     return '#include <stdatomic.h>\n#include "resample-worker.h"\n#ifndef FXROUTE_SRC_BUILD_ID\n#define FXROUTE_SRC_BUILD_ID "unversioned"\n#endif\n' + text
 
 

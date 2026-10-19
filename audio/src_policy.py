@@ -118,6 +118,11 @@ def configuration(runtime: Path | None = None) -> dict[Path, str]:
       actions = {{ update-props = {{ audio.adapt.converter = {FACTORY} }} }} }}
 ]
 """
+    ingress = f"""node.rules = [
+    {{ matches = [ {{ node.name = fxroute_dsp_sink media.class = Audio/Sink }} ]
+      actions = {{ update-props = {{ audio.adapt.converter = {FACTORY} }} }} }}
+]
+"""
     devices = f"""monitor.alsa.rules = [
     {{ matches = [ {{ node.name = "~alsa_input.*" }} {{ node.name = "~alsa_output.*" }} ]
       actions = {{ update-props = {{ audio.adapt.converter = {FACTORY} }} }} }}
@@ -132,7 +137,7 @@ monitor.bluez.rules = [
         root / "environment.d/80-fxroute-src.conf": "SPA_PLUGIN_DIR=" + plugin_directories(runtime) + "\n",
         root / "pipewire/client.conf.d/80-fxroute-src.conf": mapping + streams,
         root / "pipewire/pipewire-pulse.conf.d/80-fxroute-src.conf": mapping + streams,
-        root / "pipewire/pipewire.conf.d/80-fxroute-src.conf": mapping,
+        root / "pipewire/pipewire.conf.d/80-fxroute-src.conf": mapping + ingress,
         root / "wireplumber/wireplumber.conf.d/80-fxroute-src.conf": mapping + devices,
     }
 
@@ -189,9 +194,10 @@ def nodes() -> list[dict]:
         hardware = (props.get("device.api") in {"alsa", "bluez5"}
                     and props.get("media.class") in {"Audio/Sink", "Audio/Source"})
         stream = props.get("media.class") == "Stream/Output/Audio" and not graph_loopback
+        ingress = props.get("node.name") == "fxroute_dsp_sink" and props.get("media.class") == "Audio/Sink"
         # Inactive foreign clients do not participate in playback SRC readiness.
-        expected = hardware or (stream and info.get("state") not in {"idle", "suspended"})
-        if bound or hardware or stream:
+        expected = hardware or ingress or (stream and info.get("state") not in {"idle", "suspended"})
+        if bound or hardware or ingress or stream:
             observed.append({"id": item["id"], "name": props.get("node.name"),
                              "state": info.get("state"), "mode": params.get("fxroute.src.mode"),
                              "bound": bound, "expected": expected,
