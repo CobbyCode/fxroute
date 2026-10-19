@@ -32,7 +32,8 @@ class RouteTests(unittest.TestCase):
         ):
             replacement.start()
             self.addCleanup(replacement.stop)
-        self.client = TestClient(main.app)
+        # Avoid the older TestClient/gzip streaming adapter on some test hosts.
+        self.client = TestClient(main.app, headers={'Accept-Encoding': 'identity'})
         self.addCleanup(self.client.close)
 
     def test_toggle_reports_observed_and_persistent_state(self):

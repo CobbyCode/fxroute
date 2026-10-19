@@ -151,6 +151,17 @@ live USB states, cached inventories, presence feeds and ordinary USB inputs.
   loaded at boot. Repeated On, Off and service restoration of Off succeed
   against real ConfigFS. The installer also accepts a verified reinstall.
 
+### x86 regression verification (2026-10-19)
+
+On an Intel N150 host without a UDC, the browser hides the gadget entry and
+the API rejects activation without changing other USB devices. The existing
+11 input entries and armed-input state are retained. Selecting Scarlett
+input 9–10 succeeds, Custom Mapping lists its 18 capture channels, and the
+native DSP remains active without a runtime error. The original App playback
+selection is restored after this test. Served page/JavaScript assets match
+the deployed source. Focused gadget, auto-select, mapping and stereo-pair
+tests also pass on that host; no full suite is run.
+
 **Hardware-unverified:** physical Pi 4/5 controller initialization under an
 Armbian image, USB-C electrical/PD behavior and power margins, host enumeration
 and interoperability on physical Windows/macOS/Linux computers, sustained
