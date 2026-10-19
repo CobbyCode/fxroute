@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 from concurrent.futures import ThreadPoolExecutor
@@ -666,8 +667,41 @@ def _build_selected_output_payload(selected_key: str | None, current_name: str |
                 "device_profile": selected_output.get("device_profile"),
                 "active_rate": selected_output.get("active_rate"),
                 "supported_rates": list(selected_output.get("supported_rates") or []),
+                "hdmi": selected_output.get("hdmi"),
             }
     return None
+
+
+def _annotate_hdmi_outputs(outputs: list[dict[str, Any]], sink_details: dict[str, dict[str, Any]],
+                           notes: list[str]) -> None:
+    """Attach connector, receiver (ELD) and transports to every HDMI sink.
+
+    The receiver's LPCM descriptors also narrow the sink's rates to the ones
+    it accepts with the transport's channel count.
+    """
+    from audio import alsa_ctl, hdmi
+
+    entries = [item for item in outputs if hdmi.is_hdmi_key(item.get("key"))]
+    if not entries:
+        return
+    try:
+        cards = json.loads(_run_command(["pactl", "-f", "json", "list", "cards"]))
+    except (RuntimeError, ValueError) as exc:
+        notes.append(f"HDMI card profiles unavailable: {exc}")
+        cards = []
+    desired = hdmi.load_desired()
+    for item in entries:
+        sink = hdmi.parse_sink_key(item["key"])
+        details = sink_details.get(item["key"]) or {}
+        card_number, device = str(details.get("alsa_card") or ""), str(details.get("alsa_device") or "")
+        raw = (alsa_ctl.read_pcm_eld(int(card_number), int(device))
+               if card_number.isdigit() and device.isdigit() else None)
+        info = hdmi.describe(item["key"], card=hdmi.find_card(cards, sink.card), eld=hdmi.parse_eld(raw),
+                             desired=desired.get(sink.identity))
+        info["pcm_device"] = int(device) if device.isdigit() else None
+        item["hdmi"] = info
+        item["native_supported_rates"] = hdmi.limit_rates(item.get("native_supported_rates") or [], info)
+        item["supported_rates"] = hdmi.limit_rates(item.get("supported_rates") or [], info)
 
 
 def _selectable_fallback_key(explicit_outputs: list[dict[str, Any]], default_name: str | None) -> str | None:
@@ -823,6 +857,8 @@ def get_audio_output_overview(status: dict[str, Any] | None = None, *, selection
             "controllable": False if _is_bluetooth_sink_name(name) else None,
             "metadata_capable": False if _is_bluetooth_sink_name(name) else None,
         })
+
+    _annotate_hdmi_outputs(explicit_outputs, sink_details, notes)
 
     # UCM HiFi split siblings (UMC Line A/B) share one card and two channels
     # each.  Listing them separately forces bare ``Line A``/``Line B`` labels

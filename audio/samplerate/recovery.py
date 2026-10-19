@@ -13,9 +13,12 @@ unplugged) or when the saved selection is not a local ALSA sink.
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from typing import Any
+
+from audio import hdmi
 
 from .parsing import (
     _parse_pactl_sinks_short,
@@ -51,6 +54,23 @@ def _card_names() -> set[str]:
         if len(fields) >= 2 and fields[1].strip():
             names.add(fields[1].strip())
     return names
+
+
+def _hdmi_receiver_absent(key: str) -> bool:
+    """True when the saved HDMI connector has no receiver connected.
+
+    WirePlumber turns such a card off by itself and restores the profile on
+    reconnect, so a re-probe could not bring the sink back.
+    """
+    sink = hdmi.parse_sink_key(key)
+    if sink is None:
+        return False
+    try:
+        cards = json.loads(_run_command(["pactl", "-f", "json", "list", "cards"]))
+    except (RuntimeError, ValueError):
+        return False
+    _, port = hdmi.connector_port(hdmi.find_card(cards, sink.card) or {}, sink.connector)
+    return port.get("availability") == "not available"
 
 
 def recover_saved_output_sink() -> dict[str, Any]:
@@ -100,6 +120,9 @@ def recover_saved_output_sink() -> dict[str, Any]:
         return report
     if card_name not in _card_names():
         report["reason"] = "card-absent"
+        return report
+    if _hdmi_receiver_absent(str(selected_key)):
+        report["reason"] = "hdmi-receiver-absent"
         return report
 
     report["attempted"] = True

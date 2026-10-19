@@ -6,6 +6,7 @@ import math
 
 from fastapi import HTTPException
 
+from audio import hdmi
 from audio.filter_banks import bank_catalog, resolve_bank, selected_bank, summarize_all_banks
 from audio.output_context import output_state_device, output_state_topology
 from audio.output_state import (
@@ -159,6 +160,19 @@ def build_output_state_mutation(mutation: dict, *, output_key: str, channels: in
     raise HTTPException(status_code=400, detail=f"Unknown mutation kind: {kind}")
 
 
+def output_channel_labels(overview: dict, output_key: str) -> list:
+    """Receiver channel per hardware output of an HDMI device (else empty).
+
+    Labels follow the sink's resolved PipeWire ports, the same list the DSP
+    links Out 1 … Out N to.
+    """
+    if not hdmi.is_hdmi_key(output_key):
+        return []
+    mode = overview.get("output_mode") or {}
+    ports = mode.get("hardware_playback_ports") or mode.get("hardware_playback_ports_from_channel_map") or []
+    return hdmi.channel_labels(ports)
+
+
 def output_state_response(state: dict, overview: dict) -> dict:
     output_key, channels = output_state_device(overview)
     modes = {}
@@ -180,7 +194,8 @@ def output_state_response(state: dict, overview: dict) -> dict:
         }
     return {
         "status": "ok", "revision": state["revision"], "active_mode": state["active_mode"],
-        "device": {"key": output_key, "channels": channels,
+        "device": {"key": output_key, "channels": channels, "hdmi": hdmi.is_hdmi_key(output_key),
+                   "channel_labels": output_channel_labels(overview, output_key),
                    "routing": {mode: routing_for_device(state, mode, output_key, channels) for mode in MODES}},
         "modes": modes,
         "capabilities": {

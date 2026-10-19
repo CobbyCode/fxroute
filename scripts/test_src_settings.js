@@ -21,7 +21,7 @@ const settings = {
         active_tier: '18ch', tiers: [{ id: '18ch', channels: 18 }],
     } } } }, samplerate: { policy: { mode: 'fixed', rate: 44100 } } },
     renderSourceSection() {}, renderProviderSettings() {}, renderSubwooferPanel() {},
-    renderOutputSystemSection() {}, applySourceModeUiState() {},
+    renderOutputSystemSection() {}, applySourceModeUiState() {}, hdmiTransportModule() { return null; },
     SettingsSystem: { renderDeviceNameSettings() {}, renderHardwareController() {}, renderMaintenancePanel() {} },
     FXRouteUiHelpers: require('../static/ui_helpers.js'),
 };

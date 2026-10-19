@@ -558,16 +558,24 @@ function renderModeSelect(select, catalog, activeMode) {
     if (select.value !== activeMode) select.value = activeMode;
 }
 
+// "Out 5 · Center": the receiver channel of an HDMI output, from its real port.
+function routingOutputLabel(index, channelLabels) {
+    const position = Array.isArray(channelLabels) ? channelLabels[index] : null;
+    return position ? `Out ${index + 1} · ${position}` : `Out ${index + 1}`;
+}
+
 function renderRoutingGrid(grid, catalog, mode, assignments, channelCount, disabled) {
     if (!grid) return;
     const roles = ['off', ...rolesForMode(mode, catalog && catalog.capabilities)];
+    const channelLabels = catalog && catalog.device && catalog.device.channel_labels;
     const cells = [];
     for (let index = 0; index < channelCount; index += 1) {
         const current = assignments[index] || 'off';
+        const label = routingOutputLabel(index, channelLabels);
         const options = roles.map((role) =>
             `<option value="${esc(role)}"${role === current ? ' selected' : ''}>${esc(roleLabel(role, mode))}</option>`).join('');
-        cells.push(`<div class="settings-routing-cell"><label for="settings-routing-out-${index + 1}">Out ${index + 1}</label>`
-            + `<select id="settings-routing-out-${index + 1}" class="url-input" data-routing-output="${index}" aria-label="Output ${index + 1} role"${disabled ? ' disabled' : ''}>${options}</select></div>`);
+        cells.push(`<div class="settings-routing-cell"><label for="settings-routing-out-${index + 1}">${esc(label)}</label>`
+            + `<select id="settings-routing-out-${index + 1}" class="url-input" data-routing-output="${index}" aria-label="${esc(label.replace(/^Out /, 'Output '))} role"${disabled ? ' disabled' : ''}>${options}</select></div>`);
     }
     const html = cells.join('');
     const signature = [html, assignments.join(','), disabled ? 'busy' : 'idle'].join('|');
@@ -643,6 +651,7 @@ function renderBankSelector(select, catalog, mode, expert) {
         fetchCatalog,
         applyMutation,
         renderModeSelect,
+        routingOutputLabel,
         renderRoutingGrid,
         renderBankSelector,
     };

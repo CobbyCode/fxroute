@@ -15,6 +15,7 @@ from .constants import (
     PIPEWIRE_DEFAULT_RATE_OPTIONS,
     SAMPLE_RATE_CANDIDATES,
 )
+from audio.hdmi import parse_sink_key as _parse_hdmi_sink_key
 from audio.tool_env import c_locale_env
 
 
@@ -190,6 +191,11 @@ def real_sinks_for_output_key(output_key: str | None) -> list[str]:
     return [normalized]
 
 
+def _hdmi_connector(name: str) -> int | None:
+    sink = _parse_hdmi_sink_key(name)
+    return sink.connector if sink else None
+
+
 def successor_sink_key(saved_key: str | None, sink_names: Iterable[str] | None) -> str | None:
     """Resolve a saved sink against live sink names through stable identity.
 
@@ -197,6 +203,9 @@ def successor_sink_key(saved_key: str | None, sink_names: Iterable[str] | None) 
     ALSA card is the same physical device under a new profile/node name.
     Zero or several card-mates resolve to None: an absent device keeps its
     saved identity and an ambiguous card never takes over a stranger.
+    An HDMI connector is its own device: only a sink of the same connector
+    (another HDMI transport) succeeds it, and an HDMI sink never succeeds
+    the card's analog or other outputs.
     """
     saved = (saved_key or "").strip()
     if not saved:
@@ -208,7 +217,9 @@ def successor_sink_key(saved_key: str | None, sink_names: Iterable[str] | None) 
     card = card_name_for_sink_key(saved)
     if card is None:
         return None
-    mates = [name for name in names if card_name_for_sink_key(name) == card]
+    connector = _hdmi_connector(saved)
+    mates = [name for name in names
+             if card_name_for_sink_key(name) == card and _hdmi_connector(name) == connector]
     if len(mates) == 1:
         return mates[0]
     return None
@@ -580,6 +591,9 @@ def _parse_pactl_sinks_detailed(output: str) -> dict[str, dict[str, Any]]:
             current['device_description'] = _strip_quoted_value(stripped)
         elif stripped.startswith(('alsa.card = ', 'api.alsa.card = ')):
             current['alsa_card'] = _strip_quoted_value(stripped)
+        elif stripped.startswith('alsa.device = '):
+            # PCM device number; an HDMI sink reads its receiver's ELD there.
+            current['alsa_device'] = _strip_quoted_value(stripped)
         elif stripped == 'Ports:':
             in_ports = True
         elif stripped.startswith('Active Port:'):

@@ -523,10 +523,13 @@ import playback.orchestration as playback_orchestration
 from audio import pw_link
 from audio.source_native_rate import resolve_active_source_native_rate
 from audio.input_links import ingress_links_present, input_links_present
-from audio.output_ports import hardware_link_target, hardware_playback_port_fallback_from_mode
+from audio.output_ports import (hardware_link_target, hardware_playback_port_fallback_from_mode,
+                                resolve_hardware_playback_ports)
 from audio.output_service import OutputService, OutputServiceDeps
-from audio.output_state_store import OutputStateStore
-from audio.output_topology import SUB_ROLES, side_for_role
+from audio.output_state_store import OutputStateStore, StateConflictError
+from audio.output_state import seed_device_routing
+from audio.output_topology import MODES as OUTPUT_STATE_MODES, SUB_ROLES, side_for_role
+from audio import hdmi
 from audio.filter_banks import resolve_bank, selected_bank
 from audio.bluetooth import BluetoothInputDependencies, BluetoothInputMonitor
 from audio.drift import SamplerateDriftDependencies, SamplerateDriftObserver
@@ -3213,6 +3216,7 @@ async def lifespan(app: FastAPI):
                 dsp_orchestrator.runtime_link_watch_loop(),
                 name="dsp-output-authority-watch",
             )
+            _create_lifecycle_background_task(_hdmi_transport_watch_loop(), name="hdmi-transport-watch")
         except Exception as exc:
             logger.warning("Failed to re-apply persisted audio output selection: %s", exc)
 
@@ -4977,6 +4981,24 @@ async def audio_output_overview():
     return overview
 
 
+async def _owned_output_change(operation, *, what: str) -> dict:
+    """Run an output change under Coordinator and measurement ownership."""
+    coordinator = playback_transition_coordinator
+    if coordinator is None:
+        raise RuntimeError("Playback transition coordinator is unavailable")
+    async with coordinator.lock:
+        lock = measurement_sr_session.lock
+        # Never wait here: measurement entry/release needs Coordinator.
+        if lock.locked() or any(not waiter.cancelled() for waiter in (lock._waiters or ())):
+            raise HTTPException(status_code=423, detail="Measurement audio configuration is busy")
+        async with lock:
+            if measurement_sr_session.has_active_jobs:
+                raise HTTPException(status_code=423, detail="Measurement is active; output selection is locked")
+            result = await finish_then_cancel(operation(), what=what)
+    await dsp_orchestrator.refresh_peak_monitor_after_effects_change("audio-output-switch")
+    return result
+
+
 @app.post("/api/audio/outputs")
 async def save_audio_output_selection_route(request: Request):
     try:
@@ -4986,27 +5008,45 @@ async def save_audio_output_selection_route(request: Request):
         raise HTTPException(status_code=400, detail='Invalid JSON body, expected {"key": <string>}')
 
     try:
-        coordinator = playback_transition_coordinator
-        if coordinator is None:
-            raise RuntimeError("Playback transition coordinator is unavailable")
-        async with coordinator.lock:
-            lock = measurement_sr_session.lock
-            # Never wait here: measurement entry/release needs Coordinator.
-            if lock.locked() or any(not waiter.cancelled() for waiter in (lock._waiters or ())):
-                raise HTTPException(status_code=423, detail="Measurement audio configuration is busy")
-            async with lock:
-                if measurement_sr_session.has_active_jobs:
-                    raise HTTPException(status_code=423, detail="Measurement is active; output selection is locked")
-                result = await finish_then_cancel(
-                    _apply_audio_output_selection(output_key), what="Output selection")
-        await dsp_orchestrator.refresh_peak_monitor_after_effects_change("audio-output-switch")
-        return result
+        return await _owned_output_change(lambda: _apply_audio_output_selection(output_key), what="Output selection")
     except HTTPException:
         raise
     except ValueError as exc:
         raise bad_request(exc)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Failed to switch audio output: {exc}")
+
+
+@app.post("/api/audio/outputs/transport")
+async def save_audio_output_transport_route(request: Request):
+    """Select Stereo, 5.1 or 7.1 for the selected HDMI output."""
+    try:
+        body = await request.json()
+        output_key = str(body.get("key", "")).strip()
+        transport_id = str(body.get("transport", "")).strip()
+    except Exception:
+        raise HTTPException(status_code=400,
+                            detail='Invalid JSON body, expected {"key": <string>, "transport": "stereo"|"5.1"|"7.1"}')
+
+    async def change() -> dict:
+        sink = hdmi.parse_sink_key(output_key)
+        if sink is None:
+            raise ValueError("Only an HDMI output has selectable channel layouts")
+        selected = (await asyncio.to_thread(samplerate._load_audio_output_selection)).get("selected_key")
+        if selected != output_key:
+            raise HTTPException(status_code=409, detail="Select the HDMI output before choosing its channel layout")
+        result = await _apply_hdmi_transport(sink, transport_id, remember=True)
+        _hdmi_transport_watch.settled(sink.identity)
+        return result
+
+    try:
+        return await _owned_output_change(change, what="HDMI layout change")
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        raise bad_request(exc)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to change the HDMI layout: {exc}")
 
 
 async def _verify_audio_output_selection(key: str, target: dict) -> None:
@@ -5032,6 +5072,7 @@ async def _apply_audio_output_selection(key: str) -> dict:
     target = await asyncio.to_thread(get_audio_output_overview, selection_key=key)
     if (target.get("selected_output") or {}).get("key") != key:
         raise RuntimeError("Selected output is no longer available")
+    await asyncio.to_thread(_seed_hdmi_routing, key, target)
 
     try:
         await asyncio.to_thread(samplerate._set_default_sink, selected["name"])
@@ -5077,6 +5118,171 @@ async def _apply_audio_output_selection(key: str) -> dict:
     result = with_subwoofer_derived_delays(await asyncio.to_thread(get_audio_output_overview))
     result["output_mode"] = {**(result.get("output_mode") or {}), "runtime": runtime.dsp_runtime.snapshot()}
     return result
+
+
+def _seed_hdmi_routing(key: str, overview: dict) -> None:
+    """Store the default routing of an HDMI layout the first time it plays.
+
+    The defaults follow the sink's real ports (Front, Center, LFE, …); a
+    routing already stored for this layout, edited or not, is kept. A failure
+    only leaves the plain Main L/R fallback.
+    """
+    mode = overview.get("output_mode") or {}
+    ports = mode.get("hardware_playback_ports") or mode.get("hardware_playback_ports_from_channel_map") or []
+    if not hdmi.is_hdmi_key(key) or len(ports) <= 2:
+        return
+    defaults = {output_mode: hdmi.default_assignments(ports, output_mode) for output_mode in OUTPUT_STATE_MODES}
+    try:
+        service = get_output_service()
+        for _attempt in range(3):
+            state = service.load()
+            seeded = seed_device_routing(state, key, defaults)
+            if seeded["modes"] == state["modes"]:
+                return
+            try:
+                service.commit_unowned(seeded, expected_revision=state["revision"])
+            except StateConflictError:
+                continue
+            logger.info("Stored default HDMI routing: output=%s ports=%s", key, ",".join(ports))
+            return
+    except Exception as exc:
+        logger.warning("Default HDMI routing was not stored for %s: %s", key, exc)
+
+
+HDMI_SINK_WAIT_SECONDS = 15.0
+_hdmi_transport_watch = hdmi.TransportWatch()
+
+
+def _probe_hdmi_connector(sink: hdmi.HdmiSink, pcm_device: int | None = None) -> dict:
+    cards = json.loads(samplerate._run_command(["pactl", "-f", "json", "list", "cards"]))
+    sinks = json.loads(samplerate._run_command(["pactl", "-f", "json", "list", "sinks"]))
+    return hdmi.probe_connector(sink, cards=cards, sinks=sinks, read_eld=alsa_ctl.read_pcm_eld,
+                                pcm_device=pcm_device)
+
+
+async def _wait_for_hdmi_sink(key: str, channels: int) -> None:
+    """Wait until the new HDMI sink exists, preferably with all its ports."""
+    deadline = time.monotonic() + HDMI_SINK_WAIT_SECONDS
+    present_at = None
+    while True:
+        names = {row.get("name") for row in json.loads(
+            await asyncio.to_thread(samplerate._run_command, ["pactl", "-f", "json", "list", "sinks"]))}
+        if key in names:
+            present_at = present_at or time.monotonic()
+            listing = await asyncio.to_thread(samplerate._run_command, ["pw-link", "-i"])
+            if len(resolve_hardware_playback_ports(listing, key)) >= channels or time.monotonic() - present_at > 3.0:
+                return
+        elif time.monotonic() > deadline:
+            raise RuntimeError(f"HDMI output {key} did not appear after the profile change")
+        await asyncio.sleep(0.2)
+
+
+async def _apply_hdmi_transport(sink: hdmi.HdmiSink, transport_id: str, *, remember: bool) -> dict:
+    """Play one HDMI connector through another transport (card profile).
+
+    The card profile changes first; the new sink is then selected through the
+    verified output-selection transaction (DSP graph and links, inherited
+    volume and mute, default routing). A failure restores the previous card
+    profile and output. ``remember`` stores the transport as the one FXRoute
+    restores after a lost connection.
+    """
+    hdmi.transport(transport_id)
+    desired = (await asyncio.to_thread(hdmi.load_desired)).get(sink.identity) or {}
+    probe = await asyncio.to_thread(_probe_hdmi_connector, sink, desired.get("pcm_device"))
+    card = probe["card"]
+    if card is None:
+        raise ValueError("The HDMI card is not available")
+    option = next((item for item in probe["options"] if item["id"] == transport_id), None)
+    if option is None or not option["available"]:
+        raise ValueError(f"{hdmi.transport(transport_id)['label']} is not available: "
+                         f"{(option or {}).get('reason') or 'unknown layout'}")
+    current_key = probe["current_key"]
+    current = hdmi.parse_sink_key(current_key) if current_key else None
+    old_profile = card.get("active_profile")
+    target_key = hdmi.sink_key(sink.card, sink.connector, transport_id)
+    profile = hdmi.target_card_profile(card, sink.connector, transport_id, desired.get("input"))
+    if remember:
+        # Stored first, so the overview the selection returns already names it.
+        await asyncio.to_thread(hdmi.remember_desired, sink, transport_id,
+                                input_mapping=hdmi.split_card_profile(profile)[1], pcm_device=probe["pcm_device"])
+    try:
+        if current_key == target_key:
+            selected = (await asyncio.to_thread(samplerate._load_audio_output_selection)).get("selected_key")
+            result = (await _apply_audio_output_selection(target_key) if selected != target_key else
+                      with_subwoofer_derived_delays(await asyncio.to_thread(get_audio_output_overview)))
+        else:
+            logger.info("HDMI layout change: connector=%s from=%s to=%s profile=%s",
+                        sink.identity, current_key, target_key, profile)
+            await asyncio.to_thread(samplerate._run_command, ["pactl", "set-card-profile", sink.card, profile])
+            try:
+                await _wait_for_hdmi_sink(target_key, option["channels"])
+                result = await _apply_audio_output_selection(target_key)
+            except BaseException:
+                logger.warning("HDMI layout change to %s failed; restoring %s", target_key, old_profile)
+                try:
+                    await asyncio.to_thread(samplerate._run_command,
+                                            ["pactl", "set-card-profile", sink.card, old_profile or "off"])
+                    if current is not None:
+                        await _wait_for_hdmi_sink(current_key, hdmi.transport(current.transport)["channels"])
+                        await _apply_audio_output_selection(current_key)
+                except BaseException:
+                    logger.exception("HDMI layout rollback failed")
+                    raise RuntimeError("HDMI layout change failed and the previous layout could not be restored")
+                raise
+    except BaseException:
+        if remember:
+            await asyncio.to_thread(hdmi.store_desired, sink.identity, desired or None)
+        raise
+    result = dict(result)
+    result["output_mode"] = {**(result.get("output_mode") or {}), "runtime": runtime.dsp_runtime.snapshot()}
+    return result
+
+
+async def _reconcile_hdmi_transport() -> None:
+    """Restore the chosen HDMI layout after a lost connection, or fall back.
+
+    Skips (never waits) while a transition, measurement or graph sync owns
+    the audio configuration, like the output-authority watcher.
+    """
+    coordinator = playback_transition_coordinator
+    session = measurement_sr_session
+    native = runtime.dsp_runtime
+    if (coordinator is None or session is None or coordinator.lock.locked() or session.lock.locked()
+            or session.has_active_jobs or _measurement_session_owns_live_rate()
+            or (native is not None and native.sync_in_progress)):
+        return
+    selected = (await asyncio.to_thread(samplerate._load_audio_output_selection)).get("selected_key")
+    sink = hdmi.parse_sink_key(selected)
+    if sink is None:
+        return
+    desired = (await asyncio.to_thread(hdmi.load_desired)).get(sink.identity) or {}
+    probe = await asyncio.to_thread(_probe_hdmi_connector, sink, desired.get("pcm_device"))
+    current = hdmi.parse_sink_key(probe["current_key"]) if probe["current_key"] else None
+    target = _hdmi_transport_watch.decide(
+        sink.identity, connected=probe["connected"], current=current.transport if current else None,
+        fallback=sink.transport, options=probe["options"], receiver=hdmi.receiver_signature(probe["eld"]),
+        desired=desired.get("transport"))
+    if target is None:
+        return
+    logger.info("HDMI layout restore: connector=%s current=%s target=%s chosen=%s",
+                sink.identity, current.transport if current else None, target, desired.get("transport"))
+    async with coordinator.lock:
+        if session.lock.locked() or session.has_active_jobs:
+            return
+        async with session.lock:
+            await finish_then_cancel(_apply_hdmi_transport(sink, target, remember=False), what="HDMI layout restore")
+    await dsp_orchestrator.refresh_peak_monitor_after_effects_change("hdmi-layout-restore")
+
+
+async def _hdmi_transport_watch_loop() -> None:
+    while True:
+        await asyncio.sleep(2.0)
+        try:
+            await _reconcile_hdmi_transport()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning("HDMI layout watch failed: %s", exc)
 
 
 _output_service_instance: OutputService | None = None

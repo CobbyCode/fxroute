@@ -1,13 +1,15 @@
 # SPDX-License-Identifier: AGPL-3.0-only
-"""ALSA control access for digital-input lock status and clock selection.
+"""ALSA control access for digital-input lock status, clock selection and ELD.
 
 Uses card controls straight from ``/dev/snd/controlC<card>`` via the ALSA
 control ioctls, so no alsa-utils dependency is needed. Only lock style
 controls of a digital receiver are read: USB Audio Class 2 clock validity
 ("S/PDIF Validity") and driver lock flags ("IEC958 In Lock", "SPDIF In
-Status" and similar). The only control written is a USB Audio Class 2 clock
-selector ("... Clock Source"), switched between Internal and a locked
-digital input, or returned to Internal when nothing owns the digital clock.
+Status" and similar), plus the read-only "ELD" bytes an HDMI/DisplayPort
+PCM publishes for its connected receiver. The only control written is a USB
+Audio Class 2 clock selector ("... Clock Source"), switched between Internal
+and a locked digital input, or returned to Internal when nothing owns the
+digital clock.
 """
 
 from __future__ import annotations
@@ -26,6 +28,8 @@ logger = logging.getLogger(__name__)
 _ELEM_ID_NAME_MAXLEN = 44
 _ELEM_TYPE_BOOLEAN = 1
 _ELEM_TYPE_ENUMERATED = 3
+_ELEM_TYPE_BYTES = 4
+_ELEM_IFACE_PCM = 3
 _ELEM_ACCESS_READ = 1 << 0
 _ELEM_ACCESS_WRITE = 1 << 1
 _MAX_ELEMENTS = 1024
@@ -177,6 +181,33 @@ def read_boolean_controls(card: int) -> dict[str, bool]:
     fd = os.open(f"/dev/snd/controlC{int(card)}", os.O_RDONLY | os.O_CLOEXEC)
     try:
         return _read_booleans(fd, _readable_elements(fd))
+    finally:
+        os.close(fd)
+
+
+def read_pcm_eld(card: int, device: int) -> bytes | None:
+    """Raw ELD of the receiver behind one HDMI/DP PCM device, or None.
+
+    The driver publishes it as the PCM control "ELD" of that device; it is
+    empty while no receiver (or no valid ELD) is connected. None also covers
+    a card or device without the control.
+    """
+    try:
+        fd = os.open(f"/dev/snd/controlC{int(card)}", os.O_RDONLY | os.O_CLOEXEC)
+    except (OSError, TypeError, ValueError) as exc:
+        logger.debug("ALSA control open failed for card %s: %s", card, exc)
+        return None
+    try:
+        info = _ElemInfo(id=_ElemId(iface=_ELEM_IFACE_PCM, device=int(device), name=b"ELD"))
+        fcntl.ioctl(fd, _IOCTL_ELEM_INFO, info, True)
+        if info.type != _ELEM_TYPE_BYTES or not info.access & _ELEM_ACCESS_READ:
+            return None
+        value = _ElemValue(id=info.id)
+        fcntl.ioctl(fd, _IOCTL_ELEM_READ, value, True)
+        return bytes(value.value.bytes[:min(int(info.count), 512)]) or None
+    except OSError as exc:
+        logger.debug("ELD read failed for card %s device %s: %s", card, device, exc)
+        return None
     finally:
         os.close(fd)
 

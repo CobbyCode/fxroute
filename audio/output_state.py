@@ -398,6 +398,21 @@ def set_mode_routing(state: dict, mode: str, output_key: str, assignments: objec
     return validate_output_state(result)
 
 
+def seed_device_routing(state: dict, output_key: str, assignments_by_mode: dict) -> dict:
+    """Store default routing for the modes that have none for this device yet.
+
+    A stored routing, edited or not, is never replaced, and a mode with the
+    crossover on keeps the existing no-default behavior.
+    """
+    result = validate_output_state(state)
+    key = _device_identity(output_key)
+    for mode, assignments in assignments_by_mode.items():
+        config = result["modes"][mode]
+        if assignments and key not in config["routing"] and not config["crossover_enabled"]:
+            result = set_mode_routing(result, mode, output_key, assignments)
+    return result
+
+
 def switch_mode(state: dict, mode: str) -> dict:
     roles_for_mode(mode)
     result = validate_output_state(state)
