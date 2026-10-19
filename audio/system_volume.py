@@ -63,12 +63,14 @@ _volume_monitor_read_lock = threading.Lock()
 _volume_monitor_pause_count = 0
 _volume_monitor_task: asyncio.Task[Any] | None = None
 _output_level_observer: Callable[[], None] | None = None
+_output_level_observer_failed = False
 
 
 def configure_output_level_observer(observer: Callable[[], None]) -> None:
     """Observe replacement-sensitive levels on the existing monitor worker."""
-    global _output_level_observer
+    global _output_level_observer, _output_level_observer_failed
     _output_level_observer = observer
+    _output_level_observer_failed = False
 
 
 def volume_percent_to_linear_gain(percent: int | float, *, clamp_upper: bool = True) -> float:
@@ -293,6 +295,7 @@ def pause_volume_read_monitor() -> Iterator[None]:
 
 
 def _read_status_volume() -> tuple[int, float] | None:
+    global _output_level_observer_failed
     # Skip paused ticks instead of queuing reads against a disappearing sink.
     if not _volume_monitor_read_lock.acquire(blocking=False):
         return
@@ -301,7 +304,13 @@ def _read_status_volume() -> tuple[int, float] | None:
             return
         started_at = time.monotonic()
         if _output_level_observer is not None:
-            _output_level_observer()
+            try:
+                _output_level_observer()
+                _output_level_observer_failed = False
+            except Exception:
+                if not _output_level_observer_failed:
+                    logger.warning("Output level observer failed; continuing volume reads", exc_info=True)
+                _output_level_observer_failed = True
         return get_output_volume(), started_at
     finally:
         _volume_monitor_read_lock.release()

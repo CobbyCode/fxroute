@@ -7,6 +7,7 @@ import sys
 import unittest
 import asyncio
 import threading
+from unittest import mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -82,6 +83,29 @@ class OutputLevelsTests(unittest.IsolatedAsyncioTestCase):
         async with self.levels.switch(OLD, NEW):
             self.assertTrue(self.sinks[NEW]['mute'])
         self.assertFalse(self.sinks[NEW]['mute'])
+
+    async def test_cleanup_failure_cannot_mask_original_graph_error_or_cancellation(self):
+        for primary in (RuntimeError('Graph failed'), asyncio.CancelledError('Switch cancelled')):
+            with self.subTest(primary=primary):
+                with mock.patch.object(self.levels, '_finish', side_effect=RuntimeError('Cleanup failed')), \
+                        self.assertLogs('audio.output_levels', level='ERROR'):
+                    with self.assertRaises(type(primary)) as raised:
+                        async with self.levels.switch(OLD, OLD):
+                            raise primary
+                self.assertIs(raised.exception, primary)
+                self.assertTrue(any('Cleanup failed' in note for note in primary.__notes__))
+
+    async def test_finish_mute_failure_preserves_the_failed_verification(self):
+        self.sinks[OLD]['mute'] = False
+        self.levels.observe_selected()
+        self.sinks = {NEW: sink(NEW, 11, [65536] * 6, False)}
+        with self.assertRaisesRegex(RuntimeError, 'Hardware output changed during sync') as raised, \
+                self.assertLogs('audio.output_levels', level='ERROR'):
+            async with self.levels.switch(OLD, NEW):
+                self.sinks[NEW]['index'] = 12
+                self.levels._mute = mock.Mock(side_effect=RuntimeError('Safety mute failed'))
+        self.assertFalse(self.levels._switching)
+        self.assertTrue(any('Safety mute failed' in note for note in raised.exception.__notes__))
 
     async def test_failed_replacement_carries_pending_levels_to_the_next_successor(self):
         self.sinks[OLD]['mute'] = False

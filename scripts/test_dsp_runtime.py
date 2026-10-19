@@ -462,6 +462,42 @@ class DSPRuntimeConfigTests(unittest.TestCase):
             with self.subTest(hot=hot):
                 asyncio.run(exercise(hot))
 
+    def test_same_plan_helper_restart_repushes_unchanged_input_latency(self):
+        async def exercise():
+            with tempfile.TemporaryDirectory() as directory:
+                binary = Path(directory) / "fxroute-dsp"
+                binary.touch()
+                previous = FakeProcess()
+                previous.returncode = 1
+                commands = []
+                async def run(_args):
+                    return CommandResult(0)
+                async def launch(_args):
+                    return FakeProcess()
+                async def complete(*_args):
+                    pass
+                async def control(command, **_kwargs):
+                    commands.append(command)
+                    return "0" if command == "effects bypass get" else "ok"
+                runtime = DSPRuntime(self.manager, binary=binary, command_runner=run, process_launcher=launch)
+                target = self.target()
+                runtime._process = previous
+                runtime._config = target.config
+                runtime._config_text = target.text
+                runtime._last_input_latency_ms = 750
+                runtime.configure_latency_tracking(input_latency_provider=lambda: 750)
+                runtime._wait_for_ports = complete
+                runtime._control = control
+                runtime._control_unlocked = control
+                try:
+                    await runtime.sync_rendered(target)
+                    self.assertIsNot(runtime._process, previous)
+                    self.assertEqual([command for command in commands if command.startswith('input latency ')],
+                                     ['input latency 750'])
+                finally:
+                    await runtime.stop()
+        asyncio.run(exercise())
+
     def test_paused_source_ingress_leaves_latency_pending_but_output_settling_fails(self):
         from audio.src_latency import SrcGraphSettling, graph_src_latency
         from test_av_sync_src import node, link

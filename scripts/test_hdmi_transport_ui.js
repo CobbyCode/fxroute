@@ -4,7 +4,7 @@
 const assert = require('node:assert/strict');
 const OutputState = require('../static/output_state.js');
 
-assert.equal(OutputState.routingOutputLabel(4, ['Front L', 'Front R', 'Surround L', 'Surround R', 'Center', 'LFE']),
+assert.equal(OutputState.routingOutputLabel(4, ['Front L', 'Front R', 'Side L', 'Side R', 'Center', 'LFE']),
     'Out 5 · Center');
 assert.equal(OutputState.routingOutputLabel(2, []), 'Out 3');
 assert.equal(OutputState.routingOutputLabel(2, undefined), 'Out 3');

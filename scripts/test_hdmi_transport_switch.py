@@ -7,6 +7,7 @@ import json
 import os
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -54,11 +55,12 @@ class HdmiTransportSwitchTests(unittest.IsolatedAsyncioTestCase):
                 snapshot=lambda: {"active": True}, sync_in_progress=False)),
             mock.patch.object(main, "_measurement_session_owns_live_rate", return_value=False),
             mock.patch.object(main, "_hdmi_transport_watch", hdmi.TransportWatch()),
+            mock.patch.object(main, "_hdmi_eld_cache", hdmi.EldCache()),
             mock.patch.object(main, "get_output_service", return_value=self.service),
             mock.patch.object(main, "_require_dsp_manager", return_value=self.manager),
             mock.patch.object(main, "get_samplerate_status", return_value={"active_rate": 44100}),
             mock.patch.object(main, "get_audio_output_overview", side_effect=self.overview),
-            mock.patch.object(main, "_run_coordinated_transition", new=mock.AsyncMock()),
+            mock.patch.object(main, "_run_coordinated_transition", side_effect=self.transition),
         ]
         for patcher in patches:
             patcher.start()
@@ -66,6 +68,11 @@ class HdmiTransportSwitchTests(unittest.IsolatedAsyncioTestCase):
 
     async def refresh(self, reason):
         return None
+
+    async def transition(self, request):
+        change = request.output_state_transition
+        await asyncio.to_thread(self.service.commit_unowned, change["candidate_state"],
+                                expected_revision=change["expected_revision"])
 
     def overview(self):
         parsed = hdmi.parse_sink_key(self.sink or STEREO)
@@ -84,6 +91,10 @@ class HdmiTransportSwitchTests(unittest.IsolatedAsyncioTestCase):
     async def test_automatic_modes_switch_stereo_sub_surround_and_back(self):
         for mode, expected in (("stereo-sub", SURROUND), ("surround", SURROUND71), ("stereo", STEREO)):
             result = await self.automatic(mode)
+            if mode == "stereo":
+                self.assertEqual(self.sink, SURROUND71, "A mode edit must not downshift the card")
+                await main._reconcile_hdmi_transport()
+                await main._reconcile_hdmi_transport()
             self.assertEqual(self.sink, expected)
             self.assertEqual(self.service.load()["active_mode"], mode)
             self.assertTrue(result["live_applied"])
@@ -91,13 +102,15 @@ class HdmiTransportSwitchTests(unittest.IsolatedAsyncioTestCase):
                                                  "output:hdmi-surround71+input:analog-stereo",
                                                  "output:hdmi-stereo+input:analog-stereo"])
 
-    async def test_routing_edit_switches_between_51_and_71(self):
+    async def test_routing_edits_upgrade_immediately_but_defer_downgrades_to_watch(self):
         await self.automatic("surround")
-        for assignments, expected in ((["main_l", "main_r", "rear_l", "rear_r", "center", "sub1", "off", "off"], SURROUND),
-                                      (["main_l", "main_r", "rear_l", "rear_r", "center", "sub1", "side_l", "side_r"], SURROUND71)):
+        for assignments in (["main_l", "main_r", "rear_l", "rear_r", "center", "sub1", "off", "off"],
+                            ["main_l", "main_r", "rear_l", "rear_r", "center", "sub1", "side_l", "side_r"]):
+            before = self.profile_changes()
             await main.output_application.apply_candidate({"expected_revision": self.service.load()["revision"],
                 "mutation": {"kind": "set_routing", "mode": "surround", "assignments": assignments}})
-            self.assertEqual(self.sink, expected)
+            self.assertEqual(self.sink, SURROUND71)
+            self.assertEqual(self.profile_changes(), before)
             self.assertEqual(routing_for_device(self.service.load(), "surround", self.sink, 8), assignments)
 
     async def test_automatic_failure_restores_mode_and_transport(self):
@@ -123,6 +136,8 @@ class HdmiTransportSwitchTests(unittest.IsolatedAsyncioTestCase):
         assignments = ["main_l", "main_r", "rear_l", "rear_r", "center", "sub1", "off", "off"]
         await main.output_application.apply_candidate({"expected_revision": self.service.load()["revision"],
             "mutation": {"kind": "set_routing", "mode": "surround", "assignments": assignments}})
+        await main._reconcile_hdmi_transport()
+        await main._reconcile_hdmi_transport()
         assignments[-2] = "side_l"
         result = await main.output_application.apply_candidate({"expected_revision": self.service.load()["revision"],
             "mutation": {"kind": "set_routing", "mode": "surround", "assignments": assignments}})
@@ -247,14 +262,15 @@ class HdmiTransportSwitchTests(unittest.IsolatedAsyncioTestCase):
     async def select(self, key, *, seed_routing=True):
         self.selections.append(key)
         if seed_routing:
-            main._seed_hdmi_routing(key, self.overview())
+            await asyncio.to_thread(main._seed_hdmi_routing, key, self.overview())
         # The overview the selection returns already names the chosen layout.
         self.desired_during_selection = hdmi.load_desired().get(f"{CARD}#hdmi0")
         if key in self.fail_selection:
             raise RuntimeError("graph apply failed")
         channels = hdmi.transport(hdmi.parse_sink_key(key).transport)["channels"]
-        plan = self.service.compile_plan(self.service.load(), output_key=key, channels=channels, sample_rate_hz=44100)
-        self.rendered_layout = self.service.compile_layout(plan)
+        state = await asyncio.to_thread(self.service.load)
+        plan = await asyncio.to_thread(self.service.compile_plan, state, output_key=key, channels=channels, sample_rate_hz=44100)
+        self.rendered_layout = await asyncio.to_thread(self.service.compile_layout, plan)
         _save_audio_output_selection(key)
         return self.overview()
 
@@ -343,6 +359,166 @@ class HdmiTransportSwitchTests(unittest.IsolatedAsyncioTestCase):
         async with self.coordinator.lock:
             await main._reconcile_hdmi_transport()
         self.assertEqual(self.commands, [])
+
+    async def test_watch_skips_while_a_mode_switch_request_is_in_flight(self):
+        await self.change()
+        self.card = card(active="output:hdmi-stereo+input:analog-stereo")
+        self.sink = STEREO
+        self.eld = tv_eld()
+        self.commands.clear()
+        async with main._source_transition_lock():
+            await main._reconcile_hdmi_transport()
+        self.assertEqual(self.commands, [])
+
+    async def test_transport_change_marks_the_graph_unstable_until_it_settles(self):
+        observed = []
+        original = main._apply_hdmi_transport_change
+
+        async def observe(*args, **kwargs):
+            observed.append((main.runtime.hdmi_transport_change_depth,
+                             main.runtime.hdmi_transport_change_owner is asyncio.current_task()))
+            return await original(*args, **kwargs)
+
+        with mock.patch.object(main, "_apply_hdmi_transport_change", side_effect=observe):
+            await self.change()
+        self.assertEqual(observed, [(1, True)])
+        self.assertEqual(main.runtime.hdmi_transport_change_depth, 0)
+        self.assertIsNone(main.runtime.hdmi_transport_change_owner)
+
+    async def test_mode_switch_prelude_waits_for_an_in_flight_transport_change(self):
+        main.runtime.hdmi_transport_change_depth = 1
+        waiter = asyncio.create_task(main._wait_for_hdmi_transport_change())
+        try:
+            await asyncio.sleep(0.2)
+            self.assertFalse(waiter.done(), "The prelude must wait out the transport change")
+        finally:
+            main.runtime.hdmi_transport_change_depth = 0
+        await asyncio.wait_for(waiter, 2)
+
+    def switch_mode_request(self, mode="surround"):
+        return SimpleNamespace(json=lambda: asyncio.sleep(0, result={
+            "expected_revision": self.service.load()["revision"],
+            "mutation": {"kind": "switch_mode", "mode": mode}}))
+
+    def latency_patches(self):
+        runtime = SimpleNamespace(snapshot=lambda: {"config": {"output_key": "key"}, "helper_pid": 1},
+                                  sync_in_progress=False)
+        return [mock.patch.object(main.runtime, "dsp_runtime", runtime),
+                mock.patch.object(main, "_src_latency_reader", SimpleNamespace(read=lambda **kwargs: 0.0)),
+                mock.patch.object(main, "_deterministic_input_latency_ms", return_value=0.0)]
+
+    def clear_transport_change(self):
+        main.runtime.hdmi_transport_change_depth = 0
+        main.runtime.hdmi_transport_change_owner = None
+
+    async def test_input_latency_read_waits_out_a_transport_change(self):
+        self.addCleanup(self.clear_transport_change)
+        main.runtime.hdmi_transport_change_depth = 1
+        runtime_patch, reader_patch, helper_patch = self.latency_patches()
+        with runtime_patch, reader_patch, helper_patch:
+            task = asyncio.create_task(main._electronic_input_latency_ms())
+            await asyncio.sleep(0.2)
+            self.assertFalse(task.done(), "The SRC read must wait for the connector swap")
+            self.clear_transport_change()
+            self.assertEqual(await asyncio.wait_for(task, 5), 0.0)
+
+    async def test_transport_change_reads_its_own_input_latency_without_waiting(self):
+        self.addCleanup(self.clear_transport_change)
+        main.runtime.hdmi_transport_change_depth = 1
+        main.runtime.hdmi_transport_change_owner = asyncio.current_task()
+        runtime_patch, reader_patch, helper_patch = self.latency_patches()
+        with runtime_patch, reader_patch, helper_patch:
+            self.assertEqual(await asyncio.wait_for(main._electronic_input_latency_ms(), 1), 0.0)
+
+    async def test_switch_mode_route_waits_out_a_transport_change_before_applying(self):
+        applied = asyncio.Event()
+
+        async def apply(body):
+            applied.set()
+            return {"status": "ok"}
+
+        main.runtime.hdmi_transport_change_depth = 1
+        try:
+            with mock.patch.object(main.output_application, "apply", side_effect=apply):
+                task = asyncio.create_task(main.apply_audio_output_state(self.switch_mode_request()))
+                await asyncio.sleep(0.2)
+                self.assertFalse(applied.is_set(), "The transition must not start mid change")
+                main.runtime.hdmi_transport_change_depth = 0
+                self.assertEqual(await asyncio.wait_for(task, 5), {"status": "ok"})
+        finally:
+            main.runtime.hdmi_transport_change_depth = 0
+        self.assertTrue(applied.is_set())
+
+    async def test_non_hdmi_selection_never_enumerates_the_overview_or_connector(self):
+        _save_audio_output_selection("alsa_output.usb-other.analog-stereo")
+        with mock.patch.object(main, "get_audio_output_overview", side_effect=AssertionError("Redundant overview")):
+            await main._reconcile_hdmi_transport()
+        self.assertEqual(self.commands, [])
+
+    async def test_watch_cancellation_drains_its_seeding_worker(self):
+        entered, release, completed = threading.Event(), threading.Event(), threading.Event()
+        probe = main._probe_hdmi_connector
+        snapshot = main._hdmi_watch_snapshot
+        def draining_snapshot():
+            try:
+                return snapshot()
+            finally:
+                completed.set()
+        def delayed(*args, **kwargs):
+            entered.set()
+            if not release.wait(3):
+                raise RuntimeError("Probe was not released")
+            return probe(*args, **kwargs)
+        with mock.patch.object(main, "_probe_hdmi_connector", side_effect=delayed), \
+                mock.patch.object(main, "_hdmi_watch_snapshot", side_effect=draining_snapshot):
+            task = asyncio.create_task(main._reconcile_hdmi_transport())
+            try:
+                self.assertTrue(await asyncio.to_thread(entered.wait, 2))
+                task.cancel()
+                await asyncio.sleep(0)
+                await asyncio.sleep(0)
+                self.assertFalse(task.done(), "Cancellation must drain pending routing persistence")
+            finally:
+                release.set()
+                with self.assertRaises(asyncio.CancelledError):
+                    await task
+                self.assertTrue(await asyncio.to_thread(completed.wait, 2))
+        self.assertIn(hdmi.routing_key(STEREO), self.service.load()["modes"]["surround"]["routing"])
+
+    async def test_initialized_connector_watch_skips_overview_and_seeding(self):
+        await self.automatic("surround")
+        self.commands.clear()
+        with mock.patch.object(main, "get_audio_output_overview", side_effect=AssertionError("Redundant overview")), \
+                mock.patch.object(main, "_seed_hdmi_routing", side_effect=AssertionError("Redundant seeding")):
+            for _ in range(3):
+                await main._reconcile_hdmi_transport()
+        self.assertEqual(len([command for command in self.commands if command[:4] == ["pactl", "-f", "json", "list"]]), 6)
+
+    async def test_stereo_only_receiver_never_retries_surround_routing_seeding(self):
+        self.eld = tv_eld()
+        with mock.patch.object(main, "get_audio_output_overview", side_effect=AssertionError("Redundant stereo overview")):
+            for _ in range(3):
+                await main._reconcile_hdmi_transport()
+        self.assertEqual(self.service.load()["revision"], 0)
+
+    async def test_hdmi_service_work_does_not_run_on_the_event_loop(self):
+        main._seed_hdmi_routing(self.sink, self.overview())
+        state = self.service.load()
+        candidate = switch_mode(state, "surround")
+        overview = self.overview()
+        loop_thread = threading.get_ident()
+        with mock.patch.multiple(self.service, **{
+                name: self.off_loop(getattr(self.service, name), loop_thread)
+                for name in ("load", "compile_plan", "compile_layout", "commit_unowned", "revert")}):
+            await main._apply_hdmi_output_state({"mutation": {"kind": "switch_mode"}}, state, candidate, overview)
+            await main._reconcile_hdmi_transport()
+        self.assertEqual(self.sink, SURROUND71)
+
+    def off_loop(self, operation, loop_thread):
+        def run(*args, **kwargs):
+            self.assertNotEqual(threading.get_ident(), loop_thread, operation.__name__)
+            return operation(*args, **kwargs)
+        return run
 
 
 class SeedRoutingIntegrationTests(unittest.TestCase):

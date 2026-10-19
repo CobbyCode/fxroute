@@ -232,6 +232,8 @@ const full = (mode, revision, extra = {}) => ({
         state: sourceSandbox.state, elements: renderElements,
         escapeHtml: (text) => String(text), formatBluetoothModeStatus: () => 'idle',
         formatSampleRateKhz: (rate) => `${rate}`, Array,
+        // renderSourceSection reads the optional gadget UI module off window.
+        window: {},
     };
     vm.createContext(renderSandbox);
     vm.runInContext(extractFunction('renderSourceSection'), renderSandbox);

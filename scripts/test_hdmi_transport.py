@@ -135,6 +135,18 @@ class TransportOptionTests(unittest.TestCase):
         self.assertEqual([item["available"] for item in options], [True, True, False])
         self.assertEqual(options[1]["rates"], [])
 
+    def test_eld_without_lpcm_is_unknown_not_zero_capacity(self):
+        eld = {"monitor_name": "AVR", "lpcm": []}
+        self.assertIsNone(hdmi.lpcm_max_channels(eld))
+        options = hdmi.transport_options(card(detected=None), 0, eld)
+        self.assertTrue(all(item["available"] for item in options))
+        self.assertIsNone(hdmi.describe(STEREO, card=card(detected=None), eld=eld)["receiver"]["lpcm_channels"])
+
+    def test_eld_without_lpcm_falls_back_to_detected_capacity(self):
+        options = hdmi.transport_options(card(detected="6"), 0, {"lpcm": []})
+        self.assertEqual([item["available"] for item in options], [True, True, False])
+        self.assertEqual(options[1]["rates"], [])
+
     def test_disconnected_connector_offers_nothing(self):
         options = hdmi.transport_options(card(connected=False), 0, None)
         self.assertFalse(any(item["available"] for item in options))
@@ -169,7 +181,7 @@ class CardProfileTests(unittest.TestCase):
 class ChannelPositionTests(unittest.TestCase):
     def test_labels_follow_the_receiver_channel_order(self):
         self.assertEqual(hdmi.channel_labels(PORTS_51),
-                         ["Front L", "Front R", "Surround L", "Surround R", "Center", "LFE"])
+                         ["Front L", "Front R", "Side L", "Side R", "Center", "LFE"])
         self.assertEqual(hdmi.channel_labels(PORTS_71),
                          ["Front L", "Front R", "Rear L", "Rear R", "Center", "LFE", "Side L", "Side R"])
         self.assertEqual(hdmi.channel_labels([f"{SURROUND71}:playback_FC"]), ["Center"])
@@ -179,10 +191,34 @@ class ChannelPositionTests(unittest.TestCase):
         self.assertEqual(hdmi.default_assignments(PORTS_71, "surround"),
                          ["main_l", "main_r", "rear_l", "rear_r", "center", "sub1", "side_l", "side_r"])
         self.assertEqual(hdmi.default_assignments(PORTS_51, "surround"),
-                         ["main_l", "main_r", "rear_l", "rear_r", "center", "sub1"])
+                         ["main_l", "main_r", "side_l", "side_r", "center", "sub1"])
         shuffled = ["playback_FC", "playback_FL", "playback_LFE", "playback_FR"]
         self.assertEqual(hdmi.default_assignments(shuffled, "surround"), ["center", "main_l", "sub1", "main_r"])
         self.assertIsNone(hdmi.default_assignments(["playback_AUX0", "playback_AUX1"], "stereo"))
+
+    def test_routing_ports_prefer_complete_hardware_order(self):
+        ports = ["playback_FL", "playback_FR", "playback_FC", "playback_LFE", "playback_SL", "playback_SR"]
+        self.assertEqual(hdmi.routing_ports(6, ports), ports)
+        self.assertEqual(hdmi.routing_ports(8, PORTS_71[:2]), PORTS_71)
+
+    def test_51_defaults_use_side_group_for_both_surround_encodings_and_bass(self):
+        from audio.output_state import set_bass_management, switch_mode
+        from dsp.processing_plan import compile_processing_plan
+        state = switch_mode(default_output_state(), "surround")
+        state = set_mode_routing(state, "surround", SURROUND, hdmi.default_assignments(PORTS_51, "surround"))
+        state = set_bass_management(state, "surround", sub_filters={
+            "side": {"frequency_hz": 100, "family": "linkwitz-riley", "slope_db_oct": 24, "highpass_enabled": True},
+            "rear": {"frequency_hz": 150, "family": "linkwitz-riley", "slope_db_oct": 24, "highpass_enabled": True}}, sub_link=False)
+        plan = compile_processing_plan(state, output_key=SURROUND, channels=6, sample_rate_hz=48000,
+                                       preset_loader=lambda *_: {"chain": []})
+        outputs = {row["role"]: row for row in plan["outputs"]}
+        self.assertNotIn("rear_l", outputs)
+        self.assertEqual(outputs["side_l"]["routes"], [{"input": 4, "gain": 1.0}, {"input": 6, "gain": 1.0}])
+        self.assertEqual(outputs["side_l"]["crossover"][0]["frequency_hz"], 100)
+        groups = outputs["sub1"]["bass_groups"]
+        self.assertEqual(len(groups), 1)
+        self.assertEqual(groups[0]["crossover"]["frequency_hz"], 100)
+        self.assertEqual([row["input"] for row in groups[0]["routes"]], [4, 5, 6, 7])
 
     def test_stereo_sub_uses_the_single_lfe_channel(self):
         defaults = hdmi.default_assignments(PORTS_51, "stereo-sub")
@@ -266,6 +302,36 @@ class SeedRoutingTests(unittest.TestCase):
 
 
 class ProbeTests(unittest.TestCase):
+    def test_stable_probe_reuses_eld_but_hotplug_and_expiry_refresh_it(self):
+        now = [100.0]
+        cache = hdmi.EldCache(clock=lambda: now[0])
+        reads = []
+        def read(card_number, device):
+            reads.append((card_number, device))
+            return MARANTZ_ELD
+        args = {"cards": [card()], "sinks": [{"name": SURROUND71, "properties": {"alsa.device": "3"}}],
+                "read_eld": read, "eld_cache": cache}
+        sink = hdmi.HdmiSink(CARD, 0, "7.1")
+        for _ in range(3):
+            self.assertTrue(hdmi.probe_connector(sink, **args)["connected"])
+        self.assertEqual(len(reads), 1)
+        now[0] += 31
+        hdmi.probe_connector(sink, **args)
+        self.assertEqual(len(reads), 2)
+        args["cards"] = [card(connected=False)]
+        self.assertFalse(hdmi.probe_connector(sink, **args)["connected"])
+        args["cards"] = [card()]
+        hdmi.probe_connector(sink, **args)
+        self.assertEqual(len(reads), 3)
+
+    def test_missing_eld_is_not_cached_as_a_connected_receiver(self):
+        cache = hdmi.EldCache()
+        read = mock.Mock(side_effect=[None, MARANTZ_ELD])
+        args = {"cards": [card()], "sinks": [], "read_eld": read, "pcm_device": 3, "eld_cache": cache}
+        sink = hdmi.HdmiSink(CARD, 0, "7.1")
+        self.assertFalse(hdmi.probe_connector(sink, **args)["connected"])
+        self.assertTrue(hdmi.probe_connector(sink, **args)["connected"])
+
     def test_live_sink_names_the_pcm_device(self):
         reads = []
         probe = hdmi.probe_connector(
@@ -311,6 +377,23 @@ class WatchTests(unittest.TestCase):
         for _ in range(2):
             result = self.watch.decide(self.identity, connected=True, current="7.1", fallback="7.1",
                                        options=self.eight, receiver="avr", desired="stereo", automatic=True)
+        self.assertEqual(result, "stereo")
+
+    def test_automatic_downshift_waits_for_stable_routing_not_intermediate_edits(self):
+        def automatic(desired):
+            return self.watch.decide(self.identity, connected=True, current="7.1", fallback="7.1",
+                                     options=self.eight, receiver="avr", desired=desired, automatic=True)
+        automatic("7.1")
+        automatic("7.1")
+        self.assertIsNone(automatic("5.1"), "First narrower edit must not interrupt audio")
+        self.assertIsNone(automatic("7.1"))
+        self.assertIsNone(automatic("stereo"))
+        self.assertEqual(automatic("stereo"), "stereo")
+
+    def test_unsupported_current_transport_falls_back_without_downshift_delay(self):
+        self.decide()
+        result = self.watch.decide(self.identity, connected=True, current="7.1", fallback="7.1",
+                                   options=self.two, receiver="tv", desired="stereo", automatic=True)
         self.assertEqual(result, "stereo")
 
     def test_lost_connection_restores_the_chosen_layout(self):
@@ -367,6 +450,31 @@ class DesiredStoreTests(unittest.TestCase):
 
 
 class OverviewTests(unittest.TestCase):
+    def test_suspended_channel_map_and_live_ports_keep_the_same_routing_indices(self):
+        from audio.output_ports import resolve_hardware_playback_ports
+        channel_map = ["playback_FL", "playback_FR", "playback_FC", "playback_LFE", "playback_RL", "playback_RR"]
+        info = hdmi.describe(SURROUND, card=card(detected="6"), eld={"lpcm": [{"channels": 6, "rates": [48000]}]})
+        payload = {"selected_output": {"key": SURROUND, "channels": 6, "hdmi": info},
+                   "output_mode": {"effective_output_key": SURROUND, "effective_output_channels": 6,
+                                   "hardware_playback_ports_from_channel_map": channel_map}}
+        sleeping = output_state_response(default_output_state(), payload)
+        live = resolve_hardware_playback_ports("\n".join(f"{SURROUND}:{port}" for port in channel_map), SURROUND)
+        payload["output_mode"]["hardware_playback_ports"] = live
+        awake = output_state_response(default_output_state(), payload)
+        self.assertEqual(sleeping["device"], awake["device"])
+        self.assertEqual(sleeping["device"]["channel_labels"], ["Front L", "Front R", "Side L", "Side R", "Center", "LFE"])
+        self.assertEqual(sleeping["device"]["routing"]["surround"], ["main_l", "main_r", "side_l", "side_r", "center", "sub1"])
+
+    def test_routing_labels_and_defaults_use_complete_hardware_order(self):
+        ports = ["playback_FL", "playback_FR", "playback_FC", "playback_LFE", "playback_SL", "playback_SR"]
+        info = hdmi.describe(SURROUND, card=card(detected="6"), eld={"lpcm": [{"channels": 6, "rates": [48000]}]})
+        payload = {"selected_output": {"key": SURROUND, "channels": 6, "hdmi": info},
+                   "output_mode": {"effective_output_key": SURROUND, "effective_output_channels": 6,
+                                   "hardware_playback_ports": ports}}
+        result = output_state_response(default_output_state(), payload)
+        self.assertEqual(result["device"]["channel_labels"], ["Front L", "Front R", "Center", "LFE", "Side L", "Side R"])
+        self.assertEqual(result["device"]["routing"]["surround"], ["main_l", "main_r", "center", "sub1", "side_l", "side_r"])
+
     def test_stereo_transport_keeps_receiver_outputs_available_for_routing(self):
         info = hdmi.describe(STEREO, card=card(), eld=hdmi.parse_eld(MARANTZ_ELD))
         payload = {"selected_output": {"key": STEREO, "channels": 2, "hdmi": info},

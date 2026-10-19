@@ -4,6 +4,14 @@
 set -euo pipefail
 export PATH=/usr/sbin:/usr/bin:/sbin:/bin
 SOURCE_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+gadget_supported() {
+    python3 -I "$SOURCE_ROOT/audio/usb_gadget_system.py" status |
+        python3 -I -c 'import json, sys; sys.exit(0 if json.load(sys.stdin).get("supported") is True else 1)'
+}
+if [[ "${1:-}" == --check-support && $# -eq 1 ]]; then
+    gadget_supported
+    exit $?
+fi
 HELPER=/usr/local/sbin/fxroute-usb-gadget
 UNIT=/etc/systemd/system/fxroute-usb-gadget.service
 SUDOERS=/etc/sudoers.d/fxroute-usb-gadget
@@ -17,6 +25,11 @@ USER_NAME="${1:-${SUDO_USER:-}}"
     exit 2
 }
 id "$USER_NAME" >/dev/null
+
+if [[ "$REMOVE" -eq 0 ]] && ! gadget_supported; then
+    echo 'Skipping USB audio gadget: no supported peripheral controller.'
+    exit 0
+fi
 
 for path in "$STATE" "$MANIFEST" "$HELPER" "$UNIT" "$SUDOERS"; do
     [[ ! -L "$path" ]] || { echo "Refusing symlink: $path" >&2; exit 1; }

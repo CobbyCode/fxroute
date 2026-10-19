@@ -26,6 +26,19 @@ class SystemVolumeCommandTests(unittest.TestCase):
     def tearDown(self):
         system_volume._status_volume_cache = None
 
+    def test_level_observer_failure_never_starves_volume_and_logs_once_per_episode(self):
+        for error in (RuntimeError('Invalid inventory'), KeyError('volume')):
+            with self.subTest(error=error), \
+                    mock.patch.object(system_volume, '_output_level_observer',
+                                      side_effect=[error, error, None, error]), \
+                    mock.patch.object(system_volume, 'get_output_volume', return_value=42), \
+                    self.assertLogs(system_volume.logger, level='WARNING') as logs:
+                system_volume.configure_output_level_observer(system_volume._output_level_observer)
+                for _ in range(4):
+                    system_volume._publish_status_volume(*system_volume._read_status_volume())
+                    self.assertEqual(system_volume.get_status_volume(), 42)
+            self.assertEqual(len(logs.records), 2)
+
     def test_successful_read_parses_percent(self):
         with mock.patch(
             "audio.system_volume.subprocess.run",

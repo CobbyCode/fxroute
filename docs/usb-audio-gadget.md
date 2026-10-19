@@ -30,12 +30,20 @@ with multichannel gadget cards configured outside FXRoute.
 - A dedicated USB device/peripheral connector. The normal USB-A host ports
   are not reconfigured, host drivers are not unloaded, and other sound
   cards retain their routing.
-- The root-owned helper installed by `install.sh`. Existing installations
+- The root-owned helper installed by `install.sh` **only on supported hardware**.
+  The installer uses the same UDC/kernel and supported Pi boot-setup probe as
+  the application before creating the helper, sudoers rule or system service.
+  Hosts without a suitable controller get none of these additions. Existing installations
   can install it from the checkout with:
 
   ```sh
   sudo bash scripts/install_usb_gadget.sh "$(id -un)"
   ```
+
+  Read-only capability check: `bash scripts/install_usb_gadget.sh --check-support`
+  (exit 0 for supported hardware, 1 otherwise). A helper installed by an older
+  version on unsupported hardware is not silently deleted; remove that verified
+  installation with `sudo bash scripts/install_usb_gadget.sh --remove "$(id -un)"`.
 
 The configuration entry is hidden when no supported controller or supported
 initial controller setup is detected. Detection is not restricted to ARM or
@@ -110,6 +118,7 @@ Targeted automated checks:
 
 ```sh
 python3 scripts/test_usb_gadget_system.py
+python3 scripts/test_usb_gadget_installer.py
 python3 scripts/test_usb_gadget_input.py
 python3 scripts/test_usb_gadget_api.py
 node scripts/test_usb_gadget_ui.js

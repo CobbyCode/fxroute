@@ -9,8 +9,8 @@ identity is the ALSA card plus N. Which transports a connector can carry comes
 from the receiver's ELD (its LPCM short audio descriptors); the card profile
 list only says which mappings exist.
 
-Live links follow the sink's real PipeWire ports. The routing editor exposes
-the receiver's ACP channel positions independently of the active transport.
+Live links follow the sink's real PipeWire ports. The routing editor uses
+those ports when they cover capacity, otherwise the standard ACP positions.
 """
 
 from __future__ import annotations
@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 from common.atomic_write import atomic_write_text
+from audio.output_ports import order_hardware_playback_ports
 
 TRANSPORTS = (
     {"id": "stereo", "label": "Stereo", "channels": 2, "mapping": "hdmi-stereo"},
@@ -155,8 +156,8 @@ def parse_eld(raw: bytes | None) -> dict | None:
             "speaker_allocation": raw[7] & 0x7F, "lpcm": lpcm}
 
 
-def lpcm_max_channels(eld: Mapping | None) -> int:
-    return max((int(item["channels"]) for item in (eld or {}).get("lpcm") or ()), default=0)
+def lpcm_max_channels(eld: Mapping | None) -> int | None:
+    return max((int(item["channels"]) for item in (eld or {}).get("lpcm") or ()), default=None)
 
 
 def lpcm_rates(eld: Mapping | None, channels: int) -> list[int]:
@@ -205,7 +206,7 @@ def transport_options(card: Mapping[str, Any], connector: int, eld: Mapping | No
     """
     _, port = connector_port(card, connector)
     connected = port.get("availability") != "not available"
-    capacity = lpcm_max_channels(eld) if eld else _detected_channels(port)
+    capacity = lpcm_max_channels(eld) or _detected_channels(port)
     receiver = (eld or {}).get("monitor_name") or "the receiver"
     options = []
     for item in TRANSPORTS:
@@ -263,10 +264,22 @@ def stored_routing(routings: Mapping, key: str) -> list | None:
     return None
 
 
-def routing_ports(channels: int) -> list[str]:
-    """ACP HDMI channel positions for the configurable receiver capacity."""
+def routing_ports(channels: int, hardware_ports: Iterable[str] = ()) -> list[str]:
+    """Use real port order when complete, otherwise the ACP capacity fallback."""
+    ports = list(hardware_ports)
+    if len(ports) >= channels:
+        return ports[:channels]
     positions = ("FL", "FR", "RL", "RR", "FC", "LFE", "SL", "SR")
     return [f"playback_{position}" for position in positions[:channels]]
+
+
+def overview_routing_ports(overview: Mapping, channels: int) -> list[str]:
+    mode = overview.get("output_mode") or {}
+    ports = mode.get("hardware_playback_ports")
+    if not ports:
+        # Match live discovery, not the suspended sink's raw channel-map order.
+        ports = order_hardware_playback_ports(mode.get("hardware_playback_ports_from_channel_map") or ())
+    return routing_ports(channels, ports)
 
 
 def routing_capacity(overview: Mapping) -> int | None:
@@ -286,17 +299,16 @@ def _port_suffix(port: object) -> str:
 def channel_labels(ports: Iterable[object]) -> list[str | None]:
     """Receiver channel name per hardware port, e.g. ``Center`` or ``LFE``.
 
-    Without a side pair (5.1) the rear ports carry the surround speakers.
+    ACP's single RL/RR pair in 5.1 carries the CEA Side surrounds.
     """
+    return [_POSITION_LABELS.get(suffix) for suffix in _receiver_positions(ports)]
+
+
+def _receiver_positions(ports: Iterable[object]) -> list[str]:
     suffixes = [_port_suffix(port) for port in ports]
-    surround_only = not {"SL", "SR"} & set(suffixes)
-    labels = []
-    for suffix in suffixes:
-        if surround_only and suffix in ("RL", "RR"):
-            labels.append(f"Surround {suffix[1]}")
-        else:
-            labels.append(_POSITION_LABELS.get(suffix))
-    return labels
+    if len(suffixes) == 6 and not {"SL", "SR"} & set(suffixes):
+        return [{"RL": "SL", "RR": "SR"}.get(suffix, suffix) for suffix in suffixes]
+    return suffixes
 
 
 def default_assignments(ports: Iterable[object], mode: str) -> list[str] | None:
@@ -305,7 +317,7 @@ def default_assignments(ports: Iterable[object], mode: str) -> list[str] | None:
     Front L/R play Main, LFE the single sub, and in Surround every other
     receiver channel its own speaker. Ports without a known position stay Off.
     """
-    suffixes = [_port_suffix(port) for port in ports]
+    suffixes = _receiver_positions(ports)
     if mode not in _MODE_ROLES or "FL" not in suffixes or "FR" not in suffixes:
         return None
     allowed = _MODE_ROLES[mode]
@@ -358,8 +370,34 @@ def receiver_signature(eld: Mapping | None) -> tuple | None:
             tuple((item["channels"], tuple(item["rates"])) for item in eld.get("lpcm") or ()))
 
 
+class EldCache:
+    """Bounded ELD reuse on stable inventory; hotplug invalidates immediately.
+
+    Inventory cannot identify every receiver replacement, so refresh even a
+    stable port after 30 seconds. Missing/invalid ELD is never cached.
+    """
+
+    def __init__(self, clock=time.monotonic):
+        self._clock = clock
+        self._entries: dict[str, tuple[object, float, bytes]] = {}
+
+    def discard(self, identity: str) -> None:
+        self._entries.pop(identity, None)
+
+    def read(self, identity: str, signature: object, reader) -> bytes | None:
+        now = self._clock()
+        entry = self._entries.get(identity)
+        if entry and entry[0] == signature and now < entry[1]:
+            return entry[2]
+        self.discard(identity)
+        raw = reader()
+        if parse_eld(raw) is not None:
+            self._entries[identity] = (signature, now + 30.0, raw)
+        return raw
+
+
 def probe_connector(sink: HdmiSink, *, cards: Iterable[Mapping], sinks: Iterable[Mapping],
-                    read_eld, pcm_device: int | None = None) -> dict:
+                    read_eld, pcm_device: int | None = None, eld_cache: EldCache | None = None) -> dict:
     """Live state of one connector, whether or not it currently has a sink.
 
     ``cards``/``sinks`` are ``pactl -f json`` listings and ``read_eld(card,
@@ -371,14 +409,23 @@ def probe_connector(sink: HdmiSink, *, cards: Iterable[Mapping], sinks: Iterable
                     if (parsed := parse_sink_key(row.get("name"))) is not None
                     and parsed.card == sink.card and parsed.connector == sink.connector), None)
     if card is None:
+        if eld_cache is not None:
+            eld_cache.discard(sink.identity)
         return {"card": None, "current_key": None, "connected": False, "eld": None,
                 "options": [], "pcm_device": pcm_device}
     device = str(((current or {}).get("properties") or {}).get("alsa.device") or "")
     device_number = int(device) if device.isdigit() else pcm_device
     card_number = str((card.get("properties") or {}).get("alsa.card") or "")
-    eld = (parse_eld(read_eld(int(card_number), device_number))
-           if card_number.isdigit() and device_number is not None else None)
     _, port = connector_port(card, sink.connector)
+    eld = None
+    if port.get("availability") == "not available":
+        if eld_cache is not None:
+            eld_cache.discard(sink.identity)
+    elif card_number.isdigit() and device_number is not None:
+        def read():
+            return read_eld(int(card_number), device_number)
+        signature = (card_number, device_number, card.get("active_profile"), json.dumps(port, sort_keys=True))
+        eld = parse_eld(eld_cache.read(sink.identity, signature, read) if eld_cache is not None else read())
     # A PCM device that is known but reports no ELD has no receiver behind it.
     connected = port.get("availability") == "available" and (eld is not None or device_number is None)
     return {"card": card, "current_key": (current or {}).get("name"), "connected": connected,
@@ -425,13 +472,14 @@ def remember_desired(sink: HdmiSink, transport_id: str, *, input_mapping: str | 
 class TransportWatch:
     """Decide automatic transport changes of the selected HDMI connector.
 
-    A connector that lost its receiver, or whose receiver changed (new ELD),
-    gets the transport chosen in FXRoute back once it is connected again,
-    capped at what the receiver now takes. A transport the receiver cannot
-    take always falls back to the largest one it can. A change made outside
-    FXRoute while the receiver stays connected is left alone unless automatic
-    routing authority is requested. Each target is retried at most every
-    RESTORE_RETRY_SECONDS.
+    The application uses automatic routing authority: mode and connector
+    routing determine the desired transport, capped at receiver capacity.
+    This also corrects outside profile changes on a stable connection. The
+    optional non-automatic policy only restores after receiver loss/change;
+    there _armed distinguishes reconnects from outside edits. Both policies
+    allow WirePlumber one connected tick before acting and retry a target at
+    most every RESTORE_RETRY_SECONDS. Automatic downshifts from a supported
+    transport require the same narrower target on two consecutive ticks.
     """
 
     def __init__(self, clock=time.monotonic):
@@ -440,11 +488,13 @@ class TransportWatch:
         self._receiver: dict[str, object] = {}
         self._connected_ticks: dict[str, int] = {}
         self._attempts: dict[tuple[str, str], float] = {}
+        self._downshift: dict[str, str] = {}
 
     def decide(self, identity: str, *, connected: bool, current: str | None, fallback: str,
                options: list[Mapping], receiver: object, desired: str | None,
                automatic: bool = False) -> str | None:
         if not connected:
+            self._downshift.pop(identity, None)
             self._armed.add(identity)
             self._connected_ticks[identity] = 0
             return None
@@ -457,9 +507,18 @@ class TransportWatch:
         wanted = desired if (automatic or armed) and desired else current or desired or fallback
         target = best_supported(options, wanted)
         if target is None or target == current:
+            self._downshift.pop(identity, None)
             if current is not None:
                 self._armed.discard(identity)
             return None
+        downshift = (automatic and current in _BY_ID and
+                     best_supported(options, current) == current and
+                     _BY_ID[target]["channels"] < _BY_ID[current]["channels"])
+        previous_target = self._downshift.pop(identity, None)
+        if downshift:
+            self._downshift[identity] = target
+            if previous_target != target:
+                return None
         # WirePlumber restores its saved profile right after a reconnect; give
         # it one tick before acting on the same card.
         if self._connected_ticks[identity] < 2:

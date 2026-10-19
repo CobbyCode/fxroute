@@ -1384,6 +1384,7 @@ class DSPRuntime:
             self._error = f"Native DSP binary is not available: {self.binary}"
             raise RuntimeError(self._error)
         self._latency_snapshot = {}
+        # A new helper or config swap needs the credit even when unchanged.
         self._last_input_latency_ms = None
         self._graph_revision += 1
         await self._stop_orphan_helpers()

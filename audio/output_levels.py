@@ -6,11 +6,14 @@ import asyncio
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 import json
+import logging
 import threading
 
 from audio import system_volume
 from audio.samplerate.parsing import is_hifi_combined_key, successor_sink_key
 from common.run_to_completion import run_to_completion, wait_for_completion
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -124,8 +127,12 @@ class OutputLevels:
                     for source in list(self._pending):
                         if successor_sink_key(source, live) == key:
                             self._pending.pop(source)
-            except BaseException:
-                self._mute(key, True)
+            except BaseException as error:
+                try:
+                    self._mute(key, True)
+                except Exception as mute_error:
+                    logger.exception('Hardware output safety mute failed')
+                    error.add_note(f'Safety mute also failed: {mute_error}')
                 raise
             finally:
                 self._switching = False
@@ -135,11 +142,16 @@ class OutputLevels:
         task = asyncio.create_task(asyncio.to_thread(self._begin, previous_key, key))
         cancelled = await wait_for_completion(task)
         state = task.result()
-        success = False
         try:
             if cancelled:
                 raise cancelled
             yield
-            success = True
-        finally:
-            await run_to_completion(asyncio.to_thread(self._finish, key, state, success))
+        except BaseException as error:
+            try:
+                await run_to_completion(asyncio.to_thread(self._finish, key, state, False))
+            except BaseException as cleanup_error:
+                logger.exception('Hardware output cleanup failed after sync error')
+                error.add_note(f'Output level cleanup also failed: {cleanup_error}')
+            raise
+        else:
+            await run_to_completion(asyncio.to_thread(self._finish, key, state, True))
