@@ -5,6 +5,7 @@
 const assert = require('assert/strict');
 const fs = require('fs');
 const path = require('path');
+const vm = require('vm');
 
 const root = path.resolve(__dirname, '..');
 const html = fs.readFileSync(path.join(root, 'static', 'index.html'), 'utf8');
@@ -335,8 +336,16 @@ function harness({ ctx = context(), contexts = { [UMC_BASE]: UMC_CONTEXT }, conf
     }
     check('the module loads before app.js with a versioned URL',
         /<script src="\/static\/custom_mapping_ui\.js\?v=\d+\.\d+\.\d+"><\/script>[\s\S]*<script src="\/static\/app\.js\?v=\d+\.\d+\.\d+">/.test(html));
-    check('the Input select offers the configuration entry last',
-        /STDIN<\/option>`,\s*'<option value="custom-mapping">Custom Mapping…<\/option>',\s*\];/.test(appJs));
+    const sourceSelect = fakeElement();
+    const sourceSection = appJs.slice(appJs.indexOf('function renderSourceSection()'),
+        appJs.indexOf('// Select-model for the Music Library selector'));
+    vm.runInNewContext(sourceSection + '\nrenderSourceSection();', {
+        state: {settings: {sourceMode: {}}}, elements: {settingsSourceSelect: sourceSelect},
+        window: {FXRouteUsbGadget: require('../static/usb_gadget_ui.js')},
+    });
+    check('the Input select offers Custom Mapping after the source choices',
+        sourceSelect.innerHTML.endsWith('<option value="custom-mapping">Custom Mapping…</option>'));
+    check('rendering configuration choices keeps App playback selected', sourceSelect.value === 'app-playback');
     check('choosing the entry restores the selection before opening the dialog',
         /value === 'custom-mapping'\) \{[^}]*renderSourceSection\(\);\s*void window\.FXRouteCustomMapping\.open\(\);/.test(appJs));
     check('the entry is never saved as a source selection',

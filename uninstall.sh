@@ -3820,6 +3820,14 @@ main() {
 
   log "Removing network library mount helper"
   remove_network_library_helper
+  if [[ -f /var/lib/fxroute-usb-gadget/install.sha256 ]]; then
+    gadget_sudo=()
+    [[ "$(id -u)" -eq 0 ]] || gadget_sudo=(sudo)
+    if ! "${gadget_sudo[@]}" bash "$INSTALL_ROOT/scripts/install_usb_gadget.sh" --remove "$FXROUTE_TARGET_USER"; then
+      warn "USB gadget cleanup failed; its installation was preserved"
+      PRESERVE_INSTALL_STATE=1
+    fi
+  fi
 
   log "Removing Spotify autostart"
   remove_autostart

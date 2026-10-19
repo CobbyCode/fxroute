@@ -5959,6 +5959,30 @@ async def audio_source_overview():
     return await source_transitions.read_overview()
 
 
+@app.get("/api/audio/usb-gadget")
+async def audio_usb_gadget_status():
+    from audio import usb_gadget
+    return await asyncio.to_thread(usb_gadget.status)
+
+
+@app.post("/api/audio/usb-gadget")
+async def configure_audio_usb_gadget(request: Request):
+    from audio import usb_gadget
+    try:
+        body = await request.json()
+        enabled = body.get("enabled")
+        if type(enabled) is not bool:
+            raise ValueError("enabled must be a boolean")
+    except Exception:
+        raise HTTPException(status_code=400, detail='Expected {"enabled": <bool>}')
+    try:
+        result = await _drain_worker(usb_gadget.set_enabled, enabled)
+    except (OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    await source_transitions.read_overview()
+    return result
+
+
 @app.post("/api/audio/source-auto")
 async def save_audio_source_auto_route(request: Request):
     try:

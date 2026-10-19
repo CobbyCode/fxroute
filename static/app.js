@@ -2056,6 +2056,8 @@ function setupSettingsActions() {
         refreshSources: () => fetchAudioSourceOverview(),
     });
     window.FXRouteCustomMapping.bind();
+    window.FXRouteUsbGadget.init({refreshSources: () => fetchAudioSourceOverview()});
+    window.FXRouteUsbGadget.bind();
     window.FXRouteSrcSettings.init({
         select: document.getElementById('settings-src-select'),
         hint: document.getElementById('settings-src-hint'),
@@ -2114,6 +2116,9 @@ function setupSettingsActions() {
                 // Configuration entry, not a source: restore the shown selection first.
                 renderSourceSection();
                 void window.FXRouteCustomMapping.open();
+            } else if (value === 'usb-gadget') {
+                renderSourceSection();
+                void window.FXRouteUsbGadget.open();
             }
         });
     }
@@ -2843,9 +2848,11 @@ function renderSourceSection() {
             ...(missingSelection
                 ? [`<option value="external-input::${escapeHtml(selectedSourceInput.key)}" disabled>${escapeHtml(missingLabel)}</option>`]
                 : []),
-            ...sourceInputs.map((input) => `<option value="external-input::${escapeHtml(input.key || '')}">External input: ${escapeHtml(input.label || input.name || 'Unknown input')}</option>`),
+            window.FXRouteUsbGadget?.inputOptions(sourceInputs)
+                ?? sourceInputs.map((input) => `<option value="external-input::${escapeHtml(input.key || '')}">External input: ${escapeHtml(input.label || input.name || 'Unknown input')}</option>`).join(''),
             `<option value="bluetooth-input"${bluetoothSelectable || currentMode === 'bluetooth-input' ? '' : ' disabled'}>Bluetooth input</option>`,
             `<option value="stdin-input"${stdinSelectable || currentMode === 'stdin-input' ? '' : ' disabled'}>STDIN</option>`,
+            window.FXRouteUsbGadget?.configurationOption(sourceOverview.usb_gadget) || '',
             '<option value="custom-mapping">Custom Mapping…</option>',
         ];
         elements.settingsSourceSelect.innerHTML = inputOptions.join('');

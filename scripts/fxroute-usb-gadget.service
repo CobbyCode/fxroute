@@ -1,0 +1,17 @@
+[Unit]
+Description=FXRoute USB audio gadget
+After=systemd-modules-load.service sys-kernel-config.mount
+Wants=sys-kernel-config.mount
+StartLimitIntervalSec=120
+StartLimitBurst=12
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/fxroute-usb-gadget restore
+RemainAfterExit=yes
+TimeoutStartSec=60
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

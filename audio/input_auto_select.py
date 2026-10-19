@@ -33,7 +33,7 @@ from typing import Any, Awaitable, Callable
 
 import numpy
 
-from audio import pw_link
+from audio import pw_link, usb_gadget
 from audio.alsa_ctl import read_digital_lock
 from audio.input_activity import (
     BLOCK_SECONDS,
@@ -440,19 +440,32 @@ class InputAutoSelect:
             del self._detectors[key]
             self._was_active.pop(key, None)
         specs: dict[str, ProbeSpec | None] = {}
+        disconnected_gadgets: set[str] = set()
         if any(key != STDIN_KEY for key in monitored):
             overview = self._deps.get_fresh_overview(OVERVIEW_MAX_AGE_SECONDS) or await self._deps.read_overview()
             if now - self._capture_rate_at >= CAPTURE_RATE_REFRESH_SECONDS:
                 self._capture_rate = await asyncio.to_thread(self._deps.resolve_capture_rate)
                 self._capture_rate_at = now
             entries = {entry.get("key"): entry for entry in overview.get("inputs") or [] if isinstance(entry, dict)}
-            specs = {key: self._probe_spec(entries.get(key)) for key in monitored if key != STDIN_KEY}
+            # The overview may be cached; USB cable state must be read every tick.
+            def disconnected() -> set[str]:
+                blocked = set()
+                for key in monitored:
+                    entry = entries.get(key) or {}
+                    connection = usb_gadget.capture_connection(entry.get("alsa_card"))
+                    if connection is False or (entry.get("usb_gadget") and connection is not True):
+                        blocked.add(key)
+                return blocked
+
+            disconnected_gadgets = await asyncio.to_thread(disconnected)
+            specs = {key: None if key in disconnected_gadgets else self._probe_spec(entries.get(key))
+                     for key in monitored if key != STDIN_KEY}
         for key in monitored:
             detector = self._detectors.get(key)
             spec = specs.get(key)
-            if detector is None:
+            if detector is None or key in disconnected_gadgets:
                 kind = KIND_STDIN if key == STDIN_KEY else (KIND_DIGITAL if spec and spec.digital else KIND_ANALOG)
-                engaged = bool(self._engaged and self._engaged["key"] == key)
+                engaged = key not in disconnected_gadgets and bool(self._engaged and self._engaged["key"] == key)
                 detector = self._detectors[key] = ActivityDetector(
                     kind, now, assume_active=engaged,
                     release_seconds=self._release_seconds(key),
@@ -477,7 +490,8 @@ class InputAutoSelect:
                 detector.observe_missing(now)
             # Fed every tick: while the report is fresh it keeps the input
             # active, once its TTL passed the normal release hold applies.
-            detector.observe_external_presence(now, self._external_presence(key))
+            detector.observe_external_presence(
+                now, key not in disconnected_gadgets and self._external_presence(key))
 
     def _probe_spec(self, entry: dict[str, Any] | None) -> ProbeSpec | None:
         # Another port of a multi-port source is not what its capture

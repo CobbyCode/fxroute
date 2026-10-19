@@ -1070,6 +1070,8 @@ def get_audio_output_overview(status: dict[str, Any] | None = None, *, selection
     }
 
 def get_audio_source_overview() -> dict[str, Any]:
+    from audio import usb_gadget
+
     selection_state = _load_audio_source_selection()
     bluetooth_overview = get_bluetooth_audio_overview()
     notes: list[str] = []
@@ -1135,6 +1137,9 @@ def get_audio_source_overview() -> dict[str, Any]:
             # Input auto-select reads the digital-input lock of this card.
             "alsa_card": details.get("alsa_card"),
         }
+        connection = usb_gadget.capture_connection(details.get("alsa_card"))
+        if connection is not None:
+            base_payload.update(usb_gadget=True, usb_connected=connection)
         # Every capture node counts as a physical input of its card, also a
         # mono one that is no stereo input on its own.
         node_card_base = custom_input_mapping.card_base(name)
@@ -1333,6 +1338,7 @@ def get_audio_source_overview() -> dict[str, Any]:
                 (((bluetooth_overview.get("roles") or {}).get("bluetooth_input") or {}).get("notes") or [])),
         },
         "stdin": stdin_status,
+        "usb_gadget": usb_gadget.status(),
         "notes": notes,
     }
 

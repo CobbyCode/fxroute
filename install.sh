@@ -7644,6 +7644,7 @@ main() {
   ensure_no_foreign_fxroute_services
   install_network_library_helper
   install_provider_privileged_helper
+  "${SUDO_CMD[@]}" bash "$INSTALL_ROOT/scripts/install_usb_gadget.sh" "$FXROUTE_TARGET_USER"
   setup_python_env
   build_native_dsp_engine
   build_native_surround_input
