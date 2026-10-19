@@ -26,6 +26,7 @@ from typing import Any, Awaitable, Callable, Iterator, Mapping, Sequence
 from audio.output_topology import SURROUND_POSITIONS
 from audio.output_ports import HARDWARE_CHANNEL_ORDER, hardware_link_target
 from audio.pw_link import stop_command_child_cancellation_safe
+from audio.src_latency import SrcGraphSettling
 from common.run_to_completion import restore_after, run_to_completion
 from dsp.latency import latency_signature
 from playback.source_policy import GRAPH_NODE_BY_SOURCE, mpv_port_positions
@@ -404,6 +405,7 @@ class DSPRuntime:
         self._latency_tracking = False
         self._input_latency_provider: Callable[[], float | Awaitable[float]] | None = None
         self._last_input_latency_ms: float | None = None
+        self._ingress_latency_pending = False
         self._graph_revision = 0
         self._output_switch_scope = None
         self._measurement_latency_signature: tuple | None = None
@@ -443,7 +445,18 @@ class DSPRuntime:
         if not self._latency_tracking or not self._engine_running():
             return
         owner = self._latency_owner()
-        value = await self._input_latency_ms()
+        try:
+            value = await self._input_latency_ms()
+        except SrcGraphSettling as exc:
+            if exc.path != 'ingress':
+                raise
+            # New links to a paused source (MPV's Surround ingress) stay in init
+            # until it plays again. The input latency stays unknown, never a
+            # guessed zero; the latency watch reads it once the path carries audio.
+            self._ingress_latency_pending = True
+            self._last_input_latency_ms = None
+            return
+        self._ingress_latency_pending = False
         async with self._control_lock:
             if not self._latency_owner_matches(owner) or not self._engine_running():
                 return
@@ -454,7 +467,8 @@ class DSPRuntime:
                     self._last_input_latency_ms = value
 
     async def read_latency(self) -> dict:
-        if not self._engine_running() or self._config is None or self.sync_in_progress:
+        if (not self._engine_running() or self._config is None or self.sync_in_progress
+                or self._ingress_latency_pending):
             return {'ready': False}
         owner = self._latency_owner()
         config = self._config

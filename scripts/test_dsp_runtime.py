@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import asyncio
+import json
 import os
 import re
 import signal
@@ -454,6 +455,77 @@ class DSPRuntimeConfigTests(unittest.TestCase):
                     self.assertEqual(runtime._config.output_key, "new")
                     self.assertEqual(applied, [250])
                     self.assertEqual(runtime._last_input_latency_ms, 250)
+                finally:
+                    await runtime.stop()
+
+        for hot in (False, True):
+            with self.subTest(hot=hot):
+                asyncio.run(exercise(hot))
+
+    def test_paused_source_ingress_leaves_latency_pending_but_output_settling_fails(self):
+        from audio.src_latency import SrcGraphSettling, graph_src_latency
+        from test_av_sync_src import node, link
+
+        async def exercise(hot):
+            with tempfile.TemporaryDirectory() as directory:
+                binary = Path(directory) / "fxroute-dsp"
+                binary.touch()
+                applied = []
+                states = {"ingress": "init", "output": "active"}
+
+                async def run(command):
+                    return CommandResult(0)
+
+                async def control(command, **_kwargs):
+                    if command.startswith("input latency "):
+                        applied.append(float(command.split()[-1]))
+                    if command == "latency get":
+                        return json.dumps({"ready": True, "rate": 48000, "input": 0, "target": 0, "minimum": 0,
+                                           "maximum": 0, "common": 0, "actual": 0, "outputs": [
+                                               {key: 0 for key in ("dsp", "intentional", "align", "balance",
+                                                                   "sync", "total")}] * 2})
+                    return "0" if command == "effects bypass get" else "ok"
+
+                async def complete(*_args, **_kwargs):
+                    pass
+
+                async def launch(_command):
+                    return FakeProcess()
+
+                runtime = DSPRuntime(self.manager, binary=binary, command_runner=run, process_launcher=launch)
+                runtime._process = FakeProcess()
+                runtime._control_socket = unittest.mock.Mock()
+                runtime._config = self.config(output_key="new" if hot else "vanished")
+                runtime._stop_orphan_helpers = complete
+                runtime._wait_for_ports = complete
+                runtime._remove_direct_source_links = complete
+                runtime._reconcile_ingress_links = complete
+                runtime._reconcile_output_links = complete
+                runtime._control = control
+                runtime._control_unlocked = control
+
+                # MPV's Surround ingress: new links to a paused stream stay in init.
+                def latency():
+                    return graph_src_latency([
+                        node(5, 'mpv', 'Stream/Output/Audio'), node(3, 'fxroute_dsp'),
+                        node(4, 'new', 'Audio/Sink', 250000000),
+                        link(5, 3, states["ingress"]), link(3, 4, states["output"])], ingress_nodes=('mpv',))
+
+                runtime.configure_latency_tracking(input_latency_provider=latency)
+                try:
+                    await runtime.sync_rendered(self.target(self.config(output_key="new")))
+                    self.assertEqual(runtime._config.output_key, "new")
+                    self.assertEqual(applied, [])
+                    self.assertIsNone(runtime._last_input_latency_ms)
+                    # Unknown, never a guessed zero: the readback is not ready.
+                    self.assertEqual(await runtime.read_latency(), {"ready": False})
+                    states["ingress"] = "active"
+                    await runtime.update_input_latency()
+                    self.assertEqual(applied, [250])
+                    self.assertTrue((await runtime.read_latency())["ready"])
+                    states["output"] = "init"
+                    with self.assertRaises(SrcGraphSettling):
+                        await runtime.update_input_latency()
                 finally:
                     await runtime.stop()
 

@@ -5591,13 +5591,19 @@ async def _electronic_input_latency_ms() -> float:
     snapshot = dsp.snapshot() if dsp is not None else {}
     if not snapshot.get('config') or snapshot.get('helper_pid') is None:
         return helper_ms
+    # MPV's direct ingress feeds only a Surround engine (like the ingress links
+    # and the graph diagnosis): a stereo engine reads the ingress sink while the
+    # retained MPV edges wait for the mode's transport restore to release them.
+    surround_engine = snapshot['config'].get('output_mode') == 'surround'
+    mapped = [edge for edge in snapshot.get('mapped_ingress') or ()
+              if surround_engine or not str(edge[0]).startswith('mpv:')]
     if snapshot.get('surround_input'):
         ingress_nodes = ('fxroute_surround_input',)
-    elif snapshot.get('mapped_ingress'):
-        ingress_nodes = tuple({edge[0].rsplit(':', 1)[0] for edge in snapshot['mapped_ingress']})
+    elif mapped:
+        ingress_nodes = tuple({edge[0].rsplit(':', 1)[0] for edge in mapped})
     else:
         ingress_nodes = ('fxroute_dsp_sink',)
-    external_ingress = bool(snapshot.get('surround_input') or snapshot.get('mapped_ingress'))
+    external_ingress = bool(snapshot.get('surround_input') or mapped)
     measurement = _measurement_session_owns_live_rate() or snapshot.get('measurement_active', False)
     src_ms = await asyncio.to_thread(_src_latency_reader.read,
         include_ingress=external_ingress or not measurement, ingress_nodes=ingress_nodes,

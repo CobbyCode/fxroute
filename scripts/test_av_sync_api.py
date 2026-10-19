@@ -114,6 +114,23 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
             snapshot['graph_revision'] = 2
             self.assertEqual(await main._electronic_input_latency_ms(), 1000)
 
+    async def test_stereo_engine_reads_the_ingress_sink_while_mpv_direct_ingress_is_retained(self):
+        # Surround -> Stereo + Sub while MPV plays: the new two-input engine is
+        # fed by the ingress sink; the MPV direct edges are released only by
+        # the later transport restore, so they must not select the SRC path.
+        mpv_edges = [['mpv:output_FL', 'fxroute_dsp:input_1'], ['mpv:output_FR', 'fxroute_dsp:input_2']]
+        snapshot = {'helper_pid': 123, 'graph_revision': 4, 'mapped_ingress': mpv_edges,
+                    'config': {'output_key': 'hardware', 'plan_fingerprint': 'plan', 'output_mode': 'stereo-sub'}}
+        calls = []
+        reader = SimpleNamespace(read=lambda **options: calls.append(options) or 750)
+        with patch.object(main.runtime, 'dsp_runtime', SimpleNamespace(snapshot=lambda: snapshot)), \
+                patch.object(main, '_src_latency_reader', reader), \
+                patch.object(main, '_measurement_session_owns_live_rate', return_value=False):
+            self.assertEqual(await main._electronic_input_latency_ms(), 750)
+            snapshot['config']['output_mode'] = 'surround'
+            self.assertEqual(await main._electronic_input_latency_ms(), 750)
+        self.assertEqual([call['ingress_nodes'] for call in calls], [('fxroute_dsp_sink',), ('mpv',)])
+
     async def test_reconciled_helper_ingress_survives_a_background_latency_failure(self):
         links = set()
         async def run(args):
