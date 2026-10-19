@@ -402,10 +402,69 @@ class DSPRuntimeConfigTests(unittest.TestCase):
         runtime._config = self.config()
         self.assertFalse(runtime._can_hot_update(self.config(output_key="other-hw")))
 
-    def test_swap_reconcile_failure_keeps_config_for_fallback_rebuild(self):
+    def test_sync_reads_src_only_from_the_reconciled_output(self):
+        from audio.src_latency import graph_src_latency
+        from test_av_sync_src import node, link
+
+        async def exercise(hot):
+            with tempfile.TemporaryDirectory() as directory:
+                binary = Path(directory) / "fxroute-dsp"
+                binary.touch()
+                edges = set()
+                applied = []
+
+                async def run(command):
+                    if tuple(command) == ("pw-link", "-l"):
+                        return CommandResult(0, "\n".join(f"{a}\n  |-> {b}" for a, b in edges))
+                    if command[0] == "pw-link" and len(command) == 3:
+                        edges.add(tuple(command[1:]))
+                    return CommandResult(0)
+
+                async def control(command, **_kwargs):
+                    if command.startswith("input latency "):
+                        applied.append(float(command.split()[-1]))
+                    return "0" if command == "effects bypass get" else "ok"
+
+                async def complete(*_args):
+                    pass
+
+                async def launch(_command):
+                    return FakeProcess()
+
+                runtime = DSPRuntime(self.manager, binary=binary, command_runner=run, process_launcher=launch)
+                runtime._process = FakeProcess()
+                runtime._control_socket = unittest.mock.Mock()
+                runtime._config = self.config(output_key="new" if hot else "vanished")
+                runtime._stop_orphan_helpers = complete
+                runtime._wait_for_ports = complete
+                runtime._remove_direct_source_links = complete
+                runtime._control = control
+                runtime._control_unlocked = control
+
+                def latency():
+                    value = [node(2, 'fxroute_dsp_sink', 'Audio/Sink'), node(3, 'fxroute_dsp'),
+                             node(4, 'new', 'Audio/Sink', 250000000), link(2, 3)]
+                    if ('fxroute_dsp:output_1', 'new:playback_FL') in edges:
+                        value.append(link(3, 4))
+                    return graph_src_latency(value)
+
+                runtime.configure_latency_tracking(input_latency_provider=latency)
+                try:
+                    await runtime.sync_rendered(self.target(self.config(output_key="new")))
+                    self.assertEqual(runtime._config.output_key, "new")
+                    self.assertEqual(applied, [250])
+                    self.assertEqual(runtime._last_input_latency_ms, 250)
+                finally:
+                    await runtime.stop()
+
+        for hot in (False, True):
+            with self.subTest(hot=hot):
+                asyncio.run(exercise(hot))
+
+    def test_hot_update_failure_keeps_config_for_fallback_rebuild(self):
         events = []
 
-        async def exercise():
+        async def exercise(fail_stage):
             with tempfile.TemporaryDirectory() as directory:
                 binary = Path(directory) / "fxroute-dsp"
                 binary.touch()
@@ -421,6 +480,7 @@ class DSPRuntimeConfigTests(unittest.TestCase):
 
                 async def launch(command):
                     events.append(("launch", tuple(command), Path(command[1]).exists()))
+                    self.assertTrue(Path(command[1]).is_file(), 'Fallback config must still exist at launch')
                     return FakeProcess()
 
                 async def control(command, **_kwargs):
@@ -430,6 +490,7 @@ class DSPRuntimeConfigTests(unittest.TestCase):
                 runtime._run = run
                 runtime._launch = launch
                 runtime._control = control
+                runtime._control_unlocked = control
                 runtime._stop_orphan_helpers = lambda: complete()
                 runtime._wait_for_ports = lambda _config: complete()
                 runtime._remove_direct_source_links = lambda: complete()
@@ -438,10 +499,20 @@ class DSPRuntimeConfigTests(unittest.TestCase):
 
                 async def fail_once(config):
                     nonlocal failed
-                    if not failed:
+                    if not failed and fail_stage == 'links':
                         failed = True
                         raise RuntimeError("link failed")
                     await reconcile(config)
+
+                def latency():
+                    nonlocal failed
+                    if not failed:
+                        failed = True
+                        raise RuntimeError('SRC adapter is unavailable')
+                    return 250
+
+                if fail_stage == 'latency':
+                    runtime.configure_latency_tracking(input_latency_provider=latency)
 
                 runtime._reconcile_output_links = fail_once
                 await runtime.sync_rendered(self.target())
@@ -450,10 +521,12 @@ class DSPRuntimeConfigTests(unittest.TestCase):
         async def complete():
             return None
 
-        asyncio.run(exercise())
+        for fail_stage in ('links', 'latency'):
+            with self.subTest(fail_stage=fail_stage):
+                asyncio.run(exercise(fail_stage))
         launch_events = [event for event in events if event[0] == "launch"]
-        self.assertEqual(len(launch_events), 1)
-        self.assertTrue(launch_events[0][2])
+        self.assertEqual(len(launch_events), 2)
+        self.assertTrue(all(event[2] for event in launch_events))
 
     def test_runtime_snapshot_reports_actual_layout_and_effect_bypass(self):
         runtime = DSPRuntime(self.manager)

@@ -149,6 +149,27 @@ class OutputSelectionTransactionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("engine unavailable", failure.exception.detail)
         self.assert_old()
 
+    async def test_rollback_uses_unique_successor_when_old_profile_is_gone(self):
+        old = 'alsa_output.pci-card.hdmi-stereo'
+        new = 'alsa_output.pci-card.hdmi-surround'
+        _save_audio_output_selection(old)
+        self.state.update(default=new, graph=old)
+
+        def overview(*, selection_key=None):
+            return {'outputs': [{'key': new, 'name': new, 'selectable': True, 'channels': 6}],
+                    'selected_output': {'key': new}, 'default_output': {'key': new},
+                    'output_mode': {'mode': 'surround', 'effective_output_key': new}}
+
+        with mock.patch.object(main, 'get_audio_output_overview', side_effect=overview), \
+                mock.patch.object(output_overview, 'get_audio_output_overview', side_effect=overview), \
+                mock.patch.object(main.samplerate, '_save_audio_output_selection', side_effect=OSError('disk full')):
+            with self.assertRaises(HTTPException) as failure:
+                await self.select(new)
+        self.assertIn('disk full', failure.exception.detail)
+        self.assertNotIn('previous graph could not be restored', failure.exception.detail)
+        self.assertEqual(self.state, {'default': new, 'graph': new})
+        self.assertEqual(_load_audio_output_selection()['selected_key'], old)
+
     async def test_coordinator_transition_cannot_restore_a_after_b_commits(self):
         entered = asyncio.Event()
         release = asyncio.Event()

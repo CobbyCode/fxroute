@@ -20,6 +20,18 @@ from test_output_state_api import audio_context, FakeRequest, make_manager, make
 
 
 class ApiTests(unittest.IsolatedAsyncioTestCase):
+    async def test_implicit_output_observation_follows_runtime_not_unrelated_default(self):
+        native = SimpleNamespace(snapshot=lambda: {'config': {'output_key': 'selected-hardware'}})
+        with patch.object(main.runtime, 'dsp_runtime', native), \
+                patch.object(main.samplerate, '_load_audio_output_selection', return_value={'selected_key': None}):
+            self.assertEqual(main._observed_output_key(), 'selected-hardware')
+
+    async def test_migrated_selection_cannot_promote_unactivated_replacement_defaults(self):
+        native = SimpleNamespace(snapshot=lambda: {'config': {'output_key': 'old-profile'}})
+        with patch.object(main.runtime, 'dsp_runtime', native), \
+                patch.object(main.samplerate, '_load_audio_output_selection', return_value={'selected_key': 'new-profile'}):
+            self.assertEqual(main._observed_output_key(), 'old-profile')
+
     async def test_target_mutation_is_revision_checked_and_mode_specific(self):
         with tempfile.TemporaryDirectory() as directory:
             service = make_service(directory, make_manager(directory))
@@ -85,6 +97,22 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(native.snapshot()['active'])
             with self.assertRaisesRegex(RuntimeError, 'path|unavailable'):
                 await main._electronic_input_latency_ms()
+
+    async def test_graph_reconciliation_invalidates_src_cache_for_the_same_engine_and_plan(self):
+        from test_av_sync_src import graph
+        reader = SrcLatencyReader()
+        snapshot = {'helper_pid': 123, 'graph_revision': 1,
+                    'config': {'output_key': 'hardware', 'plan_fingerprint': 'same'}}
+        native = SimpleNamespace(snapshot=lambda: snapshot)
+        first, second = graph(), graph()
+        second[3] = node(4, 'hardware', 'Audio/Sink', 250000000)
+        with patch.object(main.runtime, 'dsp_runtime', native), \
+                patch.object(main, '_src_latency_reader', reader), \
+                patch.object(reader, '_dump', side_effect=[first, second]), \
+                patch.object(main, '_measurement_session_owns_live_rate', return_value=False):
+            self.assertEqual(await main._electronic_input_latency_ms(), 750)
+            snapshot['graph_revision'] = 2
+            self.assertEqual(await main._electronic_input_latency_ms(), 1000)
 
     async def test_reconciled_helper_ingress_survives_a_background_latency_failure(self):
         links = set()

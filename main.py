@@ -650,6 +650,8 @@ from streaming.spotify.provider import (
     seek_to as spotify_seek_to,
 )
 from audio.system_volume import SystemVolumeError, get_node_volume, get_output_volume, set_output_volume, get_status_volume, start_volume_read_monitor
+from audio.system_volume import configure_output_level_observer
+from audio.output_levels import OutputLevels
 import audio.volume_contract as volume_contract
 
 logger = logging.getLogger(__name__)
@@ -3054,6 +3056,7 @@ async def lifespan(app: FastAPI):
             logger.warning("Downloader not available: %s", exc)
 
         dsp_manager = await _drain_worker(DSPManager, active_preset_reader=_active_global_preset)
+        configure_output_level_observer(_observe_output_levels)
         volume_read_monitor_task = start_volume_read_monitor()
         runtime.lifecycle_background_tasks.add(volume_read_monitor_task)
         volume_read_monitor_task.add_done_callback(runtime.lifecycle_background_tasks.discard)
@@ -3100,6 +3103,9 @@ async def lifespan(app: FastAPI):
             get_output_layout=lambda: runtime.dsp_runtime.output_meter_layout() if runtime.dsp_runtime else None,
         )
         runtime.dsp_runtime = DSPRuntime(dsp_manager)
+        configure_levels = getattr(runtime.dsp_runtime, 'configure_output_level_tracking', None)
+        if callable(configure_levels):
+            configure_levels(_output_levels.switch)
         configure_latency = getattr(runtime.dsp_runtime, 'configure_latency_tracking', None)
         if callable(configure_latency):
             configure_latency(input_latency_provider=_electronic_input_latency_ms)
@@ -5048,16 +5054,21 @@ async def _apply_audio_output_selection(key: str) -> dict:
                     await asyncio.to_thread(selection_path.unlink, missing_ok=True)
                 else:
                     await asyncio.to_thread(atomic_write_bytes, selection_path, previous_bytes)
-            await asyncio.to_thread(samplerate._set_default_sink, previous_default)
-            if previous_graph_key and previous_graph_key != key:
-                restore = await asyncio.to_thread(get_audio_output_overview, selection_key=previous_graph_key)
+            from audio.samplerate.parsing import successor_sink_key
+            live = await asyncio.to_thread(get_audio_output_overview)
+            live_keys = [item['key'] for item in live.get('outputs', [])]
+            restore_default = successor_sink_key(previous_default, live_keys) or previous_default
+            await asyncio.to_thread(samplerate._set_default_sink, restore_default)
+            if previous_graph_key:
+                restore_key = successor_sink_key(previous_graph_key, live_keys) or previous_graph_key
+                restore = await asyncio.to_thread(get_audio_output_overview, selection_key=restore_key)
                 try:
-                    await _verify_audio_output_selection(previous_graph_key, restore)
+                    await _verify_audio_output_selection(restore_key, restore)
                 except RuntimeError:
                     await dsp_orchestrator.sync_runtime(
                         reason="output-selection-rollback", target_overview=restore, ownership=DspSyncOwnership.RATE,
                     )
-                await _verify_audio_output_selection(previous_graph_key, restore)
+                await _verify_audio_output_selection(restore_key, restore)
         except BaseException:
             logger.exception("Output selection rollback failed")
             raise RuntimeError("Output selection failed and previous graph could not be restored")
@@ -5546,6 +5557,32 @@ def _deterministic_input_latency_ms() -> float:
 
 
 _src_latency_reader = SrcLatencyReader()
+_output_levels = OutputLevels(selected_key=lambda: _observed_output_key(),
+                              mute_held=lambda: _output_mute_held(),
+                              observation_owner=lambda: _output_mute_owner())
+
+
+def _observed_output_key() -> str | None:
+    native = runtime.dsp_runtime
+    active_key = ((native.snapshot().get('config') or {}).get('output_key') if native is not None else None)
+    if active_key:
+        return active_key
+    selected = samplerate._load_audio_output_selection().get('selected_key')
+    return selected
+
+
+def _output_mute_owner() -> tuple:
+    coordinator = playback_transition_coordinator
+    return coordinator, getattr(coordinator, 'gate_generation', 0)
+
+
+def _output_mute_held() -> bool:
+    coordinator = playback_transition_coordinator
+    return bool(coordinator is not None and (coordinator.gate.closed or coordinator.output_hold))
+
+
+def _observe_output_levels() -> None:
+    _output_levels.observe_selected()
 
 
 async def _electronic_input_latency_ms() -> float:
@@ -5564,7 +5601,8 @@ async def _electronic_input_latency_ms() -> float:
     measurement = _measurement_session_owns_live_rate() or snapshot.get('measurement_active', False)
     src_ms = await asyncio.to_thread(_src_latency_reader.read,
         include_ingress=external_ingress or not measurement, ingress_nodes=ingress_nodes,
-        owner=(snapshot['helper_pid'], snapshot['config'].get('plan_fingerprint')))
+        owner=(snapshot['helper_pid'], snapshot['config'].get('output_key'),
+               snapshot['config'].get('plan_fingerprint'), snapshot.get('graph_revision')))
     return helper_ms + src_ms
 
 

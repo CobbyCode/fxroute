@@ -19,6 +19,7 @@ import copy
 import hashlib
 import inspect
 from dataclasses import dataclass
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Iterator, Mapping, Sequence
 
@@ -403,6 +404,8 @@ class DSPRuntime:
         self._latency_tracking = False
         self._input_latency_provider: Callable[[], float | Awaitable[float]] | None = None
         self._last_input_latency_ms: float | None = None
+        self._graph_revision = 0
+        self._output_switch_scope = None
         self._measurement_latency_signature: tuple | None = None
         self._measurement_latency_snapshot: dict = {}
         self._measurement_latency_owner: asyncio.Task | None = None
@@ -411,6 +414,9 @@ class DSPRuntime:
     def configure_latency_tracking(self, *, input_latency_provider: Callable[[], float | Awaitable[float]]) -> None:
         self._latency_tracking = True
         self._input_latency_provider = input_latency_provider
+
+    def configure_output_level_tracking(self, switch_scope: Callable) -> None:
+        self._output_switch_scope = switch_scope
 
     async def _input_latency_ms(self) -> float:
         value = self._input_latency_provider() if self._input_latency_provider else 0.0
@@ -712,21 +718,40 @@ class DSPRuntime:
         if skip_if_locked and self._lock.locked():
             return False
         async with self._lock:
-            await self._remove_direct_source_links()
-            if self._config is not None:
-                await self._reconcile_output_links(self._config)
-            if any(source.startswith("mpv:output_") for source, _ in self._mapped_ingress):
-                # A playlist boundary can change the decoded layout without an
-                # app transition; adopt the real ports here so the repair ends
-                # as a relink instead of a full engine rebuild.
-                await self._reconcile_ingress_links()
-            if await self.verify():
-                return True
-            if self._config is None:
-                return False
-            for link in self._links:
-                await self._run(("pw-link", link.source, link.target))
-            return await self.verify()
+            key = self._config.output_key if self._config else None
+            scope = self._output_switch_scope if key else None
+            try:
+                async with scope(key, key) if scope else nullcontext():
+                    self._graph_revision += 1
+                    self._latency_snapshot = {}
+                    result = await self._reclean_links()
+                    if scope and not result:
+                        raise RuntimeError('Native DSP output links did not verify after repair')
+                    if result:
+                        await self.update_input_latency()
+                if result:
+                    self._error = None
+                return result
+            except BaseException as exc:
+                if scope:
+                    self._error = str(exc) or 'Native DSP output repair was interrupted'
+                    self._latency_snapshot = {}
+                raise
+
+    async def _reclean_links(self) -> bool:
+        await self._remove_direct_source_links()
+        if self._config is not None:
+            await self._reconcile_output_links(self._config)
+        if any(source.startswith("mpv:output_") for source, _ in self._mapped_ingress):
+            # Playlist boundaries can change decoded ingress without a transition.
+            await self._reconcile_ingress_links()
+        if await self.verify():
+            return True
+        if self._config is None:
+            return False
+        for link in self._links:
+            await self._run(("pw-link", link.source, link.target))
+        return await self.verify()
 
     def _direct_source_link_candidates(self) -> set[PipeWireLink]:
         if self._config is None:
@@ -775,6 +800,7 @@ class DSPRuntime:
         running = self._process is not None and getattr(self._process, "returncode", None) is None
         return {"active": running and not self._error and not self._control_poisoned and bool(self._links), "engine": "fxroute_native_dsp",
                 "helper_pid": getattr(self._process, "pid", None) if running else None,
+                "graph_revision": self._graph_revision,
                 "helper_args": [str(self.binary), str(self._config_path)] if self._config_path else None,
                 "config": {"sample_rate": self._config.sample_rate, "output_mode": self._config.output_mode,
                             "output_key": self._config.output_key,
@@ -1322,15 +1348,30 @@ class DSPRuntime:
     async def _run_sync(self, config: DSPRuntimeConfig, text: str, *,
                         initial_output_gain_db: float = 0.0,
                         validate_current: Callable[[], None] | None = None) -> None:
+        previous_key = self._config.output_key if self._config else None
+        scope = self._output_switch_scope
+        try:
+            async with scope(previous_key, config.output_key) if scope else nullcontext():
+                await self._apply_sync(config, text, initial_output_gain_db=initial_output_gain_db,
+                                       validate_current=validate_current)
+                if scope and not await self.verify():
+                    raise RuntimeError('Native DSP output links did not verify after sync')
+        except BaseException as exc:
+            if scope:
+                self._error = str(exc) or 'Native DSP output sync was interrupted'
+                self._latency_snapshot = {}
+            raise
+
+    async def _apply_sync(self, config: DSPRuntimeConfig, text: str, *,
+                          initial_output_gain_db: float = 0.0,
+                          validate_current: Callable[[], None] | None = None) -> None:
         """Preflight and commit one (config, text) pair; caller holds _lock."""
         if not self.binary.is_file():
             self._error = f"Native DSP binary is not available: {self.binary}"
             raise RuntimeError(self._error)
         self._latency_snapshot = {}
         self._last_input_latency_ms = None
-        if self._latency_tracking:
-            input_ms = await self._input_latency_ms()
-            text += f'input_latency {input_ms:.9g}\n'
+        self._graph_revision += 1
         await self._stop_orphan_helpers()
         config_name = await self._preflight_text(text)
         try:
@@ -1344,10 +1385,11 @@ class DSPRuntime:
             try:
                 if await self._try_live_update(text):
                     await self._reconcile_output_links(config)
-                    Path(config_name).unlink(missing_ok=True)
                     self._config = config
                     self._config_text = text
                     self._effect_bypass = any(line.strip() == 'bypass 1' for line in text.splitlines())
+                    await self.update_input_latency()
+                    Path(config_name).unlink(missing_ok=True)
                     self._error = None
                     return
                 if self._control_poisoned:
@@ -1357,10 +1399,11 @@ class DSPRuntime:
                     reply=True,
                 )
                 await self._reconcile_output_links(config)
-                Path(config_name).unlink(missing_ok=True)
                 self._config = config
                 self._config_text = text
                 self._effect_bypass = any(line.strip() == 'bypass 1' for line in text.splitlines())
+                await self.update_input_latency()
+                Path(config_name).unlink(missing_ok=True)
                 self._error = None
                 return
             except Exception as exc:
@@ -1387,6 +1430,7 @@ class DSPRuntime:
             await self._remove_direct_source_links()
             await self._reconcile_ingress_links()
             await self._reconcile_output_links(config)
+            await self.update_input_latency()
             self._error = None
         except Exception as exc:
             try:

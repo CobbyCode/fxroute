@@ -859,6 +859,24 @@ class CoordinatorTests(unittest.IsolatedAsyncioTestCase):
         self.assertLess(runtime.events.index("resolve-rate"), runtime.events.index("rate"))
         self.assertLess(runtime.events.index("rate"), runtime.events.index("prepare"))
 
+    async def test_startup_preserves_hardware_mute_without_fxroute_ownership(self):
+        runtime = FakeRuntime(muted=True)
+        with tempfile.TemporaryDirectory(prefix="fxroute-gate-test-") as directory:
+            coordinator = PlaybackTransitionCoordinator(runtime, gate_settle_seconds=0,
+                gate_state_path=pathlib.Path(directory) / "playback-gate.json")
+            self.assertTrue(await coordinator.reconcile_startup_gate())
+            self.assertTrue(runtime.muted)
+
+    async def test_gate_generation_changes_before_owned_mute_and_survives_restore(self):
+        runtime = FakeRuntime(muted=False)
+        coordinator = PlaybackTransitionCoordinator(runtime, gate_settle_seconds=0)
+        before = coordinator.gate_generation
+        await coordinator._close_gate('observation-race')
+        closed = coordinator.gate_generation
+        self.assertGreater(closed, before)
+        await coordinator._restore_gate('observation-race')
+        self.assertEqual(coordinator.gate_generation, closed)
+
     async def test_startup_reconciles_a_persisted_fxroute_failure_mute(self):
         with tempfile.TemporaryDirectory(prefix="fxroute-gate-test-") as directory:
             gate_path = pathlib.Path(directory) / "playback-gate.json"

@@ -34,6 +34,11 @@ class _OutputGateMixin:
     _startup_gate_error: str | None
     output_hold: str | None
 
+    @property
+    def gate_generation(self) -> int:
+        """Invalidate level observations spanning a gate ownership change."""
+        return getattr(self, '_gate_generation', 0)
+
     def _persist_gate_state(self) -> None:
         """Persist ownership before muting so a restart can resolve stale state."""
         if self.gate_state_path is None:
@@ -75,6 +80,7 @@ class _OutputGateMixin:
     async def _reconcile_startup_gate_locked(self) -> bool:
         if self._startup_gate_reconciled:
             return True
+        self._gate_generation = self.gate_generation + 1
         persisted = self._load_gate_state()
         # A safety hold outlives the process: startup keeps its mute, and
         # re-establishes one that was lost while FXRoute was down.
@@ -99,17 +105,8 @@ class _OutputGateMixin:
                         "Playback transition startup keeps the hardware output muted: %s",
                         held,
                     )
-                elif observed_muted:
-                    await self.runtime.set_hardware_mute(
-                        False, "startup-stale-mute-reconcile"
-                    )
-                    if await self.runtime.read_hardware_mute():
-                        raise RuntimeError(
-                            "startup stale hardware mute could not be cleared"
-                        )
-                    logger.info(
-                        "Playback transition startup cleared stale hardware mute"
-                    )
+                # Without a persisted FXRoute gate, hardware mute belongs to
+                # the user. Only the internal transport mute is ours to clear.
             except Exception as exc:
                 self._startup_gate_error = str(exc)
                 self._startup_gate_reconciled = False
@@ -214,6 +211,7 @@ class _OutputGateMixin:
     async def _close_gate(
         self, transition_id: str, *, audible_output: bool = False
     ) -> None:
+        self._gate_generation = self.gate_generation + 1
         # A new gate-ownership episode begins: the physical gate sink may have
         # changed since the previous episode, so drop the memoized resolution
         # before the first mute write below.
@@ -342,6 +340,7 @@ class _OutputGateMixin:
             invalidate()
 
     async def _latch_failure(self, transition_id: str) -> None:
+        self._gate_generation = self.gate_generation + 1
         self.gate.failure_latched = True
         self.gate.closed = True
         self.gate.owner = "fxroute"
@@ -356,4 +355,3 @@ class _OutputGateMixin:
             # The original transition error remains authoritative; the
             # structured status still records the output gate as latched.
             pass
-

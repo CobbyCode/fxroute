@@ -245,6 +245,15 @@ class SystemVolumeStatusCacheTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(system_volume.get_status_volume(), 70)
         run.assert_called()
 
+    def test_monitor_observes_selected_sink_levels_off_the_hot_status_path(self):
+        observations = []
+        with mock.patch.object(system_volume, '_output_level_observer',
+                               lambda: observations.append('observed'), create=True), \
+                mock.patch.object(system_volume, 'get_output_volume', return_value=26):
+            self.assertEqual(system_volume._read_status_volume()[0], 26)
+            system_volume.get_status_volume()
+        self.assertEqual(observations, ['observed'])
+
     async def _run_monitor_for(self, ticks, run):
         """Run the monitor loop for ``ticks`` refreshes with the sleep between them skipped."""
         real_sleep = asyncio.sleep

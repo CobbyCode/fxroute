@@ -20,7 +20,7 @@ import re
 import subprocess
 import threading
 import time
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 
 from audio.tool_env import c_locale_env
 
@@ -62,6 +62,13 @@ _status_volume_publish_lock = threading.Lock()
 _volume_monitor_read_lock = threading.Lock()
 _volume_monitor_pause_count = 0
 _volume_monitor_task: asyncio.Task[Any] | None = None
+_output_level_observer: Callable[[], None] | None = None
+
+
+def configure_output_level_observer(observer: Callable[[], None]) -> None:
+    """Observe replacement-sensitive levels on the existing monitor worker."""
+    global _output_level_observer
+    _output_level_observer = observer
 
 
 def volume_percent_to_linear_gain(percent: int | float, *, clamp_upper: bool = True) -> float:
@@ -293,6 +300,8 @@ def _read_status_volume() -> tuple[int, float] | None:
         if _volume_monitor_pause_count:
             return
         started_at = time.monotonic()
+        if _output_level_observer is not None:
+            _output_level_observer()
         return get_output_volume(), started_at
     finally:
         _volume_monitor_read_lock.release()
@@ -337,9 +346,10 @@ def start_volume_read_monitor() -> asyncio.Task[Any]:
 
 async def stop_volume_read_monitor() -> None:
     """Cancel and drain the owned volume read monitor."""
-    global _volume_monitor_task
+    global _volume_monitor_task, _output_level_observer
     task = _volume_monitor_task
     _volume_monitor_task = None
+    _output_level_observer = None
     if task is None:
         return
     task.cancel()
