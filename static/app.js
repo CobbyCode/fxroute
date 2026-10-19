@@ -1023,9 +1023,6 @@ const elements = {
     settingsCloseBtn: document.getElementById('close-settings'),
     settingsOutputSummary: document.getElementById('settings-output-summary'),
     settingsOutputSelect: document.getElementById('settings-output-select'),
-    settingsHdmiTransportGroup: document.getElementById('settings-hdmi-transport-group'),
-    settingsHdmiTransportSelect: document.getElementById('settings-hdmi-transport-select'),
-    settingsHdmiTransportHint: document.getElementById('settings-hdmi-transport-hint'),
     settingsOutputModeSelect: document.getElementById('settings-output-mode-select'),
     settingsModeGroup: document.getElementById('settings-mode-group'),
     settingsOutputModeHint: document.getElementById('settings-output-mode-hint'),
@@ -2035,10 +2032,6 @@ function setupSettingsActions() {
             if (outputKey) void saveAudioOutputSelection(outputKey);
         });
     }
-    elements.settingsHdmiTransportSelect?.addEventListener('change', (event) => {
-        const transport = event.target.value || '';
-        if (transport) void saveHdmiTransport(transport);
-    });
     if (elements.settingsOutputModeSelect) {
         elements.settingsOutputModeSelect.addEventListener('change', (event) => {
             const mode = event.target.value || 'stereo';
@@ -2781,16 +2774,6 @@ function renderSettingsPanel() {
         elements.settingsOutputSelect.disabled = !overview.available || !!pendingSelectionKey || !selectableOutputs.length;
     }
 
-    hdmiTransportModule()?.render({
-        group: elements.settingsHdmiTransportGroup,
-        select: elements.settingsHdmiTransportSelect,
-        hint: elements.settingsHdmiTransportHint,
-    }, selectedOutput, {
-        pending: overview.pendingTransport || null,
-        busy: !overview.available || !!pendingSelectionKey,
-        focused: !!elements.settingsHdmiTransportSelect && isSelectFocused(elements.settingsHdmiTransportSelect),
-    });
-
     const deviceProfile = selectedOutput?.device_profile || null;
     const tiers = Array.isArray(deviceProfile?.tiers) ? deviceProfile.tiers : [];
     const activeTier = tiers.find((tier) => tier.id === deviceProfile?.active_tier) || null;
@@ -3192,11 +3175,6 @@ function applySourceModeUiState() {
     }
 }
 
-function hdmiTransportModule() {
-    // HDMI layout selector lives in static/hdmi_transport_ui.js.
-    return (typeof window !== 'undefined' && window.FXRouteHdmiTransport) || (typeof globalThis !== 'undefined' && globalThis.FXRouteHdmiTransport) || null;
-}
-
 function audioOutputsState(data) {
     return {
         loaded: true,
@@ -3207,33 +3185,8 @@ function audioOutputsState(data) {
         outputs: Array.isArray(data.outputs) ? data.outputs : [],
         notes: Array.isArray(data.notes) ? data.notes : [],
         pendingSelectionKey: null,
-        pendingTransport: null,
         output_mode: data.output_mode || state.settings.audioOutputs.output_mode,
     };
-}
-
-// Stereo / 5.1 / 7.1 of the selected HDMI output; the response is the new
-// output overview, like an output selection.
-async function saveHdmiTransport(transport) {
-    const outputs = state.settings.audioOutputs;
-    const key = outputs.selected_output?.key || '';
-    if (!key || !transport || transport === outputs.selected_output?.hdmi?.transport) return;
-    outputs.pendingSelectionKey = key;
-    outputs.pendingTransport = transport;
-    renderSettingsPanel();
-    try {
-        const data = await hdmiTransportModule().save((...args) => fetch(...args), key, transport);
-        state.settings.audioOutputs = audioOutputsState(data);
-        renderSettingsPanel();
-        await fetchOutputSystemCatalog(true);
-        showToast('HDMI layout updated', 'success');
-    } catch (error) {
-        state.settings.audioOutputs.pendingSelectionKey = null;
-        state.settings.audioOutputs.pendingTransport = null;
-        renderSettingsPanel();
-        showToast(error.message || 'Failed to change the HDMI layout', 'error');
-        void fetchAudioOutputOverview();
-    }
 }
 
 async function saveAudioOutputSelection(key) {

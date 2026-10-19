@@ -15,8 +15,8 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from audio import hdmi
-from audio.output_api import output_channel_labels
-from audio.output_state import default_output_state, routing_for_device, seed_device_routing, set_crossover
+from audio.output_api import output_channel_labels, output_state_response
+from audio.output_state import default_output_state, routing_for_device, seed_device_routing, set_crossover, set_mode_routing
 from audio.output_topology import derive_topology
 from audio.samplerate import overview, recovery
 from audio.samplerate.parsing import successor_sink_key
@@ -107,6 +107,17 @@ class EldTests(unittest.TestCase):
 
 
 class TransportOptionTests(unittest.TestCase):
+    def test_automatic_transport_follows_mode_and_highest_routed_output(self):
+        for mode, assignments, expected in (
+                ("stereo", ["main_l", "main_r"], "stereo"),
+                ("stereo-sub", ["main_l", "main_r", "off", "off", "off", "sub1"], "5.1"),
+                ("surround", ["main_l", "main_r", "rear_l", "rear_r", "center", "sub1", "off", "off"], "5.1"),
+                ("surround", ["main_l", "main_r", "off", "off", "off", "off", "side_l", "side_r"], "7.1"),
+                ("stereo", ["off"] * 6 + ["main_l", "main_r"], "7.1"),
+                ("stereo-sub", ["main_l", "main_r"] + ["off"] * 5 + ["sub1"], "7.1")):
+            with self.subTest(mode=mode, assignments=assignments):
+                self.assertEqual(hdmi.required_transport(mode, assignments), expected)
+
     def test_eight_channel_receiver_takes_every_layout(self):
         options = hdmi.transport_options(card(), 0, hdmi.parse_eld(MARANTZ_ELD))
         self.assertEqual([(item["id"], item["channels"], item["available"]) for item in options],
@@ -196,23 +207,62 @@ class ChannelPositionTests(unittest.TestCase):
 
 
 class SeedRoutingTests(unittest.TestCase):
-    def test_defaults_are_stored_once_per_layout(self):
+    def test_migration_keeps_dormant_crossover_ways(self):
+        state = set_crossover(default_output_state(), "stereo", True)
+        state = set_mode_routing(state, "stereo", "legacy-device",
+                                 ["left_low", "right_low", "left_high", "right_high"])
+        state = set_crossover(state, "stereo", False)
+        routing = state["modes"]["stereo"]["routing"]
+        routing[SURROUND71] = routing.pop("legacy-device")
+        seeded = seed_device_routing(state, STEREO, {"stereo": hdmi.default_assignments(PORTS_71, "stereo")})
+        self.assertEqual(seeded["modes"]["stereo"]["routing"][f"{CARD}#hdmi0"],
+                         ["main_l", "main_r", "left_high", "right_high"])
+        self.assertEqual(routing_for_device(seeded, "stereo", STEREO, 8),
+                         ["main_l", "main_r", "off", "off"])
+
+    def test_stereo_transport_renders_the_configured_front_mapping(self):
+        state = set_mode_routing(default_output_state(), "stereo", SURROUND71,
+                                 ["main_r", "main_l"] + ["off"] * 6)
+        self.assertEqual(routing_for_device(state, "stereo", STEREO, 2)[:2], ["main_r", "main_l"])
+        self.assertEqual(routing_for_device(state, "stereo", ANALOG, 2), ["main_l", "main_r"])
+
+    def test_connector_routing_survives_transport_changes_without_overwriting_legacy(self):
+        state = default_output_state()
+        legacy = ["main_r", "main_l", "rear_l", "rear_r", "center", "sub1"]
+        # Existing profile-specific routings remain readable during migration.
+        state = set_mode_routing(state, "surround", SURROUND, legacy)
+        state["modes"]["surround"]["routing"][SURROUND] = legacy
+        edited = set_mode_routing(state, "surround", SURROUND71,
+                                  ["main_l", "main_r", "rear_l", "rear_r", "center", "sub1", "off", "off"])
+        self.assertEqual(routing_for_device(edited, "surround", SURROUND, 6)[:2], ["main_l", "main_r"])
+        self.assertEqual(routing_for_device(edited, "surround", STEREO, 8)[-2:], ["off", "off"])
+        self.assertEqual(edited["modes"]["surround"]["routing"][SURROUND], legacy)
+
+    def test_seed_migrates_existing_layout_instead_of_replacing_it_with_defaults(self):
+        state = default_output_state()
+        legacy = ["main_r", "main_l", "off", "off", "center", "sub1"]
+        state = set_mode_routing(state, "surround", "legacy-device", legacy)
+        state["modes"]["surround"]["routing"][SURROUND] = state["modes"]["surround"]["routing"].pop("legacy-device")
+        seeded = seed_device_routing(state, STEREO, {"surround": hdmi.default_assignments(PORTS_71, "surround")})
+        self.assertEqual(routing_for_device(seeded, "surround", SURROUND71, 8), legacy)
+        self.assertEqual(seeded["modes"]["surround"]["routing"][SURROUND], legacy)
+
+    def test_defaults_are_stored_once_per_connector(self):
         defaults = {mode: hdmi.default_assignments(PORTS_71, mode) for mode in ("stereo", "stereo-sub", "surround")}
         seeded = seed_device_routing(default_output_state(), SURROUND71, defaults)
         self.assertEqual(routing_for_device(seeded, "surround", SURROUND71, 8), defaults["surround"])
         self.assertIn("center", seeded["modes"]["surround"]["banks"])
         self.assertIn("sub1", seeded["modes"]["surround"]["processing"])
-        edited = dict(seeded)
-        edited["modes"]["surround"]["routing"][SURROUND71] = ["main_l", "main_r"] + ["off"] * 6
+        edited = set_mode_routing(seeded, "surround", SURROUND71, ["main_l", "main_r"] + ["off"] * 6)
         again = seed_device_routing(edited, SURROUND71, defaults)
-        self.assertEqual(again["modes"]["surround"]["routing"][SURROUND71], ["main_l", "main_r"] + ["off"] * 6)
-        # Another layout of the same connector keeps its own routing.
+        self.assertEqual(routing_for_device(again, "surround", SURROUND, 6), ["main_l", "main_r"] + ["off"] * 6)
+        # Legacy profile keys are not created or overwritten by new edits.
         self.assertNotIn(SURROUND, again["modes"]["surround"]["routing"])
 
     def test_crossover_mode_keeps_its_no_default_behavior(self):
         state = set_crossover(default_output_state(), "surround", True)
         defaults = {"surround": hdmi.default_assignments(PORTS_71, "surround")}
-        self.assertNotIn(SURROUND71, seed_device_routing(state, SURROUND71, defaults)["modes"]["surround"]["routing"])
+        self.assertEqual(seed_device_routing(state, SURROUND71, defaults)["modes"]["surround"]["routing"], {})
 
 
 class ProbeTests(unittest.TestCase):
@@ -256,6 +306,12 @@ class WatchTests(unittest.TestCase):
         self.assertIsNone(self.decide())
         self.assertIsNone(self.decide(current="5.1"))
         self.assertIsNone(self.decide(current="5.1"))
+
+    def test_automatic_mode_enforces_routing_even_without_a_hotplug(self):
+        for _ in range(2):
+            result = self.watch.decide(self.identity, connected=True, current="7.1", fallback="7.1",
+                                       options=self.eight, receiver="avr", desired="stereo", automatic=True)
+        self.assertEqual(result, "stereo")
 
     def test_lost_connection_restores_the_chosen_layout(self):
         self.decide()
@@ -311,6 +367,17 @@ class DesiredStoreTests(unittest.TestCase):
 
 
 class OverviewTests(unittest.TestCase):
+    def test_stereo_transport_keeps_receiver_outputs_available_for_routing(self):
+        info = hdmi.describe(STEREO, card=card(), eld=hdmi.parse_eld(MARANTZ_ELD))
+        payload = {"selected_output": {"key": STEREO, "channels": 2, "hdmi": info},
+                   "output_mode": {"effective_output_key": STEREO, "effective_output_channels": 2,
+                                   "hardware_playback_ports": PORTS_71[:2]}}
+        result = output_state_response(default_output_state(), payload)
+        self.assertEqual(result["device"]["channels"], 8)
+        self.assertEqual(result["device"]["channel_labels"][-2:], ["Side L", "Side R"])
+        self.assertEqual(result["device"]["routing"]["stereo-sub"],
+                         ["main_l", "main_r", "off", "off", "off", "sub1", "off", "off"])
+
     def test_hdmi_outputs_carry_receiver_and_transports(self):
         outputs = [{"key": SURROUND71, "supported_rates": [44100, 48000, 96000],
                     "native_supported_rates": [44100, 48000, 96000]},

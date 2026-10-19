@@ -9,8 +9,8 @@ identity is the ALSA card plus N. Which transports a connector can carry comes
 from the receiver's ELD (its LPCM short audio descriptors); the card profile
 list only says which mappings exist.
 
-The routing labels and defaults are derived from the sink's real PipeWire
-ports (``playback_FL`` … ``playback_SR``), never from a channel index.
+Live links follow the sink's real PipeWire ports. The routing editor exposes
+the receiver's ACP channel positions independently of the active transport.
 """
 
 from __future__ import annotations
@@ -234,6 +234,51 @@ def best_supported(options: Iterable[Mapping], wanted: str | None) -> str | None
     return max(fitting, key=lambda option: option["channels"])["id"] if fitting else None
 
 
+def required_transport(mode: str, assignments: Iterable[str]) -> str:
+    """Smallest transport carrying the mode and every assigned physical output."""
+    minimum = 2 if mode == "stereo" else 6
+    channels = max([minimum] + [index + 1 for index, role in enumerate(assignments) if role != "off"])
+    return next((item["id"] for item in TRANSPORTS if item["channels"] >= channels), "7.1")
+
+
+def routing_key(key: str) -> str:
+    """Connector-wide routing identity, independent of its current transport."""
+    sink = parse_sink_key(key)
+    return sink.identity if sink else key
+
+
+def stored_routing(routings: Mapping, key: str) -> list | None:
+    """Prefer connector routing, then the selected legacy layout, then its widest sibling."""
+    sink = parse_sink_key(key)
+    if sink is None:
+        return routings.get(key)
+    if sink.identity in routings:
+        return routings[sink.identity]
+    if key in routings and sink.transport != "stereo":
+        return routings[key]
+    for item in reversed(TRANSPORTS):
+        legacy = sink_key(sink.card, sink.connector, item["id"])
+        if legacy in routings:
+            return routings[legacy]
+    return None
+
+
+def routing_ports(channels: int) -> list[str]:
+    """ACP HDMI channel positions for the configurable receiver capacity."""
+    positions = ("FL", "FR", "RL", "RR", "FC", "LFE", "SL", "SR")
+    return [f"playback_{position}" for position in positions[:channels]]
+
+
+def routing_capacity(overview: Mapping) -> int | None:
+    """Configurable LPCM capacity, not the active transport's channel count."""
+    output = overview.get("selected_output") or overview.get("current_output") or {}
+    if not is_hdmi_key(output.get("key")):
+        return None
+    options = (output.get("hdmi") or {}).get("transports") or []
+    available = [int(item["channels"]) for item in options if item.get("available")]
+    return max(available, default=int(output.get("channels") or 2))
+
+
 def _port_suffix(port: object) -> str:
     return str(port or "").rsplit(":", 1)[-1].removeprefix("playback_")
 
@@ -384,8 +429,9 @@ class TransportWatch:
     gets the transport chosen in FXRoute back once it is connected again,
     capped at what the receiver now takes. A transport the receiver cannot
     take always falls back to the largest one it can. A change made outside
-    FXRoute while the receiver stays connected is left alone. Each target is
-    retried at most every RESTORE_RETRY_SECONDS.
+    FXRoute while the receiver stays connected is left alone unless automatic
+    routing authority is requested. Each target is retried at most every
+    RESTORE_RETRY_SECONDS.
     """
 
     def __init__(self, clock=time.monotonic):
@@ -396,7 +442,8 @@ class TransportWatch:
         self._attempts: dict[tuple[str, str], float] = {}
 
     def decide(self, identity: str, *, connected: bool, current: str | None, fallback: str,
-               options: list[Mapping], receiver: object, desired: str | None) -> str | None:
+               options: list[Mapping], receiver: object, desired: str | None,
+               automatic: bool = False) -> str | None:
         if not connected:
             self._armed.add(identity)
             self._connected_ticks[identity] = 0
@@ -407,7 +454,7 @@ class TransportWatch:
         if previous is not None and previous != receiver:
             self._armed.add(identity)
         armed = identity in self._armed
-        wanted = desired if armed and desired else current or desired or fallback
+        wanted = desired if (automatic or armed) and desired else current or desired or fallback
         target = best_supported(options, wanted)
         if target is None or target == current:
             if current is not None:

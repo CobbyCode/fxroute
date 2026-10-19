@@ -527,7 +527,7 @@ from audio.output_ports import (hardware_link_target, hardware_playback_port_fal
                                 resolve_hardware_playback_ports)
 from audio.output_service import OutputService, OutputServiceDeps
 from audio.output_state_store import OutputStateStore, StateConflictError
-from audio.output_state import seed_device_routing
+from audio.output_state import seed_device_routing, routing_for_device
 from audio.output_topology import MODES as OUTPUT_STATE_MODES, SUB_ROLES, side_for_role
 from audio import hdmi
 from audio.filter_banks import resolve_bank, selected_bank
@@ -5017,38 +5017,6 @@ async def save_audio_output_selection_route(request: Request):
         raise HTTPException(status_code=500, detail=f"Failed to switch audio output: {exc}")
 
 
-@app.post("/api/audio/outputs/transport")
-async def save_audio_output_transport_route(request: Request):
-    """Select Stereo, 5.1 or 7.1 for the selected HDMI output."""
-    try:
-        body = await request.json()
-        output_key = str(body.get("key", "")).strip()
-        transport_id = str(body.get("transport", "")).strip()
-    except Exception:
-        raise HTTPException(status_code=400,
-                            detail='Invalid JSON body, expected {"key": <string>, "transport": "stereo"|"5.1"|"7.1"}')
-
-    async def change() -> dict:
-        sink = hdmi.parse_sink_key(output_key)
-        if sink is None:
-            raise ValueError("Only an HDMI output has selectable channel layouts")
-        selected = (await asyncio.to_thread(samplerate._load_audio_output_selection)).get("selected_key")
-        if selected != output_key:
-            raise HTTPException(status_code=409, detail="Select the HDMI output before choosing its channel layout")
-        result = await _apply_hdmi_transport(sink, transport_id, remember=True)
-        _hdmi_transport_watch.settled(sink.identity)
-        return result
-
-    try:
-        return await _owned_output_change(change, what="HDMI layout change")
-    except HTTPException:
-        raise
-    except ValueError as exc:
-        raise bad_request(exc)
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Failed to change the HDMI layout: {exc}")
-
-
 async def _verify_audio_output_selection(key: str, target: dict) -> None:
     snapshot = runtime.dsp_runtime.snapshot() if runtime.dsp_runtime is not None else {}
     if not snapshot.get("active") or (snapshot.get("config") or {}).get("output_key") != key:
@@ -5058,7 +5026,7 @@ async def _verify_audio_output_selection(key: str, target: dict) -> None:
         raise RuntimeError(f"Native DSP links did not verify for output {key}")
 
 
-async def _apply_audio_output_selection(key: str) -> dict:
+async def _apply_audio_output_selection(key: str, *, seed_routing: bool = True) -> dict:
     """Apply and verify a target under Coordinator and rate ownership."""
     selected = await asyncio.to_thread(samplerate.prepare_audio_output_selection, key)
     previous = await asyncio.to_thread(get_audio_output_overview)
@@ -5072,7 +5040,8 @@ async def _apply_audio_output_selection(key: str) -> dict:
     target = await asyncio.to_thread(get_audio_output_overview, selection_key=key)
     if (target.get("selected_output") or {}).get("key") != key:
         raise RuntimeError("Selected output is no longer available")
-    await asyncio.to_thread(_seed_hdmi_routing, key, target)
+    if seed_routing:
+        await asyncio.to_thread(_seed_hdmi_routing, key, target)
 
     try:
         await asyncio.to_thread(samplerate._set_default_sink, selected["name"])
@@ -5129,6 +5098,9 @@ def _seed_hdmi_routing(key: str, overview: dict) -> None:
     """
     mode = overview.get("output_mode") or {}
     ports = mode.get("hardware_playback_ports") or mode.get("hardware_playback_ports_from_channel_map") or []
+    capacity = hdmi.routing_capacity(overview)
+    if capacity is not None:
+        ports = hdmi.routing_ports(capacity)
     if not hdmi.is_hdmi_key(key) or len(ports) <= 2:
         return
     defaults = {output_mode: hdmi.default_assignments(ports, output_mode) for output_mode in OUTPUT_STATE_MODES}
@@ -5238,6 +5210,62 @@ async def _apply_hdmi_transport(sink: hdmi.HdmiSink, transport_id: str, *, remem
     return result
 
 
+async def _apply_hdmi_output_state(body: dict, state: dict, candidate: dict, overview: dict) -> dict | None:
+    """Apply transport-changing edits through the owned output-selection transaction."""
+    key, _channels = output_state_device(overview)
+    sink = hdmi.parse_sink_key(key)
+    kind = (body.get("mutation") or {}).get("kind")
+    if sink is None or kind not in {"switch_mode", "set_routing", "set_crossover"}:
+        return None
+    mode = candidate["active_mode"]
+    required = hdmi.required_transport(mode, routing_for_device(candidate, mode, key))
+    options = ((overview.get("selected_output") or {}).get("hdmi") or {}).get("transports") or []
+    target = hdmi.best_supported(options, required)
+    if target is None or target == sink.transport:
+        return None
+
+    async def change():
+        service = get_output_service()
+        if service.load() != state:
+            raise HTTPException(status_code=409, detail="Output state changed; refresh before applying")
+        selected = (await asyncio.to_thread(samplerate._load_audio_output_selection)).get("selected_key")
+        live_key, _ = output_state_device(await asyncio.to_thread(get_audio_output_overview))
+        if (selected and selected != key) or live_key != key:
+            raise HTTPException(status_code=409, detail="Output device changed; retry the edit")
+        status = await asyncio.to_thread(get_samplerate_status)
+        rate = status.get("active_rate") or status.get("force_rate")
+        channels = hdmi.transport(target)["channels"]
+        target_key = hdmi.sink_key(sink.card, sink.connector, target)
+        try:
+            plan = service.compile_plan(candidate, output_key=target_key, channels=channels, sample_rate_hz=rate)
+            service.compile_layout(plan)
+        except (ValueError, FileNotFoundError):
+            # Individual routing selectors may temporarily leave an incomplete pair.
+            committed = service.commit_unowned(candidate, expected_revision=state["revision"])
+            return {"status": "ok", "revision": committed["revision"], "active_mode": mode,
+                    "fingerprint": None, "fingerprint_changed": None, "live_applied": False,
+                    "live_reason": "not-activatable",
+                    "topology": output_state_topology(committed, mode, key, hdmi.routing_capacity(overview))}
+        committed = service.commit_unowned(candidate, expected_revision=state["revision"])
+        try:
+            result = await _apply_hdmi_transport(sink, target, remember=True)
+        except BaseException:
+            service.revert(state, expected_revision=committed["revision"])
+            await _apply_audio_output_selection(key, seed_routing=False)
+            raise
+        _hdmi_transport_watch.settled(sink.identity)
+        live_key, live_channels = output_state_device(result)
+        return {"status": "ok", "revision": service.load()["revision"], "active_mode": mode,
+                "fingerprint": service.fingerprint_plan(plan), "fingerprint_changed": True,
+                "live_applied": True, "live_reason": None,
+                "topology": output_state_topology(committed, mode, live_key, live_channels)}
+
+    try:
+        return await _owned_output_change(change, what="Automatic HDMI transport")
+    except ValueError as exc:
+        raise bad_request(exc)
+
+
 async def _reconcile_hdmi_transport() -> None:
     """Restore the chosen HDMI layout after a lost connection, or fall back.
 
@@ -5252,17 +5280,33 @@ async def _reconcile_hdmi_transport() -> None:
             or (native is not None and native.sync_in_progress)):
         return
     selected = (await asyncio.to_thread(samplerate._load_audio_output_selection)).get("selected_key")
+    overview = await asyncio.to_thread(get_audio_output_overview)
+    if not selected:
+        selected, _ = output_state_device(overview)
     sink = hdmi.parse_sink_key(selected)
     if sink is None:
         return
     desired = (await asyncio.to_thread(hdmi.load_desired)).get(sink.identity) or {}
     probe = await asyncio.to_thread(_probe_hdmi_connector, sink, desired.get("pcm_device"))
+    await asyncio.to_thread(_seed_hdmi_routing, selected, overview)
+    state = get_output_service().load()
+    required = hdmi.required_transport(state["active_mode"], routing_for_device(state, state["active_mode"], selected))
     current = hdmi.parse_sink_key(probe["current_key"]) if probe["current_key"] else None
     target = _hdmi_transport_watch.decide(
         sink.identity, connected=probe["connected"], current=current.transport if current else None,
         fallback=sink.transport, options=probe["options"], receiver=hdmi.receiver_signature(probe["eld"]),
-        desired=desired.get("transport"))
+        desired=required, automatic=True)
     if target is None:
+        return
+    try:
+        status = await asyncio.to_thread(get_samplerate_status)
+        service = get_output_service()
+        plan = service.compile_plan(
+            state, output_key=hdmi.sink_key(sink.card, sink.connector, target),
+            channels=hdmi.transport(target)["channels"],
+            sample_rate_hz=status.get("active_rate") or status.get("force_rate"))
+        service.compile_layout(plan)
+    except (ValueError, FileNotFoundError):
         return
     logger.info("HDMI layout restore: connector=%s current=%s target=%s chosen=%s",
                 sink.identity, current.transport if current else None, target, desired.get("transport"))
@@ -5270,6 +5314,10 @@ async def _reconcile_hdmi_transport() -> None:
         if session.lock.locked() or session.has_active_jobs:
             return
         async with session.lock:
+            if (get_output_service().load() != state or
+                    (await asyncio.to_thread(samplerate._load_audio_output_selection)).get("selected_key")
+                    not in (None, selected)):
+                return
             await finish_then_cancel(_apply_hdmi_transport(sink, target, remember=False), what="HDMI layout restore")
     await dsp_orchestrator.refresh_peak_monitor_after_effects_change("hdmi-layout-restore")
 
@@ -5678,11 +5726,13 @@ async def _routed_roles(state: dict, mode: str) -> list[str]:
 @app.get("/api/audio/output-state")
 async def get_audio_output_state():
     service = get_output_service()
+    overview = await asyncio.to_thread(get_audio_output_overview)
+    key, _channels = output_state_device(overview)
+    await asyncio.to_thread(_seed_hdmi_routing, key, overview)
     try:
         state = service.load()
     except ValueError as exc:
         raise HTTPException(status_code=500, detail=f"Output state is unavailable: {exc}")
-    overview = await asyncio.to_thread(get_audio_output_overview)
     return output_api.output_state_response(state, overview)
 
 
@@ -7049,6 +7099,7 @@ output_application = OutputApplication(OutputApplyDeps(
     source_selection=lambda: samplerate._load_audio_source_selection(),
     validate_level_result=lambda *args: level_match_api.validate_result(*args),
     mark_level_applied=lambda mutation: level_match_api.mark_result_applied(mutation),
+    apply_hdmi_candidate=lambda *args: _apply_hdmi_output_state(*args),
 ))
 
 dsp_api.register_dsp_routes(app, _make_dsp_api_deps())

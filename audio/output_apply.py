@@ -18,11 +18,13 @@ from typing import Any, Awaitable, Callable
 
 from fastapi import HTTPException
 
+from audio import hdmi
 from audio.input_output_mode import remember_mode, restore_mode
 from audio.output_api import build_output_state_mutation, require_state_mode
 from audio.output_context import output_state_device, output_state_topology
 from audio.output_service import MeasurementActiveError, OutputService
-from audio.output_state import effective_crossover_enabled, routing_for_device
+from audio.output_state import effective_crossover_enabled, routing_for_device, seed_device_routing
+from audio.output_topology import MODES
 from audio.output_state_store import StateConflictError
 from dsp.output_render import OutputRenderer, build_plan_target
 from http_errors import bad_request
@@ -72,6 +74,7 @@ class OutputApplyDeps:
     source_selection: Callable[[], dict]
     validate_level_result: Callable[[dict, dict], None]
     mark_level_applied: Callable[[dict], None]
+    apply_hdmi_candidate: Callable[..., Awaitable[dict | None]] | None = None
 
 
 class OutputApplication:
@@ -199,9 +202,14 @@ class OutputApplication:
                 "revision": state["revision"]})
         overview = await asyncio.to_thread(self._deps.get_overview)
         output_key, channels = output_state_device(overview)
-        mutate = self._mutation(body.get("mutation"), output_key=output_key, channels=channels)
+        capacity = hdmi.routing_capacity(overview)
+        mutate = self._mutation(body.get("mutation"), output_key=output_key,
+                                channels=capacity or channels)
         try:
-            candidate = await asyncio.to_thread(mutate, state)
+            base = (seed_device_routing(state, output_key, {
+                mode: hdmi.default_assignments(hdmi.routing_ports(capacity), mode) for mode in MODES})
+                if capacity is not None and capacity > 2 else state)
+            candidate = await asyncio.to_thread(mutate, base)
             if (body.get("mutation") or {}).get("kind") == "switch_mode":
                 selection = self._deps.source_selection()
                 if input_modes_override is not None:
@@ -212,6 +220,11 @@ class OutputApplication:
                     candidate = remember_mode(candidate, selection)
         except ValueError as exc:
             raise bad_request(exc)
+
+        if self._deps.apply_hdmi_candidate is not None:
+            result = await self._deps.apply_hdmi_candidate(body, state, candidate, overview)
+            if result is not None:
+                return result
 
         status = await asyncio.to_thread(self._deps.get_status)
         target_rate = status.get("active_rate")

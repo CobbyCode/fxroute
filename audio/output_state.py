@@ -7,6 +7,7 @@ import copy
 import math
 
 from audio.output_routing import device_key
+from audio import hdmi
 from audio.filter_banks import bank_definitions, owning_bank_ids, resolve_bank, summarize_banks
 from audio.output_topology import (CENTER_ROLES, MAIN_ROLES, MODES, SURROUND_GROUPS, derive_topology, dormant_roles,
                                    roles_for_mode, validate_assignments)
@@ -308,8 +309,8 @@ def set_av_sync(state: dict, mode: str, *, target_ms: object) -> dict:
 def routing_for_device(state: dict, mode: str, output_key: str, channels: int | None = None) -> list[str]:
     """Active routing, or the fixed stereo mapping on two-output devices.
 
-    A device with exactly two hardware outputs always plays Out 1 = Main L
-    and Out 2 = Main R; custom routing is only meaningful with more outputs.
+    A non-HDMI device with exactly two hardware outputs plays Out 1 = Main L
+    and Out 2 = Main R. HDMI retains its configured receiver-channel mapping.
     Passing the effective channel count returns that fixed mapping so every
     caller renders the same topology instead of slicing a stale stored list.
 
@@ -323,11 +324,12 @@ def routing_for_device(state: dict, mode: str, output_key: str, channels: int | 
             count = int(channels)
         except (TypeError, ValueError):
             count = None
-        if count == 2:
+        if count == 2 and not hdmi.is_hdmi_key(output_key):
             return list(MAIN_ROLES)
     config = state["modes"][mode]
     fallback = [] if config["crossover_enabled"] else list(MAIN_ROLES)
-    stored = list(config["routing"].get(_device_identity(output_key), fallback))
+    saved = hdmi.stored_routing(config["routing"], _device_identity(output_key))
+    stored = list(saved if saved is not None else fallback)
     dormant = set(dormant_roles(mode, crossover_enabled=config["crossover_enabled"]))
     return ["off" if role in dormant else role for role in stored]
 
@@ -370,9 +372,9 @@ def set_mode_routing(state: dict, mode: str, output_key: str, assignments: objec
     config = result["modes"][mode]
     values = list(validate_assignments(mode, assignments, crossover_enabled=config["crossover_enabled"]))
     count = len(values)
-    key = _device_identity(output_key)
+    key = hdmi.routing_key(_device_identity(output_key))
     config = result["modes"][mode]
-    stored = config["routing"].get(key, [])
+    stored = hdmi.stored_routing(config["routing"], output_key) or []
     dormant = set(dormant_roles(mode, crossover_enabled=config["crossover_enabled"]))
     values = [stored[index] if (value == "off" and index < len(stored) and stored[index] in dormant)
               else value for index, value in enumerate(values)]
@@ -405,10 +407,15 @@ def seed_device_routing(state: dict, output_key: str, assignments_by_mode: dict)
     crossover on keeps the existing no-default behavior.
     """
     result = validate_output_state(state)
-    key = _device_identity(output_key)
+    key = hdmi.routing_key(_device_identity(output_key))
     for mode, assignments in assignments_by_mode.items():
         config = result["modes"][mode]
-        if assignments and key not in config["routing"] and not config["crossover_enabled"]:
+        saved = hdmi.stored_routing(config["routing"], output_key)
+        if key in config["routing"]:
+            continue
+        if saved is not None:
+            config["routing"][key] = list(saved)
+        elif assignments and not config["crossover_enabled"]:
             result = set_mode_routing(result, mode, output_key, assignments)
     return result
 

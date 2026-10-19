@@ -13,7 +13,7 @@ from audio.output_state import (
     FILTER_SLOPES, bass_crossover_for_group, bass_crossover_for_side, roles_for_mode,
     routing_for_device, select_bank, set_av_sync, set_bank_preset, set_bass_management,
     set_crossover, set_mode_extras, set_mode_routing, set_output_processing,
-    shared_bass_crossover, switch_all_banks, switch_mode,
+    shared_bass_crossover, switch_all_banks, switch_mode, seed_device_routing,
 )
 from audio.output_topology import CENTER_ROLES, MODES, SPEAKER_ROLES, side_for_role, surround_group
 from dsp.crossover import design_crossover
@@ -175,6 +175,11 @@ def output_channel_labels(overview: dict, output_key: str) -> list:
 
 def output_state_response(state: dict, overview: dict) -> dict:
     output_key, channels = output_state_device(overview)
+    capacity = hdmi.routing_capacity(overview)
+    if capacity is not None:
+        channels = capacity
+        state = seed_device_routing(state, output_key, {
+            mode: hdmi.default_assignments(hdmi.routing_ports(capacity), mode) for mode in MODES})
     modes = {}
     for mode, config in state["modes"].items():
         topology = output_state_topology(state, mode, output_key, channels)
@@ -195,7 +200,8 @@ def output_state_response(state: dict, overview: dict) -> dict:
     return {
         "status": "ok", "revision": state["revision"], "active_mode": state["active_mode"],
         "device": {"key": output_key, "channels": channels, "hdmi": hdmi.is_hdmi_key(output_key),
-                   "channel_labels": output_channel_labels(overview, output_key),
+                   "channel_labels": (hdmi.channel_labels(hdmi.routing_ports(capacity)) if capacity is not None
+                                      else output_channel_labels(overview, output_key)),
                    "routing": {mode: routing_for_device(state, mode, output_key, channels) for mode in MODES}},
         "modes": modes,
         "capabilities": {
