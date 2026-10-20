@@ -27,6 +27,8 @@
     'use strict';
 
     const FOCUS_CLASS = 'tv-nav-focus';
+    const CARD_SELECTOR = '.album-card, .station-card';
+    const CARD_FAVORITE_SELECTOR = '.album-card-fav, .station-card-fav, .streaming-fav';
 
     // Anything a remote can land on. tabIndex >= 0 is checked separately so
     // inactive tab stops and click-only decoration stay out of the path.
@@ -224,6 +226,15 @@
     function setNavFocus(ctx, element) {
         ctx.navFocus = element;
         ctx.navRect = rectOf(element);
+        const card = navigationCard(element);
+        const anchor = card?.parentElement.closest('[id]');
+        ctx.cardFocus = card ? {
+            anchor,
+            anchorParent: anchor?.parentElement,
+            key: cardKey(card),
+            index: Array.from(card.parentElement.children).filter(item => item.matches(CARD_SELECTOR)).indexOf(card),
+            favorite: element.matches(CARD_FAVORITE_SELECTOR),
+        } : null;
         if (ctx.observer && ctx.doc.body) {
             ctx.observer.observe(ctx.doc.body, { childList: true, subtree: true });
         }
@@ -232,6 +243,7 @@
     function clearNavFocus(ctx) {
         ctx.navFocus = null;
         ctx.navRect = null;
+        ctx.cardFocus = null;
         ctx.observer?.disconnect();
     }
 
@@ -270,12 +282,13 @@
             return;
         }
         const scope = resolveScope(doc);
-        if (scope === doc.body) {
+        const cardTarget = scope === doc.body ? restoredCardTarget(ctx.cardFocus, ctx.navRect) : null;
+        if (scope === doc.body && !cardTarget) {
             // The dialog closed: the modal manager restores the opener.
             clearNavFocus(ctx);
             return;
         }
-        const target = nearestToRect(ctx.navRect, scope);
+        const target = cardTarget || nearestToRect(ctx.navRect, scope);
         clearNavFocus(ctx);
         if (!target) return;
         ctx.restoring = true;
@@ -348,6 +361,49 @@
         return candidates[0];
     }
 
+    function navigationCard(element) {
+        const card = element?.closest(CARD_SELECTOR);
+        return card && card.tabIndex >= 0 && !isDisabled(card) ? card : null;
+    }
+
+    function cardKey(card) {
+        for (const key of ['albumId', 'playlistId', 'smartFavorite', 'stationId']) {
+            if (card.dataset[key] !== undefined) return JSON.stringify([key, card.dataset[key]]);
+        }
+        const favorite = card.querySelector(CARD_FAVORITE_SELECTOR);
+        return favorite?.dataset.favId !== undefined
+            ? JSON.stringify([favorite.dataset.favType, favorite.dataset.favId]) : null;
+    }
+
+    function restoredCardTarget(snapshot, rect) {
+        let anchor = snapshot?.anchor;
+        if (anchor && !anchor.isConnected && snapshot.anchorParent?.isConnected) {
+            // TIDAL playlists replace the results node, not just its children.
+            anchor = Array.from(snapshot.anchorParent.querySelectorAll('[id]'))
+                .find(element => element.id === anchor.id);
+        }
+        if (!anchor?.isConnected || !isVisible(anchor)) return null;
+        const cards = focusablesIn(anchor).filter(element => element.matches(CARD_SELECTOR));
+        const same = snapshot.key !== null && cards.find(card => cardKey(card) === snapshot.key);
+        if (same) {
+            const favorite = snapshot.favorite && focusablesIn(same).find(element => element.matches(CARD_FAVORITE_SELECTOR));
+            return favorite || same;
+        }
+        // A removed favorite yields its slot to the next card, not its heart.
+        return cards[Math.min(snapshot.index, cards.length - 1)]
+            || nearestToRect(rect, anchor.closest('.radio-panel, .library-panel, .streaming-panel'));
+    }
+
+    function isCardFavorite(element) {
+        return element.matches(CARD_FAVORITE_SELECTOR) && navigationCard(element);
+    }
+
+    function overlapsAxis(from, to, direction) {
+        return direction === 'left' || direction === 'right'
+            ? Math.min(from.bottom, to.bottom) - Math.max(from.top, to.top) > 1
+            : Math.min(from.right, to.right) - Math.max(from.left, to.left) > 1;
+    }
+
     function moveFocus(doc, direction) {
         const scope = resolveScope(doc);
         const active = doc.activeElement;
@@ -358,19 +414,34 @@
             const initial = firstVisibleCandidate(scope, doc);
             return initial ? focusElement(initial, doc) : false;
         }
-        const from = rectOf(current);
+        const card = navigationCard(current);
+        const favorite = card && focusablesIn(card).find(element => element.matches(CARD_FAVORITE_SELECTOR));
+        // Cards are the primary grid stops. Up explicitly enters the heart;
+        // Down returns, while another Up leaves from the whole card's column.
+        if (current === card && direction === 'up' && favorite) return focusElement(favorite, doc);
+        if (card && current === favorite && direction === 'down') return focusElement(card, doc);
+        const origin = card && current === favorite ? card : current;
+        const from = rectOf(origin);
         if (!from) {
             const initial = firstVisibleCandidate(scope, doc);
             return initial ? focusElement(initial, doc) : false;
         }
         const candidates = focusablesIn(scope)
-            .filter(element => element !== current && !element.contains(current)
+            .filter(element => element !== origin && !element.contains(current) && !isCardFavorite(element)
                 && !inIndependentScrollport(element, current, doc))
             .map(element => ({ element, rect: rectOf(element) }))
             .filter(candidate => candidate.rect);
         const tile = current.closest('.effects-card, .radio-panel, .library-panel, .streaming-panel, .manage-dialog');
         const local = tile ? candidates.filter(candidate => tile.contains(candidate.element)) : [];
-        const target = pickSpatial(from, local, direction) || pickSpatial(from, candidates, direction);
+        const peers = card ? candidates.filter(candidate => candidate.element.matches(CARD_SELECTOR)
+            && candidate.element.parentElement === card.parentElement
+            && overlapsAxis(from, candidate.rect, direction)) : [];
+        if (card && (direction === 'left' || direction === 'right')) {
+            const peer = pickSpatial(from, peers, direction);
+            return peer ? focusElement(peer, doc) : false;
+        }
+        const target = pickSpatial(from, peers, direction)
+            || pickSpatial(from, local, direction) || pickSpatial(from, candidates, direction);
         return target ? focusElement(target, doc) : false;
     }
 
@@ -836,6 +907,7 @@
             doc,
             navFocus: null,
             navRect: null,
+            cardFocus: null,
             restoring: false,
             remote: false,
             editing: null,

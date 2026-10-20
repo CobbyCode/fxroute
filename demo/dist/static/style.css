@@ -585,10 +585,16 @@ select.url-input {
    Two classes + the focused state make the ring win over the per-widget
    :focus-visible rules (tabs, cards, buttons) without !important. */
 .tv-nav-focus.tv-nav-focus:focus {
-    outline: 2px solid var(--accent);
+    outline: 2px solid var(--text-primary);
     outline-offset: -2px;
-    box-shadow: none;
+    box-shadow: inset 0 0 0 4px var(--accent-ink);
     scroll-margin: 6px;
+}
+
+/* The unpadded wordmark needs its frame outside the lettering. */
+.brand-lockup-button.tv-nav-focus:focus {
+    outline-offset: 3px;
+    box-shadow: 0 0 0 3px var(--accent-ink);
 }
 .header {
     background: var(--bg-header);
@@ -7501,11 +7507,14 @@ input[type="number"]::-webkit-outer-spin-button {
 }
 
 .effects-effect-line .effects-inline-control {
+    flex: 0 0 auto;
     flex-wrap: nowrap;
 }
 
 .effects-effect-line .effects-inline-control-label {
     flex: 0 0 var(--effects-label-w);
+    /* Intrinsic flex sizing in Firefox needs the actual label width too. */
+    width: var(--effects-label-w);
 }
 
 .effects-effect-line .stepper-control {
@@ -7521,7 +7530,8 @@ input[type="number"]::-webkit-outer-spin-button {
 }
 
 #tab-effects .effects-effect-line select.url-input {
-    width: auto;
+    flex: none;
+    width: var(--effects-control-w);
     min-width: var(--effects-control-w);
 }
 
@@ -7534,6 +7544,7 @@ input[type="number"]::-webkit-outer-spin-button {
 
     .effects-effect-line .effects-inline-control-label {
         flex: 0 0 auto;
+        width: auto;
     }
 }
 

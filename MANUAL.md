@@ -71,6 +71,7 @@ FXRoute works from a sofa without an air pointer. A TV remote that sends standar
 
 - **Arrow keys** move the focus ring to the nearest button, card, tab, menu entry or slider.
 - **Enter** activates the focused control exactly like a click (buttons, rows, cards, checkboxes). On a dropdown it opens remote-friendly choices: arrows move, Enter confirms, Escape/Back cancels. Mouse and touch still open the native dropdown.
+- Album and saved-station cards are the primary navigation stops: Left/Right move between cards within the same row and stop at its edges; Down moves to the next row. Up focuses the card's favorite heart; Down returns to that card, another Up moves to the card above. OK on a heart only changes the favorite, never opens or plays the card. The same rule applies in grid and list layouts; cards without a heart navigate directly upward. Refreshes preserve focus; removing a favorite selects the next remaining card (or the previous card at the end).
 - **Escape** leaves a text field or a dropdown without changing the page.
 - **Page Up / Page Down** switch to the previous/next tab of the active tab strip.
 - **Backspace** closes the top dialog or returns from a detail view.

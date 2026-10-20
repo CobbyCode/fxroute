@@ -150,7 +150,8 @@ assert.match(indexSource, /id="source-select"[^>]*aria-expanded="false"/);
 assert.match(modalSource, /function topRoot\(\)/);
 assert.match(modalSource, /function closeTop\(\)/);
 assert.match(modalSource, /topRoot,\s*\n\s*closeTop/);
-assert.match(baseCss, /\.tv-nav-focus\.tv-nav-focus:focus\s*\{[^}]*outline:\s*2px solid var\(--accent\)/);
+// Rendered contrast and brand-clearance contracts live in test_tv_nav_cards.py.
+assert.match(baseCss, /\.tv-nav-focus\.tv-nav-focus:focus\s*\{[^}]*outline:\s*2px solid var\(--[\w-]+\)/);
 assert.match(overlaysCss, /\.source-picker-option\[aria-selected="true"\]/);
 
 // The module must stay device-agnostic: no vendor/product IDs and no

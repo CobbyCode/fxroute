@@ -906,6 +906,7 @@ function renderAlbums() {
         else openAlbumDetail(card.dataset.albumId);
     };
     const handleAlbumCardKeydown = (card) => (event) => {
+        if (event.target !== event.currentTarget) return;
         if (event.key !== 'Enter' && event.key !== ' ') return;
         event.preventDefault();
         openAlbumCard(card)();

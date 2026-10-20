@@ -83,7 +83,8 @@ MEASURE_JS = """
         const header = row.querySelector('.effects-effect-header');
         const details = row.querySelector('.effects-effect-details');
         const controls = [...details.querySelectorAll('.effects-inline-control')].filter((el) => el.offsetParent !== null)
-            .map((el) => ({ id: (el.querySelector('input, select') || {}).id, ...box(el) }));
+            .map((el) => ({ id: (el.querySelector('input, select') || {}).id, ...box(el),
+                children: [...el.querySelectorAll('select, .effects-inline-control-label')].map(box) }));
         const style = getComputedStyle(row);
         // The separator above every effect after the first visible one (padding + border on top) is not leftover space.
         const chrome = ['paddingTop', 'borderTopWidth'].reduce((sum, name) => sum + parseFloat(style[name] || 0), 0);
@@ -143,7 +144,16 @@ def _run():
                     check(f"[{width}px] {key}: parameters sit below the header", all(c["top"] >= effect["header"]["bottom"] - 1 for c in effect["controls"]))
                     for control in effect["controls"]:
                         check(f"[{width}px] {key}/{control['id']} stays inside the card",
-                              control["left"] >= group["left"] - 1 and control["right"] <= group["right"] + 1)
+                               control["left"] >= group["left"] - 1 and control["right"] <= group["right"] + 1)
+                        check(f"[{width}px] {key}/{control['id']} children fit their reserved cell",
+                              all(c['left'] >= control['left'] - 1 and c['right'] <= control['right'] + 1 for c in control['children']))
+                        for other in effect['controls']:
+                            if other is control:
+                                continue
+                            check(f"[{width}px] {control['id']} does not paint over {other['id']}",
+                                  all(c['right'] <= other['left'] + 1 or c['left'] >= other['right'] - 1
+                                      or c['bottom'] <= other['top'] + 1 or c['top'] >= other['bottom'] - 1
+                                      for c in control['children']))
                     check(f"[{width}px] {key}: the details belong to the row", effect["controls"] and effect["row"]["bottom"] >= max(c["bottom"] for c in effect["controls"]) - 1)
 
                 # Where the details are wide enough, the pairs share a line.
@@ -163,6 +173,22 @@ def _run():
                 one = page.evaluate(MEASURE_JS)
                 for key, effect in one["effects"].items():
                     check(f"[{width}px] only Bass enhancer opened ({key})", (effect["details"] != "none") == (key == "bass"))
+
+            # Enlarged text can cross container-query boundaries independently
+            # of the viewport. All child paint boxes must still fit their cells.
+            for font_size in (20, 24):
+                page.evaluate('(size) => document.documentElement.style.fontSize = size + "px"', font_size)
+                for width in (1920, 1280, 960, 600, 390):
+                    page.set_viewport_size({'width': width, 'height': 1000})
+                    page.evaluate(SET_STATE_JS, True)
+                    measured = page.evaluate(MEASURE_JS)
+                    check(f'[{width}px/{font_size}px font] page fits', measured['docFits'])
+                    for key, effect in measured['effects'].items():
+                        check(f'[{width}px/{font_size}px font] {key} reserves actual child widths',
+                              all(child['left'] >= control['left'] - 1 and child['right'] <= control['right'] + 1
+                                  and control['left'] >= measured['group']['left'] - 1
+                                  and control['right'] <= measured['group']['right'] + 1
+                                  for control in effect['controls'] for child in control['children']))
             browser.close()
     finally:
         server.shutdown()

@@ -1590,7 +1590,10 @@
             if (type === 'albums') li.addEventListener('click', () => openTidalAlbum(item.id, item.title, item.art_url));
             else if (type === 'artists') li.addEventListener('click', () => openTidalArtist(item.id, item.name, item.art_url));
             else li.addEventListener('click', () => openTidalPlaylist(item.id, item.name, item.art_url));
-            const onKey = (event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); li.click(); } };
+            const onKey = (event) => {
+                if (event.target !== event.currentTarget) return;
+                if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); li.click(); }
+            };
             li.addEventListener('keydown', onKey);
             bindTidalFavoriteButtons(li);
         }
@@ -2177,7 +2180,10 @@
                 '<div class="album-artist">' + escapeHtml(sub) + '</div>';
             const open = () => openTidalPlaylist(item.id, item.name, item.art_url);
             li.addEventListener('click', open);
-            li.addEventListener('keydown', (event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); open(); } });
+            li.addEventListener('keydown', (event) => {
+                if (event.target !== event.currentTarget) return;
+                if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); open(); }
+            });
             bindTidalFavoriteButtons(li);
             list.appendChild(li);
         }
