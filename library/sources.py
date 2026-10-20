@@ -1,6 +1,7 @@
 """Discovery and activation for local and mounted network music libraries."""
 
 import ipaddress
+import json
 import logging
 import os
 import re
@@ -8,10 +9,13 @@ import socket
 import subprocess
 import threading
 import time
+import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import unquote, urlparse
+
+from library import nfs
 
 
 logger = logging.getLogger(__name__)
@@ -122,6 +126,8 @@ def _sweep_open_hosts(
     own: set[str],
     timeout: float = _SMB_CONNECT_TIMEOUT_SECONDS,
     max_workers: int = _SUBNET_SCAN_MAX_WORKERS,
+    *,
+    ports: tuple[int, ...] = _SMB_PORTS,
 ) -> list[str]:
     """Enumerated addresses with an open SMB port, in enumeration order.
 
@@ -146,7 +152,7 @@ def _sweep_open_hosts(
         address, port = pair
         return address if _smb_port_open(address, port, timeout) else None
 
-    pairs = [(address, port) for address in candidates for port in _SMB_PORTS]
+    pairs = [(address, port) for address in candidates for port in ports]
     open_set: set[str] = set()
     with ThreadPoolExecutor(max_workers=min(max_workers, len(pairs))) as pool:
         for address in pool.map(_probe, pairs):
@@ -155,8 +161,8 @@ def _sweep_open_hosts(
     return [address for address in candidates if address in open_set]
 
 
-def default_discovery_hosts() -> list[str]:
-    configured_hosts = os.environ.get("MUSIC_LIBRARY_SMB_HOSTS")
+def default_discovery_hosts(*, protocol: str = "smb") -> list[str]:
+    configured_hosts = os.environ.get(f"MUSIC_LIBRARY_{protocol.upper()}_HOSTS")
     raw_hosts = configured_hosts or ""
     hosts = [host.strip() for host in raw_hosts.split(",") if host.strip()]
     if configured_hosts:
@@ -171,7 +177,10 @@ def default_discovery_hosts() -> list[str]:
     neigh = _neighbor_hosts()
     networks, _own = _local_ipv4_networks()
     try:
-        open_hosts = _sweep_open_hosts(networks, _own) if networks else []
+        if protocol == "nfs":
+            open_hosts = _sweep_open_hosts(networks, _own, ports=(2049, 111)) if networks else []
+        else:
+            open_hosts = _sweep_open_hosts(networks, _own) if networks else []
     except Exception:
         open_hosts = []
     open_set = set(open_hosts)
@@ -308,6 +317,7 @@ class MusicLibraryManager:
         *,
         mount_root: Path | None = None,
         discovery_hosts: list[str] | None = None,
+        state_path: Path | None = None,
     ):
         self.local_root = local_root.expanduser().resolve(strict=False)
         self.mount_root = mount_root or (Path("/var/lib/fxroute/music-libraries") / str(os.getuid()))
@@ -335,6 +345,65 @@ class MusicLibraryManager:
         # capture taken before the switch.
         self._generation = 0
         self._generation_lock = threading.Lock()
+        self._state_lock = threading.RLock()
+        self.state_path = state_path
+        self.saved_active_id = "local"
+        self.restore_error = ""
+        self._hidden: set[str] = set()
+        self._gvfs_paths: dict[str, Path] = {}
+        self._owned_gvfs: set[str] = set()
+        self._load_state()
+
+    def _load_state(self) -> None:
+        if self.state_path is None or not self.state_path.exists():
+            return
+        try:
+            data = json.loads(self.state_path.read_text())
+            if not isinstance(data, dict):
+                raise ValueError("Invalid music library state")
+            for saved in data.get("libraries", []):
+                try:
+                    if saved["type"] == "nfs":
+                        entry = nfs.nfs_entry(saved["server"], saved["share"])
+                    elif saved["type"] == "smb":
+                        if not _valid_smb_name(saved["server"]) or not _valid_smb_name(saved["share"], allow_spaces=True):
+                            continue
+                        entry = _smb_entry(saved["server"], saved["share"])
+                    else:
+                        continue
+                    self._manual[entry["id"]] = entry
+                except (KeyError, TypeError, ValueError):
+                    continue
+            self._hidden = {value for value in data.get("hidden", []) if isinstance(value, str)}
+            selected = data.get("active_id", "local")
+            if selected in self._manual:
+                self.saved_active_id = selected
+        except (OSError, ValueError, TypeError):
+            logger.warning("Could not load music library state", exc_info=True)
+
+    def _save_state(self) -> None:
+        if self.state_path is None:
+            return
+        self.state_path.parent.mkdir(parents=True, exist_ok=True)
+        data = {"active_id": self.saved_active_id, "libraries": list(self._manual.values()), "hidden": sorted(self._hidden)}
+        fd, temporary = tempfile.mkstemp(prefix=".music-libraries-", dir=self.state_path.parent)
+        try:
+            with os.fdopen(fd, "w") as output:
+                json.dump(data, output)
+                output.flush()
+                os.fsync(output.fileno())
+            os.replace(temporary, self.state_path)
+        finally:
+            Path(temporary).unlink(missing_ok=True)
+
+    def _remember_selection(self, library_id: str, entry: dict | None = None) -> None:
+        with self._state_lock:
+            if entry is not None:
+                self._manual[library_id] = entry
+                self._hidden.discard(library_id)
+            self.saved_active_id = library_id
+            self.restore_error = ""
+            self._save_state()
 
     # ── Library context generation ───────────────────────────────────
 
@@ -372,6 +441,7 @@ class MusicLibraryManager:
             self.active_id = library_id
             self.active_type = library_type
             self.active_root = root
+        self._remember_selection(library_id)
 
     def _resolve_discovery_hosts(self) -> list[str]:
         if self._configured_hosts is not None:
@@ -417,16 +487,21 @@ class MusicLibraryManager:
     def _run_discovery_scan(self) -> None:
         hosts = self._resolve_discovery_hosts()
         self.discovery_hosts = list(hosts)
-        logger.info("SMB discovery refresh: probing %d host(s)", len(hosts))
-        self._discovered = discover_smb_shares(hosts)
+        nfs_hosts = list(self._configured_hosts) if self._configured_hosts is not None else default_discovery_hosts(protocol="nfs")
+        logger.info("Network discovery refresh: probing %d SMB / %d NFS host(s)", len(hosts), len(nfs_hosts))
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            smb_result = pool.submit(discover_smb_shares, hosts)
+            nfs_result = pool.submit(nfs.discover_nfs_shares, nfs_hosts)
+            self._discovered = [*smb_result.result(), *nfs_result.result()]
         self._discovered_at = time.monotonic()
-        logger.info("SMB discovery refresh: found %d share(s)", len(self._discovered))
+        logger.info("Network discovery refresh: found %d share(s)", len(self._discovered))
 
     def _list_cached(self) -> list[dict[str, str]]:
         """Assemble the library list from known entries without any I/O."""
         local = {"id": "local", "type": "local", "label": f"Local — {self.local_root.name or 'Music'}"}
-        merged = {entry["id"]: entry for entry in self._discovered}
-        merged.update(self._manual)
+        with self._state_lock:
+            merged = {entry["id"]: entry for entry in self._discovered if entry["id"] not in self._hidden}
+            merged.update(self._manual)
         return [local, *merged.values(), {
             "id": "manual",
             "type": "action",
@@ -448,6 +523,13 @@ class MusicLibraryManager:
         return self._list_cached()
 
     def add_manual_url(self, url: str) -> dict[str, str]:
+        if not url.strip().lower().startswith("smb://"):
+            entry = nfs.parse_nfs_url(url.strip())
+            with self._state_lock:
+                self._manual[entry["id"]] = entry
+                self._hidden.discard(entry["id"])
+                self._save_state()
+            return entry
         parsed = urlparse(url.strip())
         if parsed.scheme.lower() != "smb" or not parsed.hostname:
             raise ValueError("Enter an SMB URL such as smb://server/share")
@@ -463,8 +545,69 @@ class MusicLibraryManager:
         ):
             raise ValueError("Invalid SMB server or share")
         entry = _smb_entry(server, share)
-        self._manual[entry["id"]] = entry
+        with self._state_lock:
+            self._manual[entry["id"]] = entry
+            self._hidden.discard(entry["id"])
+            self._save_state()
         return entry
+
+    def remove_library(self, library_id: str) -> None:
+        if library_id in {"local", self.active_id}:
+            raise ValueError("Select the local library before removing this share")
+        entry = next((entry for entry in self._list_cached() if entry["id"] == library_id and entry["type"] in {"smb", "nfs"}), None)
+        if entry is None:
+            raise ValueError("Unknown music library")
+        try:
+            result = subprocess.run(
+                ["sudo", "-n", nfs.MOUNT_HELPER, "--remove", entry["type"], entry["server"], entry["share"]],
+                stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=20, check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise ValueError("Could not remove network mount") from exc
+        if result.returncode:
+            raise ValueError(result.stderr.strip() or "Could not remove network mount")
+        if library_id in self._owned_gvfs:
+            try:
+                result = subprocess.run(
+                    ["gio", "mount", "-u", f"smb://{entry['server']}/{entry['share']}"],
+                    stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=10, check=False,
+                )
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                raise ValueError("Could not remove GVFS mount") from exc
+            if result.returncode:
+                raise ValueError(result.stderr.strip() or "Could not remove GVFS mount")
+        with self._state_lock:
+            self._manual.pop(library_id, None)
+            self._hidden.add(library_id)
+            self._gvfs_paths.pop(library_id, None)
+            self._owned_gvfs.discard(library_id)
+            if self.saved_active_id == library_id:
+                self.saved_active_id = "local"
+                self.restore_error = ""
+            self._save_state()
+
+    def _mounted_nfs_path(self, server: str, export: str) -> Path | None:
+        return nfs.mounted_path(self.mount_root, server, export)
+
+    def _activate_nfs(self, entry: dict[str, str]) -> Path:
+        server, export = entry["server"], entry["share"]
+        root = self._mounted_nfs_path(server, export)
+        detail = ""
+        if root is None:
+            try:
+                result = subprocess.run(
+                    ["sudo", "-n", nfs.MOUNT_HELPER, "--nfs", server, export],
+                    stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=15, check=False,
+                )
+                detail = result.stderr.strip()
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                detail = str(exc)
+            root = self._mounted_nfs_path(server, export)
+        if root is None:
+            raise FileNotFoundError(f"NFS share is not mounted: {server}:{export} ({detail or 'mount unavailable'})")
+        self._remember_selection(entry["id"], entry)
+        self._publish_active(entry["id"], "nfs", root)
+        return root
 
     def _mounted_share_path(self, server: str, share: str) -> Path | None:
         if not _valid_smb_name(server) or not _valid_smb_name(share, allow_spaces=True):
@@ -503,16 +646,20 @@ class MusicLibraryManager:
 
     def activate(self, library_id: str) -> Path:
         if library_id == "local":
+            self._remember_selection("local")
             self._publish_active("local", "local", self.local_root)
             return self.active_root
-        if not library_id.startswith("smb:"):
+        if not library_id.startswith(("smb:", "nfs:")):
             raise ValueError("Unsupported music library type")
-        entries = {entry["id"]: entry for entry in self._list_cached() if entry["type"] == "smb"}
+        entries = {entry["id"]: entry for entry in self._list_cached() if entry["type"] in {"smb", "nfs"}}
         if library_id not in entries:
             raise ValueError("Unknown music library")
+        if entries[library_id]["type"] == "nfs":
+            return self._activate_nfs(entries[library_id])
         _kind, server, share = library_id.split(":", 2)
         root = self._mounted_share_path(server, share)
         mount_diagnostics: list[str] = []
+        mounted_by_gio = False
 
         def _note_diagnostics(result: subprocess.CompletedProcess | None, tool: str, timeout_s: int) -> None:
             if result is None:
@@ -555,6 +702,7 @@ class MusicLibraryManager:
                 _note_diagnostics(None, "gio mount", 10)
             else:
                 _note_diagnostics(gio_result, "gio mount", 10)
+                mounted_by_gio = gio_result.returncode == 0
             root = self._mounted_share_path(server, share)
         if root is None:
             detail = f"SMB share is not mounted: {_server_label(server)} / {share}"
@@ -562,20 +710,36 @@ class MusicLibraryManager:
                 detail += f" ({'; '.join(mount_diagnostics)})"
                 logger.warning("SMB mount failed for %s / %s: %s", server, share, "; ".join(mount_diagnostics))
             raise FileNotFoundError(detail)
+        gvfs = Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")) / "gvfs"
+        if root.is_relative_to(gvfs):
+            self._gvfs_paths[library_id] = root
+            if mounted_by_gio:
+                self._owned_gvfs.add(library_id)
+        self._remember_selection(library_id, entries[library_id])
         self._publish_active(library_id, "smb", root)
         return root
 
     def status(self) -> dict:
-        return {
-            "active_id": self.active_id,
-            "active_type": self.active_type,
-            "libraries": self.list_libraries(),
-        }
+        self.list_libraries()
+        return self.status_cached()
 
     def status_cached(self) -> dict:
         """Select-path response: known entries only, never a network rescan."""
+        mounts = nfs.read_mounts()
+        libraries = []
+        for entry in self._list_cached():
+            if entry["type"] in {"smb", "nfs"}:
+                path = (nfs.mount_path(self.mount_root, entry["server"], entry["share"]) if entry["type"] == "nfs"
+                        else self.mount_root / entry["server"] / entry["share"])
+                kind, _source = mounts.get(str(path), ("", ""))
+                gvfs_path = self._gvfs_paths.get(entry["id"])
+                gvfs_kind = mounts.get(str(gvfs_path.parent), ("", ""))[0] if gvfs_path else ""
+                entry = {**entry, "mounted": kind in {"cifs", "nfs", "nfs4"} or gvfs_kind.startswith("fuse")}
+            libraries.append(entry)
         return {
             "active_id": self.active_id,
             "active_type": self.active_type,
-            "libraries": self._list_cached(),
+            "libraries": libraries,
+            "saved_active_id": self.saved_active_id,
+            "restore_error": self.restore_error,
         }

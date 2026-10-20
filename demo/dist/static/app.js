@@ -1064,6 +1064,11 @@ const elements = {
     settingsStdinStatus: document.getElementById('settings-stdin-status'),
     settingsMusicLibrarySelect: document.getElementById('settings-music-library-select'),
     settingsMusicLibraryHint: document.getElementById('settings-music-library-hint'),
+    settingsMusicLibraryRemove: document.getElementById('settings-music-library-remove'),
+    settingsMusicLibraryRemovePanel: document.getElementById('settings-music-library-remove-panel'),
+    settingsMusicLibraryRemoveSelect: document.getElementById('settings-music-library-remove-select'),
+    settingsMusicLibraryRemoveConfirm: document.getElementById('settings-music-library-remove-confirm'),
+    settingsMusicLibraryRemoveCancel: document.getElementById('settings-music-library-remove-cancel'),
     settingsProvidersList: document.getElementById('settings-providers-list'),
     settingsProvidersSummary: document.getElementById('settings-providers-summary'),
     settingsProviderOperation: document.getElementById('settings-provider-operation'),
@@ -2139,7 +2144,7 @@ function setupSettingsActions() {
         elements.settingsMusicLibrarySelect.addEventListener('change', (event) => {
             const libraryId = event.target.value;
             if (libraryId === 'manual') {
-                const url = prompt('SMB share URL', 'smb://server/share');
+                const url = prompt('Network share: smb://server/share or server:/export/path', '');
                 if (url) void SettingsSystem.addManualMusicLibrary(url);
                 else renderSettingsPanel();
             } else if (libraryId) {
@@ -2147,6 +2152,18 @@ function setupSettingsActions() {
             }
         });
     }
+    elements.settingsMusicLibraryRemove?.addEventListener('click', () => {
+        elements.settingsMusicLibraryRemovePanel?.classList.remove('hidden');
+        elements.settingsMusicLibraryRemoveSelect?.focus();
+    });
+    elements.settingsMusicLibraryRemoveCancel?.addEventListener('click', () => {
+        elements.settingsMusicLibraryRemovePanel?.classList.add('hidden');
+    });
+    elements.settingsMusicLibraryRemoveConfirm?.addEventListener('click', () => {
+        const libraryId = elements.settingsMusicLibraryRemoveSelect?.value;
+        if (libraryId) void SettingsSystem.removeMusicLibrary(libraryId);
+        elements.settingsMusicLibraryRemovePanel?.classList.add('hidden');
+    });
     elements.settingsHardwareRcaBtn?.addEventListener('click', () => SettingsSystem.runHardwareCommand('/api/hardware/input/rca', 'RCA selected'));
     elements.settingsHardwareXlrBtn?.addEventListener('click', () => SettingsSystem.runHardwareCommand('/api/hardware/input/xlr', 'XLR selected'));
     elements.settingsHardwarePressBtn?.addEventListener('click', () => SettingsSystem.runHardwareCommand('/api/hardware/input/press', 'Input button pressed'));
@@ -2806,8 +2823,22 @@ function renderSettingsPanel() {
     }
     if (elements.settingsMusicLibraryHint) {
         const cachedCount = Array.isArray(musicLibrary.libraries) ? musicLibrary.libraries.length : 0;
-        elements.settingsMusicLibraryHint.textContent =
-            musicLibrary.scanning && cachedCount > 0 ? 'Scanning…' : '';
+        const active = musicLibrary.libraries?.find((entry) => entry.id === musicLibrary.active_id);
+        const networkStatus = active && ['smb', 'nfs'].includes(active.type)
+            ? `${active.type.toUpperCase()} ${active.mounted ? 'mounted (automatic reconnect).' : 'not mounted; select again to reconnect.'}` : '';
+        elements.settingsMusicLibraryHint.textContent = [
+            musicLibrary.scanning && cachedCount > 0 ? 'Scanning…' : '',
+            musicLibrary.restore_error ? `Saved share unavailable; retrying. ${musicLibrary.restore_error}` : networkStatus,
+        ].filter(Boolean).join(' ');
+    }
+    if (elements.settingsMusicLibraryRemove) {
+        const model = SettingsSystem.musicLibraryRemovalModel(musicLibrary, elements.settingsMusicLibraryRemoveSelect?.value);
+        elements.settingsMusicLibraryRemove.disabled = model.disabled;
+        if (elements.settingsMusicLibraryRemoveConfirm) elements.settingsMusicLibraryRemoveConfirm.disabled = model.disabled;
+        if (elements.settingsMusicLibraryRemoveSelect && !isSelectFocused(elements.settingsMusicLibraryRemoveSelect)) {
+            elements.settingsMusicLibraryRemoveSelect.innerHTML = model.html;
+            elements.settingsMusicLibraryRemoveSelect.value = model.value;
+        }
     }
     renderProviderSettings();
     SettingsSystem.renderDeviceNameSettings();

@@ -154,6 +154,22 @@ class InstallerPkgManagerStaticTests(unittest.TestCase):
             )
             self.assertEqual(result.stdout.strip(), packages)
 
+    def test_nfs_package_matrix_installs_missing_clients_on_every_manager(self):
+        matrix = _extract_function(self.text, "nfs_packages_for_manager")
+        ensure = _extract_function(self.text, "ensure_nfs_packages")
+        for manager, expected in (("apt", "nfs-common"), ("dnf", "nfs-utils"),
+                                  ("zypper", "nfs-client"), ("pacman", "nfs-utils")):
+            script = f'''
+{matrix}
+{ensure}
+PACKAGE_MANAGER={manager}
+package_installed() {{ return 1; }}
+pkg_install() {{ printf '%s\\n' "$@"; }}
+ensure_nfs_packages
+'''
+            result = subprocess.run(["bash", "-c", script], capture_output=True, text=True, check=True)
+            self.assertEqual(result.stdout.strip(), expected)
+
     def test_smb_missing_package_dry_run_for_all_managers(self):
         matrix = _extract_function(self.text, "smb_packages_for_manager")
         ensure = _extract_function(self.text, "ensure_smb_packages")
@@ -249,6 +265,16 @@ class InstallerPkgManagerStaticTests(unittest.TestCase):
         self.assertIn(safe_path, self.text)
         self.assertIn(safe_path, self.uninstall_text)
 
+    def test_uninstaller_detects_disjoint_nfs_root_for_only_target_user(self):
+        body = _extract_function(self.uninstall_text, "target_cifs_entries_present")
+        with tempfile.TemporaryDirectory() as td:
+            fstab = Path(td) / "fstab"
+            for uid, expected in (("1000", 0), ("1001", 1)):
+                fstab.write_text(f"nas:/music /var/lib/fxroute/music-libraries/{uid}-nfs/nas/hash nfs ro 0 0 # fxroute-managed\n")
+                result = subprocess.run(["bash", "-c", body.replace("/etc/fstab", str(fstab))
+                                         + "\nFXROUTE_TARGET_UID=1000\ntarget_cifs_entries_present"], capture_output=True, text=True)
+                self.assertEqual(result.returncode, expected, result.stderr)
+
     def test_cifs_helper_has_safe_automount_options(self):
         helper = (ROOT / "scripts" / "fxroute-cifs-mount").read_text()
         for option in (
@@ -266,7 +292,7 @@ class InstallerPkgManagerStaticTests(unittest.TestCase):
         self.assertIn('mv "$tmp_fstab" /etc/fstab', helper)
         self.assertIn("require_cmd systemctl", self.text)
         self.assertIn('PATH="/usr/sbin:/usr/bin:/sbin:/bin"', helper)
-        self.assertIn('install -d -o root -g root -m 755 /var/lib/fxroute', helper)
+        self.assertIn('safe_directory "$allowed_root"', helper)
 
     def test_native_dsp_pacman_deps(self):
         match = re.search(r"pacman\) dsp_packages=\(([^)]*)\)", self.text)

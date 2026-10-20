@@ -29,6 +29,7 @@ no network, no mounted shares.
 import asyncio
 import logging
 import os
+import subprocess
 import sys
 import tempfile
 import threading
@@ -475,6 +476,63 @@ class LibrarySwitchCancellationTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(response["active_id"], SMB_LIBRARY_ID)
             self.assertEqual(response["active_type"], "smb")
             self.assertEqual(main.runtime.music_library.scanner.music_root, self.smb_root)
+            await self._drain_pending_scan()
+
+    async def test_saved_nfs_selection_retries_offline_start_and_switches_scanner(self):
+        entry = self.manager.add_manual_url("nas:/music")
+        self.manager.saved_active_id = entry["id"]
+        attempts = []
+
+        def mounted(server, export):
+            attempts.append((server, export))
+            return self.smb_root if len(attempts) >= 3 else None
+
+        with _RuntimeGuard(self, self.manager, self.scanner, self.player), \
+                patch.object(self.manager, "_mounted_nfs_path", side_effect=mounted), \
+                patch("library.sources.subprocess.run", return_value=subprocess.CompletedProcess([], 1, "", "offline")):
+            await main._restore_saved_music_library(self.manager, retry_delay=0.001)
+            self.assertEqual(self.manager.active_id, entry["id"])
+            self.assertEqual(self.manager.active_type, "nfs")
+            self.assertEqual(main.runtime.music_library.scanner.music_root, self.smb_root)
+            self.assertEqual(self.manager.restore_error, "")
+            self.assertEqual(len(attempts), 3)
+            await self._drain_pending_scan()
+
+    async def test_remove_active_library_is_rejected_without_unmounting(self):
+        with _RuntimeGuard(self, self.manager, self.scanner, self.player), \
+                patch("library.sources.os.path.ismount", return_value=True):
+            self.manager.activate(SMB_LIBRARY_ID)
+            with patch("subprocess.run", side_effect=AssertionError("must not unmount an active library")):
+                with self.assertRaises(HTTPException) as ctx:
+                    await main.remove_music_library(_FakeRequest({"id": SMB_LIBRARY_ID}))
+            self.assertEqual(ctx.exception.status_code, 409)
+
+    async def test_cancelled_removal_keeps_switch_lock_until_worker_finishes(self):
+        entry = self.manager.add_manual_url("nas:/music")
+        entered = threading.Event()
+        release = threading.Event()
+
+        def remove_command(*args, **kwargs):
+            entered.set()
+            release.wait(timeout=5)
+            return subprocess.CompletedProcess([], 0, "", "")
+
+        with _RuntimeGuard(self, self.manager, self.scanner, self.player), \
+                patch("subprocess.run", side_effect=remove_command), \
+                patch.object(self.manager, "_mounted_nfs_path", return_value=self.smb_root):
+            removal = asyncio.create_task(main.remove_music_library(_FakeRequest({"id": entry["id"]})))
+            await _wait_thread_event(entered)
+            removal.cancel()
+            await asyncio.sleep(0.02)
+            locked = main._music_library_lock().locked()
+            selection = asyncio.create_task(main.select_music_library(_FakeRequest({"id": entry["id"]})))
+            release.set()
+            with self.assertRaises(asyncio.CancelledError):
+                await removal
+            await asyncio.gather(selection, return_exceptions=True)
+            self.assertTrue(locked, "cancellation must not release the switch lock while removal continues")
+            self.assertEqual(self.manager.active_id, "local")
+            self.assertNotIn(entry["id"], [e["id"] for e in self.manager.status_cached()["libraries"]])
             await self._drain_pending_scan()
 
     async def test_rollback_failure_is_reported_but_never_hides_the_switch_error(self):

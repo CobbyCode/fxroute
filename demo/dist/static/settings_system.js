@@ -430,8 +430,8 @@
                 disabled: true,
             };
         }
-        const hasSmb = libraries.some((library) => library && library.type === 'smb');
-        if (musicLibrary.scanning && !hasSmb) {
+        const hasNetwork = libraries.some((library) => library && ['smb', 'nfs'].includes(library.type));
+        if (musicLibrary.scanning && !hasNetwork) {
             return {
                 html: '<option value="">Scanning network shares…</option>',
                 value: '',
@@ -477,6 +477,16 @@
             deps.renderSettingsPanel();
             console.debug('Failed to discover music libraries', error);
         }
+    }
+
+    function musicLibraryRemovalModel(musicLibrary = {}, selectedId = '') {
+        const libraries = (musicLibrary.libraries || []).filter((entry) => ['smb', 'nfs'].includes(entry.type));
+        const preferred = libraries.some((entry) => entry.id === selectedId) ? selectedId : musicLibrary.active_id;
+        return {
+            html: libraries.map((entry) => `<option value="${deps.escapeHtml(entry.id)}">${deps.escapeHtml(entry.label)}</option>`).join(''),
+            value: libraries.some((entry) => entry.id === preferred) ? preferred : libraries[0]?.id || '',
+            disabled: libraries.length === 0 || !!musicLibrary.pending || !!musicLibrary.loading,
+        };
     }
 
     async function selectMusicLibrary(libraryId) {
@@ -533,6 +543,31 @@
             await selectMusicLibrary(data.entry.id);
         } catch (error) {
             deps.showToast(error.message || 'Failed to add network share', 'error');
+        }
+    }
+
+    async function removeMusicLibrary(libraryId) {
+        if (deps.getState().settings.musicLibrary.active_id === libraryId) {
+            await selectMusicLibrary('local');
+            if (deps.getState().settings.musicLibrary.active_id === libraryId) return;
+        }
+        deps.getState().settings.musicLibrary.pending = true;
+        deps.renderSettingsPanel();
+        try {
+            const resp = await fetch('/api/music-libraries/remove', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ id: libraryId }),
+            });
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok) throw new Error(data.detail || 'Failed to remove network share');
+            deps.getState().settings.musicLibrary = { ...data, pending: false };
+            deps.showToast('Network share removed', 'success');
+        } catch (error) {
+            deps.showToast(error.message || 'Failed to remove network share', 'error');
+        } finally {
+            deps.getState().settings.musicLibrary.pending = false;
+            deps.renderSettingsPanel();
         }
     }
 
@@ -728,9 +763,11 @@
         applyDeviceName,
         renderDeviceNameSettings,
         musicLibrarySelectModel,
+        musicLibraryRemovalModel,
         fetchMusicLibraries,
         selectMusicLibrary,
         addManualMusicLibrary,
+        removeMusicLibrary,
         formatHardwareBool,
         renderHardwareController,
         normalizeHardwareStatus,

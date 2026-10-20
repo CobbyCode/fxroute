@@ -75,6 +75,9 @@ class MusicLibraryDiscoveryTests(unittest.TestCase):
 
 
 class MusicLibraryManagerTests(unittest.TestCase):
+    def setUp(self):
+        self.enterContext(patch("library.sources.nfs.discover_nfs_shares", return_value=[]))
+
     def test_local_entry_uses_only_folder_name(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td) / "Private" / "Music"
@@ -195,6 +198,52 @@ class MusicLibraryManagerTests(unittest.TestCase):
             ):
                 self.assertIsNone(manager._mounted_share_path("server", "Music"))
 
+    def test_gvfs_fallback_status_and_owned_mount_removal(self):
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            gvfs = base / "runtime" / "gvfs"
+            mounted = gvfs / "smb-share:server=server,share=Music"
+            manager = MusicLibraryManager(base / "Music", mount_root=base / "mounts", discovery_hosts=[])
+            entry = manager.add_manual_url("smb://server/Music")
+
+            def run(command, **kwargs):
+                if command[:2] == ["gio", "mount"]:
+                    if "-u" in command:
+                        mounted.rmdir()
+                    else:
+                        mounted.mkdir(parents=True)
+                    return subprocess.CompletedProcess(command, 0, "", "")
+                return subprocess.CompletedProcess(command, 0 if "--remove" in command else 1, "", "")
+
+            with patch.dict("os.environ", {"XDG_RUNTIME_DIR": str(base / "runtime")}), patch(
+                "library.sources.os.path.ismount", side_effect=lambda path: Path(path) == gvfs
+            ), patch("subprocess.run", side_effect=run), patch(
+                "library.nfs.read_mounts", return_value={str(gvfs): ("fuse.gvfsd-fuse", "gvfsd-fuse")}
+            ):
+                self.assertEqual(manager.activate(entry["id"]), mounted)
+                status_entry = next(e for e in manager.status_cached()["libraries"] if e["id"] == entry["id"])
+                self.assertTrue(status_entry["mounted"])
+                manager.activate("local")
+                manager.remove_library(entry["id"])
+                self.assertFalse(mounted.exists(), "an app-created GVFS mount must be released")
+
+    def test_preexisting_gvfs_mount_is_not_owned_or_unmounted(self):
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            gvfs = base / "gvfs"
+            mounted = gvfs / "smb-share:server=server,share=Music"
+            mounted.mkdir(parents=True)
+            manager = MusicLibraryManager(base / "Music", mount_root=base / "mounts", discovery_hosts=[])
+            entry = manager.add_manual_url("smb://server/Music")
+            with patch.dict("os.environ", {"XDG_RUNTIME_DIR": str(base)}), patch(
+                "library.sources.os.path.ismount", side_effect=lambda path: Path(path) == gvfs
+            ), patch("subprocess.run", return_value=subprocess.CompletedProcess([], 0, "", "")) as run:
+                manager.activate(entry["id"])
+                manager.activate("local")
+                manager.remove_library(entry["id"])
+                self.assertTrue(mounted.exists())
+                self.assertFalse(any(call.args[0][0] == "gio" for call in run.call_args_list))
+
     def test_manual_entry_accepts_smb_url(self):
         with tempfile.TemporaryDirectory() as td:
             manager = MusicLibraryManager(Path(td), discovery_hosts=[])
@@ -207,7 +256,7 @@ class MusicLibraryManagerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             manager = MusicLibraryManager(Path(td), discovery_hosts=[])
             with self.assertRaisesRegex(ValueError, "Unsupported music library type"):
-                manager.activate("nfs:server:music")
+                manager.activate("ftp:server:music")
 
     def test_unlisted_smb_id_cannot_select_an_arbitrary_directory(self):
         with tempfile.TemporaryDirectory() as td:

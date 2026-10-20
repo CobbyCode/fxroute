@@ -112,6 +112,7 @@ async function checkCatalog(fetch, { selectId, albums, coverRe, label }) {
     assert.ok(smb1, 'SMB_Demo_Library-1 listed');
     assert.equal(smb1.label, 'SMB_Demo_Library-1');
     assert.equal(smb1.type, 'smb');
+    assert.equal(smb1.mounted, true);
     const smb2 = libraries.libraries.find(l => l.id === 'demo-nas');
     assert.ok(smb2, 'SMB_Demo_Library-2 listed');
     assert.equal(smb2.label, 'SMB_Demo_Library-2');
@@ -217,7 +218,12 @@ async function checkCatalog(fetch, { selectId, albums, coverRe, label }) {
     assert.ok(!localAfterDelete.some(pl => pl.id === createdLocal.playlist.id),
         'deleted playlist disappears from the local catalog');
 
-    console.log('ok demo library contract (local + SMB-1 + SMB-2)');
+    const addedNfs = await (await post(fetch, '/api/music-libraries/manual', { url: 'nas:/music' })).json();
+    assert.equal(addedNfs.entry.type, 'nfs');
+    const removedNfs = await (await post(fetch, '/api/music-libraries/remove', { id: addedNfs.entry.id })).json();
+    assert.ok(!removedNfs.libraries.some(entry => entry.id === addedNfs.entry.id));
+    assert.ok(removedNfs.libraries.some(entry => entry.id === 'demo-library-2'), 'removing NFS preserves SMB catalogs');
+    console.log('ok demo library contract (local + SMB-1 + SMB-2 + manual NFS)');
 })().catch((err) => {
     console.error(err);
     process.exit(1);

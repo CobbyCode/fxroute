@@ -165,7 +165,7 @@ fi
 # keyring, native DSP build deps). Verified present on resolute; pipewire
 # 1.6.2 needs no backports. No third-party repos, no PPA.
 read -r -a LIVE_PACKAGES <<< \
-  "python3 python3-pip python3-venv mpv ffmpeg playerctl bluez wireplumber pipewire-bin pipewire-pulse pulseaudio-utils libspa-0.2-bluetooth rtkit curl git socat tar dbus-bin smbclient cifs-utils libglib2.0-bin gvfs gvfs-backends gvfs-fuse python3-dbus python3-gi gir1.2-glib-2.0 avahi-daemon libavahi-client3 libnss-mdns pipewire-alsa gnome-keyring libsecret-1-0 libpam-gnome-keyring openssh-server gcc libc6-dev pkg-config libpipewire-0.3-dev libspa-0.2-dev liblilv-dev lilv-utils lv2-dev lsp-plugins-lv2 zam-plugins calf-plugins libebur128-dev libsamplerate0-dev libspeexdsp-dev"
+  "python3 python3-pip python3-venv mpv ffmpeg playerctl bluez wireplumber pipewire-bin pipewire-pulse pulseaudio-utils libspa-0.2-bluetooth rtkit curl git socat tar dbus-bin smbclient cifs-utils nfs-common libglib2.0-bin gvfs gvfs-backends gvfs-fuse python3-dbus python3-gi gir1.2-glib-2.0 avahi-daemon libavahi-client3 libnss-mdns pipewire-alsa gnome-keyring libsecret-1-0 libpam-gnome-keyring openssh-server gcc libc6-dev pkg-config libpipewire-0.3-dev libspa-0.2-dev liblilv-dev lilv-utils lv2-dev lsp-plugins-lv2 zam-plugins calf-plugins libebur128-dev libsamplerate0-dev libspeexdsp-dev"
 
 export FXROUTE_UBUNTU_STAGE_DIR="$STAGE_DIR"
 

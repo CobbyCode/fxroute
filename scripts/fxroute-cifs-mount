@@ -3,6 +3,17 @@ set -euo pipefail
 PATH="/usr/sbin:/usr/bin:/sbin:/bin"
 export PATH
 
+mode="smb"
+remove=0
+case "${1:-}" in
+  --nfs) [[ $# -eq 3 ]] || exit 2; mode=nfs; shift ;;
+  --discover-nfs) [[ $# -eq 2 ]] || exit 2; mode=discover-nfs; shift ;;
+  --remove)
+    [[ $# -eq 4 && ( "$2" == smb || "$2" == nfs ) ]] || exit 2
+    remove=1; mode="$2"; shift 2 ;;
+  --remove-all) [[ $# -eq 1 ]] || exit 2; mode=remove-all ;;
+  *) [[ $# -eq 2 ]] || exit 2 ;;
+esac
 server="${1:-}"
 share="${2:-}"
 user="${SUDO_USER:-}"
@@ -13,17 +24,70 @@ user="${SUDO_USER:-}"
 }
 uid="$(id -u "$user")"
 mount_root="/var/lib/fxroute/music-libraries/$uid"
+nfs_mount_root="$mount_root-nfs"
 fstab_marker="fxroute-managed"
 
-if [[ "$server" == "--remove-all" ]]; then
+safe_directory() {
+  local path="$1"
+  local parent="$path"
+  while [[ "$parent" != / ]]; do
+    [[ ! -L "$parent" ]] || { echo "Refusing a symlink mount path" >&2; exit 2; }
+    parent="$(dirname "$parent")"
+  done
+  install -d -o root -g root -m 755 "$path"
+}
+
+if [[ "$mode" == nfs || "$mode" == discover-nfs ]]; then
+  server_re='^([A-Za-z0-9][A-Za-z0-9._-]*|\[[0-9A-Fa-f:]+\])$'
+  [[ "$server" =~ $server_re && ${#server} -le 253 ]] || { echo "Invalid NFS server" >&2; exit 2; }
+  if [[ "$mode" == discover-nfs ]]; then
+    probe_root="/run/fxroute-nfs-discovery/$uid"
+    safe_directory "$probe_root"
+    probe="$(mktemp -d "$probe_root/probe.XXXXXXXX")"
+    trap 'timeout 2s umount -l -- "$probe" >/dev/null 2>&1 || true; rmdir "$probe" >/dev/null 2>&1 || true' EXIT
+    timeout 10s mount -t nfs -o vers=4,ro,soft,timeo=10,retrans=1,retry=0,nosuid,nodev,noexec -- "$server:/" "$probe"
+    # A v4 pseudo-root is a namespace, not a list of physical export paths.
+    listing="$(timeout 5s find "$probe" -mindepth 1 -maxdepth 1 -type d -printf '/%f\n')"
+    printf '/\n'
+    [[ -z "$listing" ]] || printf '%s\n' "$listing" | head -n 255
+    exit 0
+  fi
+  export_re='^/[A-Za-z0-9/ ._()$-]*$'
+  [[ "$share" =~ $export_re && ${#share} -le 4096 && ! "$share" =~ (^|/)\.\.?(/|$) ]] || {
+    echo "Invalid NFS export path" >&2; exit 2;
+  }
+  while [[ "$share" == *//* ]]; do share="${share//\/\//\/}"; done
+  [[ "$share" == / ]] || share="${share%/}"
+  digest="$(printf '%s' "$share" | sha256sum | cut -d ' ' -f 1)"
+  mount_point="$nfs_mount_root/$server/$digest"
+  source="$server:$share"
+  fs_type=nfs
+elif [[ "$mode" != remove-all ]]; then
+  [[ "$server" =~ ^[A-Za-z0-9._-]+$ && "$server" != -* && "$server" != . && "$server" != .. ]] || { echo "Invalid SMB server" >&2; exit 2; }
+  share_re='^[A-Za-z0-9._() $-]+$'
+  [[ $share =~ $share_re && "$share" != "." && "$share" != ".." ]] || {
+    echo "Invalid SMB share" >&2; exit 2;
+  }
+  mount_point="$mount_root/$server/$share"
+  source="//$server/$share"
+  fs_type=cifs
+fi
+
+if [[ "$server" == "--remove-all" || $remove -eq 1 ]]; then
+  fstab_mount="${mount_point:-}"
+  fstab_mount="${fstab_mount// /\\040}"
+  fstab_source="${source:-}"
+  fstab_source="${fstab_source// /\\040}"
   exec 9>/run/lock/fxroute-cifs-mount.lock
   flock 9
   stop_failed=0
-  if ! awk -v prefix="$mount_root/" -v marker="$fstab_marker" '
-    $2 ~ ("^" prefix) && $3 == "cifs" && $0 !~ ("[[:space:]]#[[:space:]]*" marker "([[:space:]]|$)") {found = 1}
+  if ! FXROUTE_MOUNT="$fstab_mount" FXROUTE_SOURCE="$fstab_source" awk -v prefix="$mount_root/" -v nfs_prefix="$nfs_mount_root/" -v marker="$fstab_marker" '
+    BEGIN { mount = ENVIRON["FXROUTE_MOUNT"]; source = ENVIRON["FXROUTE_SOURCE"] }
+    (mount ? $2 == mount : (index($2, prefix) == 1 || index($2, nfs_prefix) == 1) && $3 ~ /^(cifs|nfs|nfs4)$/) &&
+      ($0 !~ ("[[:space:]]#[[:space:]]*" marker "([[:space:]]|$)") || (mount && $1 != source)) {found = 1}
     END {exit found ? 1 : 0}
   ' /etc/fstab; then
-    echo "Refusing to remove unprovenanced CIFS entries under $mount_root" >&2
+    echo "Refusing to remove unprovenanced network entries under $mount_root" >&2
     exit 1
   fi
   while read -r mount_point; do
@@ -54,55 +118,59 @@ if [[ "$server" == "--remove-all" ]]; then
     elif findmnt --mountpoint "$mount_point" >/dev/null 2>&1; then
       stop_failed=1
     fi
-  done < <(awk -v prefix="$mount_root/" -v marker="$fstab_marker" '$2 ~ ("^" prefix) && $3 == "cifs" && $0 ~ ("[[:space:]]#[[:space:]]*" marker "([[:space:]]|$)") { gsub(/\\040/, " ", $2); print $2 }' /etc/fstab)
+  done < <(FXROUTE_MOUNT="$fstab_mount" awk -v prefix="$mount_root/" -v nfs_prefix="$nfs_mount_root/" -v marker="$fstab_marker" '
+    BEGIN { mount = ENVIRON["FXROUTE_MOUNT"] }
+    (mount ? $2 == mount : (index($2, prefix) == 1 || index($2, nfs_prefix) == 1) && $3 ~ /^(cifs|nfs|nfs4)$/) &&
+      $0 ~ ("[[:space:]]#[[:space:]]*" marker "([[:space:]]|$)") { gsub(/\\040/, " ", $2); print $2 }
+  ' /etc/fstab)
   if [[ $stop_failed -ne 0 ]]; then
-    echo "Could not stop all FXRoute CIFS mount units; keeping /etc/fstab entries for retry" >&2
+    echo "Could not stop all FXRoute network mount units; keeping /etc/fstab entries for retry" >&2
     exit 1
   fi
   tmp_fstab="$(mktemp /etc/fstab.fxroute.XXXXXX)"
-  awk -v prefix="$mount_root/" -v marker="$fstab_marker" '!($2 ~ ("^" prefix) && $3 == "cifs" && $0 ~ ("[[:space:]]#[[:space:]]*" marker "([[:space:]]|$)"))' /etc/fstab > "$tmp_fstab"
+  FXROUTE_MOUNT="$fstab_mount" awk -v prefix="$mount_root/" -v nfs_prefix="$nfs_mount_root/" -v marker="$fstab_marker" '
+    BEGIN { mount = ENVIRON["FXROUTE_MOUNT"] }
+    !((mount ? $2 == mount : (index($2, prefix) == 1 || index($2, nfs_prefix) == 1) && $3 ~ /^(cifs|nfs|nfs4)$/) &&
+      $0 ~ ("[[:space:]]#[[:space:]]*" marker "([[:space:]]|$)"))
+  ' /etc/fstab > "$tmp_fstab"
   chmod --reference=/etc/fstab "$tmp_fstab"
   chown --reference=/etc/fstab "$tmp_fstab"
   mv "$tmp_fstab" /etc/fstab
   systemctl daemon-reload
   exit 0
 fi
-[[ "$server" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "Invalid SMB server" >&2; exit 2; }
-# The pattern lives in a variable on purpose: an unquoted $-inside-[...]
-# would expand the shell flags before the regex compiles and then silently
-# reject hyphens in ordinary share names.
-share_re='^[A-Za-z0-9._() $-]+$'
-[[ $share =~ $share_re && "$share" != "." && "$share" != ".." ]] || {
-  echo "Invalid SMB share" >&2
-  exit 2
-}
-
 user_entry="$(getent passwd "$user")"
 [[ -n "$user_entry" ]] || { echo "Unknown user" >&2; exit 2; }
 gid="$(id -g "$user")"
-mount_point="$mount_root/$server/$share"
-source="//$server/$share"
-
-install -d -o root -g root -m 755 /var/lib/fxroute /var/lib/fxroute/music-libraries "$mount_root"
+allowed_root="$mount_root"
+[[ "$mode" != nfs ]] || allowed_root="$nfs_mount_root"
+safe_directory "$allowed_root"
 case "$(realpath -m "$mount_point")" in
-  "$mount_root"/*) ;;
+  "$allowed_root"/*) ;;
   *) echo "Invalid mount path" >&2; exit 2 ;;
 esac
 
-install -d -o root -g root -m 755 "$mount_root/$server" "$mount_point"
+safe_directory "$mount_point"
 fstab_source="${source// /\\040}"
 fstab_mount="${mount_point// /\\040}"
 options="guest,ro,uid=$uid,gid=$gid,_netdev,nofail,x-systemd.automount,x-systemd.mount-timeout=10s,x-systemd.idle-timeout=5min"
-entry="$fstab_source $fstab_mount cifs $options 0 0 # $fstab_marker"
+if [[ "$mode" == nfs ]]; then
+  options="ro,soft,timeo=20,retrans=2,retry=0,proto=tcp,nosuid,nodev,noexec,_netdev,nofail,x-systemd.automount,x-systemd.mount-timeout=10s,x-systemd.idle-timeout=5min"
+fi
+entry="$fstab_source $fstab_mount $fs_type $options 0 0 # $fstab_marker"
 
 exec 9>/run/lock/fxroute-cifs-mount.lock
 flock 9
 tmp_fstab="$(mktemp /etc/fstab.fxroute.XXXXXX)"
 trap 'rm -f "$tmp_fstab"' EXIT
-if awk -v mount="$fstab_mount" -v source="$fstab_source" '$2 == mount && $3 == "cifs" && $1 != source {found = 1} END {exit found ? 1 : 0}' /etc/fstab; then
+if FXROUTE_MOUNT="$fstab_mount" FXROUTE_SOURCE="$fstab_source" awk -v fs="$fs_type" -v marker="$fstab_marker" '
+  BEGIN { mount = ENVIRON["FXROUTE_MOUNT"]; source = ENVIRON["FXROUTE_SOURCE"] }
+  $2 == mount && ($1 != source || $3 != fs || $0 !~ ("[[:space:]]#[[:space:]]*" marker "([[:space:]]|$)")) {found = 1}
+  END {exit found ? 1 : 0}
+' /etc/fstab; then
   :
 else
-  echo "Refusing to replace a foreign CIFS entry already using $mount_point" >&2
+  echo "Refusing to replace a foreign network entry already using $mount_point" >&2
   exit 1
 fi
 FXROUTE_FSTAB_SOURCE="$fstab_source" FXROUTE_FSTAB_MOUNT="$fstab_mount" FXROUTE_FSTAB_ENTRY="$entry" awk '
@@ -111,7 +179,7 @@ FXROUTE_FSTAB_SOURCE="$fstab_source" FXROUTE_FSTAB_MOUNT="$fstab_mount" FXROUTE_
     mount = ENVIRON["FXROUTE_FSTAB_MOUNT"]
     entry = ENVIRON["FXROUTE_FSTAB_ENTRY"]
   }
-  $1 == source && $2 == mount && $3 == "cifs" {
+  $1 == source && $2 == mount {
     if (!replaced) print entry
     replaced = 1
     next
@@ -127,3 +195,7 @@ trap - EXIT
 systemctl daemon-reload
 unit="$(systemd-escape --path "$mount_point")"
 systemctl start "$unit.automount"
+if [[ "$mode" == nfs ]]; then
+  systemctl reset-failed "$unit.mount" >/dev/null 2>&1 || true
+  systemctl start "$unit.mount"
+fi

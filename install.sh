@@ -43,7 +43,8 @@ SPOTIFYD_UPSTREAM_REPO="Spotifyd/spotifyd"
 QBZD_UPSTREAM_REPO="vicrodh/qbz"
 QBZD_UPSTREAM_FALLBACK_REPO="yet-another-quentin/qbzd"
 SPOTIFYD_ZEROCONF_PORT="4444"
-CIFS_HELPER_SHA256="9c6e71ee42440e7924b3a3277cd0c7b7cf2824950a8a0b5f4f9f0ac020195931"
+CIFS_HELPER_SHA256="01fc2bdb91bd62f506ec32552a87e70d154c99d10eeb0b35725b6a216908c686"
+CIFS_HELPER_PREVIOUS_SHA256="9c6e71ee42440e7924b3a3277cd0c7b7cf2824950a8a0b5f4f9f0ac020195931"
 CIFS_HELPER_LEGACY_SHA256="8c848fc5cff8d1e320c54e99caad66ac53cbf0ba81329e1c651102115ba7aa7d"
 PROVIDER_HELPER_SHA256="990a00b8b05750e4db6fb2a2dbb487d29742a50645edbb61487c6891f5e5a906"
 SYSTEM_UPDATE_HELPER_SHA256="b9e67b2f396e814930d1ebfeba8f6d9d483b601a3fbd27cc7dd8c32b7d3506eb"
@@ -2310,6 +2311,26 @@ smb_packages_for_manager() {
   esac
 }
 
+nfs_packages_for_manager() {
+  case "$1" in
+    apt) echo "nfs-common" ;;
+    dnf|pacman) echo "nfs-utils" ;;
+    zypper) echo "nfs-client" ;;
+    *) return 1 ;;
+  esac
+}
+
+ensure_nfs_packages() {
+  local packages=()
+  local missing=()
+  local pkg=""
+  read -r -a packages <<<"$(nfs_packages_for_manager "$PACKAGE_MANAGER")"
+  for pkg in "${packages[@]}"; do
+    package_installed "$pkg" || missing+=("$pkg")
+  done
+  [[ ${#missing[@]} -eq 0 ]] || pkg_install "${missing[@]}"
+}
+
 selinux_packages_for_manager() {
   # Tools the confined-proxy SELinux preparation needs beyond a default
   # install: checkmodule (checkpolicy), semodule/restorecon/getenforce,
@@ -2490,6 +2511,7 @@ ensure_native_packages() {
     missing_audio_stack+=(rtkit)
   fi
   ensure_smb_packages
+  ensure_nfs_packages
 
   if ! bt_plugin_present; then
     need_bt_plugin_pkg=1
@@ -2695,7 +2717,7 @@ install_network_library_helper() {
     [[ -f "$helper_path" && ! -L "$helper_path" ]] \
       || die "Refusing to overwrite a non-regular network library mount helper"
     existing_helper_sha256="$("${SUDO_CMD[@]}" sha256sum "$helper_path" | awk '{print $1}')"
-    [[ "$existing_helper_sha256" == "$CIFS_HELPER_SHA256" || "$existing_helper_sha256" == "$CIFS_HELPER_LEGACY_SHA256" ]] \
+    [[ "$existing_helper_sha256" == "$CIFS_HELPER_SHA256" || "$existing_helper_sha256" == "$CIFS_HELPER_PREVIOUS_SHA256" || "$existing_helper_sha256" == "$CIFS_HELPER_LEGACY_SHA256" ]] \
       || die "Refusing to overwrite a non-FXRoute-owned network library mount helper"
     [[ "$existing_helper_sha256" == "$CIFS_HELPER_SHA256" ]] || install_helper=1
   else
@@ -2748,7 +2770,7 @@ install_network_library_helper() {
   "${SUDO_CMD[@]}" install -m 440 "$tmp_sudoers" "$sudoers_path"
   rm -f "$tmp_sudoers"
   CIFS_SUDOERS_SHA256="$("${SUDO_CMD[@]}" sha256sum "$sudoers_path" | awk '{print $1}')"
-  pass "network library CIFS helper installed"
+  pass "network library SMB/NFS helper installed"
 }
 
 prepare_external_install_root() {
@@ -6007,6 +6029,9 @@ validate_tools() {
   command -v pw-cli >/dev/null 2>&1 && pass "pw-cli available" || fail "pw-cli available"
   command -v bluetoothctl >/dev/null 2>&1 && pass "bluetoothctl available" || fail "bluetoothctl available"
   for cmd in smbclient mount.cifs gio; do
+    command -v "$cmd" >/dev/null 2>&1 && pass "$cmd available" || fail "$cmd available"
+  done
+  for cmd in mount.nfs showmount; do
     command -v "$cmd" >/dev/null 2>&1 && pass "$cmd available" || fail "$cmd available"
   done
   run_as_target_user "$INSTALL_ROOT/.venv/bin/yt-dlp" --version >/dev/null 2>&1 \

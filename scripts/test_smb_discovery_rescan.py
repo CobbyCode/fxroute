@@ -39,7 +39,7 @@ def main_test():
     try:
         host_table = {"hosts": []}
         with mock.patch.object(
-            sources, "default_discovery_hosts", side_effect=lambda: list(host_table["hosts"])
+            sources, "default_discovery_hosts", side_effect=lambda **kwargs: list(host_table["hosts"])
         ), mock.patch.object(
             sources, "discover_smb_shares", return_value=[]
         ):
@@ -213,4 +213,5 @@ def main_test():
 
 
 if __name__ == "__main__":
-    main_test()
+    with mock.patch.object(sources.nfs, "discover_nfs_shares", return_value=[]):
+        main_test()

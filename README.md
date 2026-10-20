@@ -84,7 +84,9 @@ Supported package managers are apt, dnf, zypper, and pacman. Streaming providers
   - `http://localhost:8000` on the audio PC itself
   - `https://<host-ip>` or `https://<device-name>.local` when the optional HTTPS proxy is enabled (HTTP stays reachable)
 - Play something from **Radio** or **Library** to confirm audio and DSP routing.
-- The music folder is configured in `.env` (`MUSIC_ROOT`) or selected in **Technical settings → Music Library**, which also lists discovered SMB shares.
+- The music folder is configured in `.env` (`MUSIC_ROOT`) or selected in **Technical settings → Music Library**, which lists SMB shares and NFS exports together. Add `smb://server/share` or `server:/export/path` manually; bracket IPv6 servers, e.g. `[2001:db8::1]:/music`. **Remove share** removes the saved choice and FXRoute-managed mount, never music files.
+- Discovery uses bounded local-network probes, SMB guest listings, NFS `showmount`, and a read-only NFSv4 namespace fallback. A server that denies export/namespace listing can still be added manually. Optional `MUSIC_LIBRARY_SMB_HOSTS` and `MUSIC_LIBRARY_NFS_HOSTS` (comma-separated hosts) restrict discovery independently.
+- Network mounts and the selected library survive restarts. An unavailable saved library is retried after startup; selecting Local cancels restoration. NFS negotiates v4/v3 automatically and uses read-only, boot-safe systemd automounts with finite I/O retries (`soft,timeo=20,retrans=2`). An outage can interrupt a scan or playback; retry the scan/playback after connectivity returns. The mount status is kernel mount state, not an online-server guarantee. NFS permissions remain those of the server (AUTH_SYS); SMB guest behavior is unchanged.
 
 ## Home Assistant
 

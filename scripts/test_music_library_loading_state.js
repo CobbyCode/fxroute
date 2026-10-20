@@ -153,6 +153,21 @@ check('scanning with cached smb entry keeps the list visible', () => {
     assert.equal(m.disabled, false);
 });
 
+check('scanning with cached nfs entry keeps the same selector usable', () => {
+    const m = model({
+        active_id: 'nfs:nas:/music',
+        libraries: [
+            { id: 'local', type: 'local', label: 'Local — Music' },
+            { id: 'nfs:nas:/music', type: 'nfs', label: 'NFS — nas:/music' },
+            { id: 'manual', type: 'action', label: 'Add network share manually…' },
+        ],
+        scanning: true,
+    });
+    assert.match(m.html, /NFS — nas:\/music/);
+    assert.equal(m.value, 'nfs:nas:/music');
+    assert.equal(m.disabled, false);
+});
+
 if (failures) {
     console.error(`${failures} case(s) failed`);
     process.exit(1);

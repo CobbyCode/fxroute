@@ -1807,8 +1807,8 @@
         active_type: 'smb',
         libraries: [
             { id: 'local', label: 'Local', type: 'local' },
-            { id: 'demo-library-2', label: 'SMB_Demo_Library-1', type: 'smb' },
-            { id: 'demo-nas', label: 'SMB_Demo_Library-2', type: 'smb' },
+            { id: 'demo-library-2', label: 'SMB_Demo_Library-1', type: 'smb', mounted: true },
+            { id: 'demo-nas', label: 'SMB_Demo_Library-2', type: 'smb', mounted: true },
         ],
     };
 
@@ -3803,9 +3803,16 @@
         if (p === '/api/music-libraries') return j(musicLibrariesPayload());
         if (p === '/api/music-libraries/manual' && post) {
             const url = String(body.url || '');
-            const entry = { id: 'demo-nas-' + Date.now(), label: url.split('/').filter(Boolean).pop() || 'NAS', type: 'smb' };
+            const type = url.startsWith('smb://') ? 'smb' : 'nfs';
+            const entry = { id: 'demo-network-' + type + ':' + url, label: type.toUpperCase() + ' — ' + url, type, mounted: true };
             if (!musicLibraries.libraries.find(l => l.id === entry.id)) musicLibraries.libraries.push(entry);
             return j({ ...musicLibraries, entry });
+        }
+        if (p === '/api/music-libraries/remove' && post) {
+            const id = String(body.id || '');
+            if (id === 'local' || id === musicLibraries.active_id) return err('Select the local library before removing this share', 409);
+            musicLibraries.libraries = musicLibraries.libraries.filter(entry => entry.id !== id);
+            return j(musicLibraries);
         }
         if (p === '/api/music-libraries/select' && post) {
             const id = String(body.id || '');

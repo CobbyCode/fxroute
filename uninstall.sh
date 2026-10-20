@@ -31,7 +31,7 @@ SPOTIFY_APT_SOURCE_FILE="/etc/apt/sources.list.d/spotify.list"
 SPOTIFY_APT_KEY_FILE="/usr/share/keyrings/spotify-archive-keyring.gpg"
 SPOTIFY_APT_KEY_FINGERPRINT="E1096BCBFF6D418796DE78515384CE82BA52C83A"
 SPOTIFYD_ZEROCONF_PORT="4444"
-CIFS_HELPER_SHA256="9c6e71ee42440e7924b3a3277cd0c7b7cf2824950a8a0b5f4f9f0ac020195931"
+CIFS_HELPER_SHA256="01fc2bdb91bd62f506ec32552a87e70d154c99d10eeb0b35725b6a216908c686"
 PROVIDER_HELPER_SHA256="990a00b8b05750e4db6fb2a2dbb487d29742a50645edbb61487c6891f5e5a906"
 SYSTEM_UPDATE_HELPER_SHA256="b9e67b2f396e814930d1ebfeba8f6d9d483b601a3fbd27cc7dd8c32b7d3506eb"
 PRESERVE_INSTALL_STATE=0
@@ -1127,7 +1127,7 @@ remove_helpers() {
 target_cifs_entries_present() {
   local mount_root="/var/lib/fxroute/music-libraries/$FXROUTE_TARGET_UID"
   [[ -f /etc/fstab ]] || return 1
-  awk -v prefix="$mount_root/" '$2 ~ ("^" prefix) && $3 == "cifs" {found = 1} END {exit found ? 0 : 1}' /etc/fstab
+  awk -v prefix="$mount_root/" -v nfs_prefix="$mount_root-nfs/" '(index($2, prefix) == 1 || index($2, nfs_prefix) == 1) && $3 ~ /^(cifs|nfs|nfs4)$/ {found = 1} END {exit found ? 0 : 1}' /etc/fstab
 }
 
 remove_network_library_helper() {

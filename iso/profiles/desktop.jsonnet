@@ -31,6 +31,7 @@
       "tar",
       "ca-certificates",
       "iproute2",
+      "nfs-client",
       "openssh-server",
       "git",
       "plasma6-session",

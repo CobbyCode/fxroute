@@ -3079,12 +3079,18 @@ async def lifespan(app: FastAPI):
         except MPVNotInstalledError as exc:
             logger.error("Failed to start MPV: %s", exc)
 
-        runtime.music_library.manager = MusicLibraryManager(settings.MUSIC_ROOT)
+        config_root = Path(os.environ.get("XDG_CONFIG_HOME") or (Path.home() / ".config")) / "fxroute"
+        runtime.music_library.manager = MusicLibraryManager(
+            settings.MUSIC_ROOT, state_path=config_root / "music-libraries.json",
+        )
         runtime.music_library.scanner = _library_scanner_for(runtime.music_library.manager.active_root)
         runtime.music_library.scanner.prepare_scan_status()
         runtime.library_scan_task = _create_library_refresh_task(
             runtime.music_library.scanner,
             name="initial-library-scan",
+        )
+        _create_lifecycle_background_task(
+            _restore_saved_music_library(runtime.music_library.manager), name="restore-music-library",
         )
         logger.info("Library scanner initialized; initial scan running in background")
 
@@ -6777,12 +6783,62 @@ async def add_manual_music_library(request: Request):
         raise HTTPException(status_code=503, detail="Music libraries are not initialized")
     body = await _json_object(request)
     try:
-        entry = manager.add_manual_url(str(body.get("url") or ""))
-    except (ValueError, TypeError) as exc:
+        entry = await asyncio.to_thread(manager.add_manual_url, str(body.get("url") or ""))
+    except (ValueError, TypeError, OSError) as exc:
         raise bad_request(exc) from exc
     cached = await asyncio.to_thread(manager.status_cached)
     refreshing = await _request_library_discovery_refresh(manager)
     return {"entry": entry, **cached, "discovery_refreshing": refreshing}
+
+
+@app.post("/api/music-libraries/remove")
+async def remove_music_library(request: Request):
+    manager = runtime.music_library.manager
+    if manager is None:
+        raise HTTPException(status_code=503, detail="Music libraries are not initialized")
+    body = await _json_object(request)
+    library_id = str(body.get("id") or "")
+    async with _music_library_lock():
+        if library_id == manager.active_id:
+            raise HTTPException(status_code=409, detail="Select the local library before removing this share")
+        try:
+            await _drain_worker(manager.remove_library, library_id)
+        except (ValueError, OSError) as exc:
+            raise bad_request(exc) from exc
+        return manager.status_cached()
+
+
+async def _restore_saved_music_library(manager: MusicLibraryManager, *, retry_delay: float = 15.0) -> None:
+    """Retry only the saved selection after an offline start; never rescan the LAN."""
+    async def attempt() -> bool:
+        async with _music_library_lock():
+            library_id = manager.saved_active_id
+            if library_id == "local" or library_id == manager.active_id:
+                return True
+            if _playback_transition_is_active():
+                return False
+            previous = manager.active_snapshot()
+            try:
+                root = await asyncio.to_thread(manager.activate, library_id)
+            except (ValueError, OSError) as exc:
+                detail = str(exc)
+                if manager.restore_error != detail:
+                    logger.warning("Saved music library unavailable; retrying: %s", detail)
+                manager.restore_error = detail
+                return False
+            try:
+                scanner = runtime.music_library.scanner
+                if root != scanner.music_root:
+                    await _commit_music_library_switch(scanner, root=root, library_id=library_id)
+            except BaseException:
+                await asyncio.to_thread(manager.restore_active, *previous)
+                raise
+            return True
+
+    while runtime.music_library.manager is manager:
+        if await _finish_despite_cancellation(attempt(), name="restore-library-attempt"):
+            return
+        await asyncio.sleep(retry_delay)
 
 
 async def _commit_music_library_switch(

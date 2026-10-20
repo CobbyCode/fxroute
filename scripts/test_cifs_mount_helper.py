@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import getpass
 import os
 import subprocess
 import tempfile
@@ -12,11 +13,22 @@ HELPER = ROOT / "scripts" / "fxroute-cifs-mount"
 
 class CifsMountHelperTests(unittest.TestCase):
     def test_rejects_unsafe_server_and_share_before_mutation(self):
-        text = HELPER.read_text()
-        self.assertLess(text.index('[[ "$server" =~'), text.index("install -d"))
-        self.assertLess(text.index('share in {".", ".."}') if 'share in {".", ".."}' in text else text.index('"$share" != ".."'), text.index("install -d"))
-        self.assertIn('if [[ "$server" == "--remove-all" ]]', text)
-        self.assertIn("systemctl stop", text)
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            fstab = root / "fstab"
+            fstab.write_text("# existing\n")
+            helper = root / "helper"
+            helper.write_text(HELPER.read_text()
+                              .replace('[[ $EUID -eq 0 &&', '[[ 0 -eq 0 &&')
+                              .replace("/etc/fstab", str(fstab))
+                              .replace("/var/lib/fxroute", str(root / "var")))
+            for server, share in (("../server", "Music"), ("server", ".."), ("--remove-all", "Music")):
+                result = subprocess.run(["bash", str(helper), server, share],
+                                        env={**os.environ, "SUDO_USER": getpass.getuser()},
+                                        capture_output=True, text=True)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(fstab.read_text(), "# existing\n")
+                self.assertFalse((root / "var").exists())
 
     def test_fstab_update_is_idempotent_and_uses_safe_options(self):
         with tempfile.TemporaryDirectory() as td:
