@@ -79,7 +79,7 @@ FXRoute works from a sofa without an air pointer. A TV remote that sends standar
 - **Context menu key** opens and closes the audio input picker, including during app playback; the browser's keyboard context menu is suppressed. Mouse right-click is unchanged.
 - Sliders keep Left/Right for value changes; Up/Down leaves the slider. Closed dropdowns and text fields reached by the remote are navigation stops, not arrow-key traps. Enter starts text editing; Up/Down leaves a single-line editor. Tab keeps normal keyboard focus and caret behavior.
 
-Power, volume, mute and play/pause keys keep their system behavior.
+Power, volume and mute keys keep their system behavior. Media keys (Play/Pause, Next, Previous, Stop) control the active FXRoute source from any keyboard or remote, even when the browser does not have the focus. FXRoute registers its own media player with the desktop (MPRIS; on GNOME the media-keys daemon) and takes the keys back from paused players such as Spotify Desktop, so Spotify is only controlled while it is the active source. With an external, Bluetooth or STDIN input selected, media keys do nothing.
 
 [![Beta 14 main view: Radio with saved stations, Station Catalog, playback controls, and L/R/Sub output meters](media/screenshots/radio-overview.png)](media/screenshots/radio-overview.png)
 

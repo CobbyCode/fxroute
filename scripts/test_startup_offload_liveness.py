@@ -197,6 +197,8 @@ def _lifespan_patches(slow_player, slow_effects):
         mock.patch.object(main.bluetooth_input, "run_monitor_loop", _done_loop),
         mock.patch.object(main.spotify_playerctl_watch, "run_watch_loop", _done_loop),
         mock.patch.object(main, "_spotify_state_poll_loop", _done_loop),
+        # The real bridge would register an MPRIS player on the session bus.
+        mock.patch.object(main.media_key_bridge, "start", lambda: None),
         mock.patch.object(main, "set_bluetooth_receiver_enabled", lambda *a, **k: None),
     ]
 

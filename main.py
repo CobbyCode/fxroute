@@ -556,6 +556,7 @@ from playback.spotify_watch import (
     SpotifyPlayerctlWatch,
     SpotifyWatchDependencies,
 )
+from playback.media_keys import MediaKeyBridge, MediaKeyDependencies, mpris_state
 from playback.qobuz_watch import (
     QobuzPlayerWatch,
     QobuzWatchDependencies,
@@ -1019,6 +1020,32 @@ spotify_playerctl_watch = SpotifyPlayerctlWatch(SpotifyWatchDependencies(
     request_coordinated_recovery=lambda *args, **kwargs: playback_orchestration.configured().request_coordinated_recovery(*args, **kwargs),
     schedule_spotify_state_refresh=lambda reason: _schedule_spotify_state_refresh(reason),
     claim_spotify_playback=lambda *args, **kwargs: _claim_spotify_playback(*args, **kwargs),
+))
+
+
+def _media_key_state() -> dict:
+    """MPRIS state of the committed playback owner for the media-key bridge."""
+    return mpris_state(
+        source_mode=playback_state.source_mode,
+        owner=_resolve_playback_owner(),
+        player_state=runtime.player_instance.state if runtime.player_instance else {},
+        track=playback_state.current_track_info,
+        last_track=playback_state.last_track_info,
+        spotify_state=playback_state.latest_spotify_state,
+        qobuz_state=playback_state.latest_qobuz_state,
+        queue_count=len(playback_queue.queue.tracks),
+    )
+
+
+async def _run_media_key_action(action: str) -> None:
+    """Run a media key through the footer's global transport endpoints."""
+    endpoints = {"toggle": toggle_playback, "next": next_playback, "previous": previous_playback}
+    await endpoints[action]()
+
+
+media_key_bridge = MediaKeyBridge(MediaKeyDependencies(
+    get_state=_media_key_state,
+    run_action=_run_media_key_action,
 ))
 
 
@@ -3282,6 +3309,8 @@ async def lifespan(app: FastAPI):
             _spotify_state_poll_loop(),
             name="spotify-state-poll",
         )
+        logger.info("Starting MPRIS media-key bridge")
+        media_key_bridge.start()
 
         runtime.player_instance.register_callbacks(_dispatch_player_state_change)
         if downloader is not None:
@@ -3350,6 +3379,7 @@ async def _shutdown_lifespan_resources() -> None:
     await cleanup("qobuz-watch", qobuz_player_watch.stop)
     await cleanup("qobuz-volume-watch", qobuz_volume_watch.stop)
     await cleanup("spotifyd-volume-watch", spotifyd_volume_watch.stop)
+    await cleanup("media-key-bridge", media_key_bridge.stop)
     await cleanup("radio-reconnect", radio_reconnect.stop)
     # Before the source services stop: no automatic switch during shutdown.
     await cleanup("input-auto-select", input_auto_select.stop)

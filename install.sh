@@ -2596,7 +2596,8 @@ bluetooth_agent_deps_present() {
 
 ensure_bluetooth_agent_packages() {
   # audio/bluez_agent.py runs on the system python3 (outside the venv) and
-  # needs the D-Bus bindings plus PyGObject/GLib:
+  # needs the D-Bus bindings plus PyGObject/GLib (the media-key MPRIS player
+  # playback/mpris_helper.py uses the same runtime):
   #   apt (Debian/Ubuntu/Armbian): python3-dbus python3-gi gir1.2-glib-2.0
   #   dnf (Fedora/RHEL):           python3-dbus python3-gobject
   #   zypper (openSUSE):           python313-dbus-python python313-gobject
