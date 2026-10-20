@@ -7,6 +7,7 @@ import re
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
+from urllib.parse import urlsplit
 from common.atomic_write import atomic_write_text
 from typing import Dict, List, Optional
 
@@ -41,8 +42,26 @@ def tidal_ref_id(track_id: str) -> str:
     return str(track_id)[len(TIDAL_REF_PREFIX):]
 
 
-def _valid_tidal_ref(track_id: str) -> bool:
+def valid_tidal_ref(track_id: str) -> bool:
+    """A ``tidal:<id>`` reference whose id is a bare id (so no second prefix)."""
     return is_tidal_ref(track_id) and bool(_TIDAL_REF_ID.match(tidal_ref_id(track_id)))
+
+
+def tidal_ref(track_id: str) -> str:
+    """``tidal:<id>`` for a bare id; an existing reference is returned unchanged."""
+    track_id = str(track_id)
+    return track_id if is_tidal_ref(track_id) else f"{TIDAL_REF_PREFIX}{track_id}"
+
+
+def _valid_art_url(value: str) -> bool:
+    """Only an absolute http(s) URL with a host may be kept as cover art."""
+    if any(char.isspace() or ord(char) < 32 for char in value):
+        return False
+    try:
+        parts = urlsplit(value)
+        return parts.scheme in ("http", "https") and bool(parts.hostname)
+    except ValueError:
+        return False
 
 
 @dataclass
@@ -159,7 +178,7 @@ def _clean_track_ids(track_ids: List[str]) -> List[str]:
     """Trim ids and reject malformed TIDAL references."""
     cleaned = [str(track_id).strip() for track_id in track_ids if str(track_id).strip()]
     for track_id in cleaned:
-        if is_tidal_ref(track_id) and not _valid_tidal_ref(track_id):
+        if is_tidal_ref(track_id) and not valid_tidal_ref(track_id):
             raise ValueError(f"Invalid TIDAL track reference: {track_id[:80]}")
     return cleaned
 
@@ -173,7 +192,7 @@ def clean_track_meta(track_ids: List[str], track_meta: Optional[dict]) -> Dict[s
     """
     if not isinstance(track_meta, dict):
         return {}
-    refs = {track_id for track_id in track_ids if _valid_tidal_ref(track_id)}
+    refs = {track_id for track_id in track_ids if valid_tidal_ref(track_id)}
     cleaned: Dict[str, dict] = {}
     for ref, meta in track_meta.items():
         if ref not in refs or not isinstance(meta, dict):
@@ -185,7 +204,9 @@ def clean_track_meta(track_ids: List[str], track_meta: Optional[dict]) -> Dict[s
                 entry[key] = value.strip()[:_TRACK_META_TEXT_LIMIT]
         art_url = meta.get("art_url")
         if isinstance(art_url, str) and art_url.strip():
-            entry["art_url"] = art_url.strip()[:_TRACK_META_URL_LIMIT]
+            art_url = art_url.strip()
+            if _valid_art_url(art_url):
+                entry["art_url"] = art_url[:_TRACK_META_URL_LIMIT]
         duration = meta.get("duration")
         if isinstance(duration, (int, float)) and not isinstance(duration, bool) and 0 <= duration < 86400 * 7:
             entry["duration"] = float(duration)

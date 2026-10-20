@@ -37,6 +37,10 @@ from playback.transition import PlaybackTransitionFailure, TransitionRequest
 
 logger = logging.getLogger(__name__)
 
+# Upper bound for entries one automatic advance may step over, so an outage
+# that fails every resolve cannot stall the advance for the whole queue.
+_MAX_UNPLAYABLE_SKIPS = 10
+
 
 @dataclass
 class QueueCandidate:
@@ -619,7 +623,7 @@ class PlaybackQueue:
         )
         return True
 
-    async def advance(self, *, transition_reason: str = "queue advance") -> str:
+    async def advance(self, *, transition_reason: str = "queue advance", skip_unplayable: bool = False) -> str:
         """Advance the committed queue.
 
         Returns an explicit tri-state outcome instead of a plain bool so the
@@ -636,28 +640,46 @@ class PlaybackQueue:
         ``"unavailable"``
             No navigation was possible and no authoritative queue state was
             changed.
+
+        With ``skip_unplayable`` (automatic advance) an entry that cannot be
+        loaded, e.g. a TIDAL track whose stream does not resolve, is stepped
+        over and the following entries are tried.  If none of them loads the
+        result is ``"unavailable"`` and the queue stays as it was, so a
+        transient failure never clears it.  A manual advance stops at the
+        first unloadable entry.
         """
         self.stream_prefetch.reconcile_current()
         if len(self.tracks) <= 1:
             return "unavailable"
         next_index = self.index + 1
-        if next_index >= len(self.tracks):
-            if self.mode == "native_mpv":
+        skipped = 0
+        edit_generation = self._edit_generation
+        source_intent = self._capture_source_intent()
+        while True:
+            if next_index >= len(self.tracks):
                 if self.loop:
                     next_index = 0
-                else:
+                elif skipped or self.mode == "native_mpv":
                     return "unavailable"
-            else:
-                if self.loop:
-                    next_index = 0
                 else:
                     self.reset()
                     return "ended"
-        return (
-            "advanced"
-            if await self.load_track(next_index, transition_reason=transition_reason)
-            else "unavailable"
-        )
+            if await self.load_track(next_index, transition_reason=transition_reason):
+                return "advanced"
+            skipped += 1
+            if not skip_unplayable or skipped >= min(len(self.tracks), _MAX_UNPLAYABLE_SKIPS):
+                return "unavailable"
+            # A user action during the failed attempt owns the queue now.
+            self._ensure_source_intent_current(source_intent)
+            if self._edit_generation != edit_generation:
+                raise HTTPException(status_code=409, detail="Playback queue changed during preparation")
+            skipped_track = self.tracks[next_index]
+            logger.warning(
+                "Skipping unplayable queue entry: id=%s title=%s",
+                skipped_track.get("id"),
+                skipped_track.get("title"),
+            )
+            next_index += 1
 
     async def rewind(self, *, transition_reason: str = "queue rewind") -> bool:
         self.stream_prefetch.reconcile_current()

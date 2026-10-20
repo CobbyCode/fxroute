@@ -48,7 +48,7 @@ from connection_manager import ConnectionManager
 from common.atomic_write import atomic_write_bytes
 import system_update as update_lifecycle
 from library.sources import LibraryContext, MusicLibraryManager
-from library.playlists import TIDAL_REF_PREFIX, is_tidal_ref, tidal_ref_id
+from library.playlists import is_tidal_ref, tidal_ref, tidal_ref_id, valid_tidal_ref
 from radio.metadata import RadioMetadataService
 from safe_http import BlockedUrlError
 
@@ -2858,7 +2858,7 @@ async def on_player_state_change(state: dict, event_commit_id: str | None = None
     ):
         queue_advancing = True
         try:
-            if len(playback_queue.queue.tracks) > 1 and await playback_queue.queue.advance(transition_reason="queue auto-advance") == "advanced":
+            if len(playback_queue.queue.tracks) > 1 and await playback_queue.queue.advance(transition_reason="queue auto-advance", skip_unplayable=True) == "advanced":
                 return
             if playback_queue.queue.single_track_loop and playback_state.current_track_info and playback_state.current_track_info.get("url"):
                 loop_track = dict(playback_state.current_track_info)
@@ -3958,11 +3958,13 @@ async def _build_mixed_play_candidate(req: PlayRequest, tracks) -> tuple[playbac
         ref = str(ref or "").strip()
         if ref and ref not in refs:
             refs.append(ref)
-    start_ref = (
-        f"{TIDAL_REF_PREFIX}{req.track_id}" if str(req.source) == "tidal" else str(req.track_id)
-    )
+    start_ref = tidal_ref(req.track_id) if str(req.source) == "tidal" else str(req.track_id)
     if start_ref not in refs:
         refs.insert(0, start_ref)
+    malformed_ref = next((ref for ref in refs if is_tidal_ref(ref) and not valid_tidal_ref(ref)), None)
+    if malformed_ref is not None:
+        # Includes a doubled prefix ("tidal:tidal:<id>"): never sent to TIDAL.
+        raise HTTPException(status_code=400, detail=f"Invalid TIDAL track reference: {malformed_ref[:80]}")
     wants_tidal = any(is_tidal_ref(ref) for ref in refs)
     connected = False
     if wants_tidal:

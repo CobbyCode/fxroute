@@ -218,6 +218,53 @@ class MixedQueuePlayTests(unittest.IsolatedAsyncioTestCase):
         finally:
             self._restore(originals)
 
+    async def test_tidal_entries_between_local_ones_keep_the_saved_order(self):
+        originals = self._install([base._track("x")], index=0)
+        requests = []
+        refs = ["tidal:101", "a", "tidal:102", "b", "tidal:103"]
+        try:
+            await self._play_with(requests, self._tidal_patches(), track_id="a", refs=refs)
+            queue = playback_queue.queue
+            self.assertEqual([t["id"] for t in queue.tracks], ["101", "a", "102", "b", "103"])
+            self.assertEqual([t["id"] for t in queue.original], ["101", "a", "102", "b", "103"])
+            self.assertEqual(queue.index, 1)
+        finally:
+            self._restore(originals)
+
+    async def test_a_doubled_tidal_prefix_is_a_400_and_starts_nothing(self):
+        for refs, track_id, source in (
+            (["a", "tidal:tidal:101"], "a", "local"),
+            (["tidal:tidal:101", "a"], "tidal:101", "tidal"),
+        ):
+            originals = self._install([base._track("x")], index=0)
+            requests = []
+            try:
+                with self.assertRaises(main.HTTPException) as ctx:
+                    await self._play_with(
+                        requests, self._tidal_patches(), track_id=track_id, source=source, refs=refs,
+                    )
+                self.assertEqual(ctx.exception.status_code, 400, refs)
+                self.assertEqual(requests, [])
+                self.meta_mock.assert_not_awaited()
+                self.stream_mock.assert_not_awaited()
+                self.assertEqual([t["id"] for t in playback_queue.queue.tracks], ["x"])
+            finally:
+                self._restore(originals)
+
+    async def test_a_start_id_that_already_is_a_reference_is_not_prefixed_again(self):
+        originals = self._install([base._track("x")], index=0)
+        requests = []
+        try:
+            result = await self._play_with(
+                requests, self._tidal_patches(),
+                track_id="tidal:102", source="tidal", refs=["a", "tidal:101", "tidal:102"],
+            )
+            queue = playback_queue.queue
+            self.assertEqual(result["queue_summary"], {"requested": 3, "queued": 3, "skipped": {}})
+            self.assertEqual(queue.tracks[queue.index]["id"], "102")
+        finally:
+            self._restore(originals)
+
     async def test_shuffle_fixes_the_current_entry_and_keeps_the_original_order(self):
         originals = self._install([base._track("x")], index=0)
         requests = []

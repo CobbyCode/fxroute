@@ -399,6 +399,45 @@ class TestTidalNativeBoundaryIntegration(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(requests[0].detail, "queue auto-advance")
         self.assertEqual(main.playback_state.current_track_info["id"], "b")
 
+    def terminal_eof_without_successor(self):
+        self.player._handle_event({"event": "end-file", "reason": "eof", "playlist_entry_id": 1})
+        self.player._handle_event({"event": "property-change", "name": "path", "data": None})
+        self.player._handle_event({"event": "property-change", "name": "idle-active", "data": True})
+        return self.player.state
+
+    def stub_resolver(self, unresolvable):
+        async def resolve(entry):
+            if entry["id"] in unresolvable:
+                return None
+            entry.update(url=f"/cache/{entry['id']}.mp4", sample_rate_hz=44100)
+            return entry["url"]
+        self.queue._deps.resolve_stream_url = resolve
+
+    async def test_eof_fallback_skips_an_unresolvable_entry(self):
+        self.stub_resolver({"b"})
+        event = self.terminal_eof_without_successor()
+        requests = []
+
+        async def transition(request):
+            requests.append(request)
+            return SimpleNamespace(committed=True, target_rate=44100, transition_id="fallback")
+
+        with mock.patch.object(main, "_run_coordinated_transition", side_effect=transition):
+            await main.on_player_state_change(event, event_commit_id="test")
+        self.assertEqual([request.target_track["id"] for request in requests], ["c"])
+        self.assertEqual(requests[0].detail, "queue auto-advance")
+        self.assertEqual(self.queue.index, 2)
+        self.assertEqual(main.playback_state.current_track_info["id"], "c")
+
+    async def test_eof_fallback_with_only_unresolvable_entries_left_keeps_the_queue(self):
+        self.stub_resolver({"b", "c"})
+        event = self.terminal_eof_without_successor()
+        with mock.patch.object(main, "_run_coordinated_transition",
+                               side_effect=AssertionError("nothing playable is left")):
+            await main.on_player_state_change(event, event_commit_id="test")
+        self.assertEqual(len(self.queue.tracks), 3)
+        self.assertEqual(self.queue.index, 0)
+
 
 if __name__ == "__main__":
     unittest.main()

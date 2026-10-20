@@ -92,8 +92,39 @@ class PlaylistStoreTests(_StoreCase):
         self.assertEqual(len(entry["art_url"]), playlists._TRACK_META_URL_LIMIT)
         self.assertNotIn("stream", self._disk()[0]["track_meta"]["tidal:101"])
 
+    def test_art_url_must_be_an_http_or_https_url(self):
+        good = {"tidal:1": {"title": "x", "art_url": " https://resources.tidal.com/images/a/320x320.jpg "},
+                "tidal:2": {"title": "x", "art_url": "http://img.example/2.jpg"}}
+        saved = playlists.save_playlist("Mix", ["tidal:1", "tidal:2"], good)
+        self.assertEqual(saved.track_meta["tidal:1"]["art_url"], "https://resources.tidal.com/images/a/320x320.jpg")
+        self.assertEqual(saved.track_meta["tidal:2"]["art_url"], "http://img.example/2.jpg")
+        for bad in ("javascript:alert(1)", "data:image/png;base64,AAAA", "file:///etc/passwd", "ftp://host/a.jpg",
+                    "//img.example/a.jpg", "/static/a.jpg", "a.jpg", "https://", "https:///a.jpg",
+                    "https://img.example/a b.jpg", "https://img.example/a\n.jpg", "http://[::1"):
+            saved = playlists.save_playlist("Mix", ["tidal:1"], {"tidal:1": {"title": "x", "art_url": bad}})
+            self.assertEqual(saved.track_meta["tidal:1"], {"title": "x"}, bad)
+
+    def test_art_url_in_an_existing_file_is_checked_on_load(self):
+        self._seed([{"id": "x", "name": "X", "track_ids": ["tidal:1", "tidal:2"], "track_meta": {
+            "tidal:1": {"title": "One", "art_url": "javascript:alert(1)"},
+            "tidal:2": {"title": "Two", "art_url": "https://img.example/2.jpg"}}}])
+        meta = playlists.get_playlists()[0].track_meta
+        self.assertEqual(meta["tidal:1"], {"title": "One"})
+        self.assertEqual(meta["tidal:2"]["art_url"], "https://img.example/2.jpg")
+
+    def test_the_order_of_local_and_tidal_entries_is_stored_and_loaded_as_given(self):
+        order = ["tidal:101", "b", "tidal:102", "a", "tidal:103", "c"]
+        playlists.save_playlist("Mix", order, {ref: {"title": ref} for ref in order if ref.startswith("tidal:")})
+        self.assertEqual(self._disk()[0]["track_ids"], order)
+        self._reset_cache()
+        self.assertEqual(playlists.get_playlists()[0].track_ids, order)
+        reordered = list(reversed(order))
+        playlists.save_playlist("mix", reordered)
+        self._reset_cache()
+        self.assertEqual(playlists.get_playlists()[0].track_ids, reordered)
+
     def test_malformed_references_are_rejected(self):
-        for bad in ("tidal:", "tidal:../x", "tidal:a b", "tidal:" + "9" * 65):
+        for bad in ("tidal:", "tidal:../x", "tidal:a b", "tidal:" + "9" * 65, "tidal:tidal:101"):
             with self.assertRaises(ValueError, msg=bad):
                 playlists.save_playlist("Mix", ["a", bad])
         self.assertEqual(self._disk() if self.file.exists() else [], [])
@@ -130,6 +161,10 @@ class PlaylistStoreTests(_StoreCase):
         self.assertTrue(playlists.is_tidal_ref("tidal:12"))
         self.assertFalse(playlists.is_tidal_ref("12"))
         self.assertEqual(playlists.tidal_ref_id("tidal:12"), "12")
+        self.assertEqual(playlists.tidal_ref("12"), "tidal:12")
+        self.assertEqual(playlists.tidal_ref("tidal:12"), "tidal:12")
+        self.assertTrue(playlists.valid_tidal_ref("tidal:12"))
+        self.assertFalse(playlists.valid_tidal_ref("tidal:tidal:12"))
 
 
 class PlaylistApiTests(_StoreCase, unittest.IsolatedAsyncioTestCase):
@@ -144,9 +179,10 @@ class PlaylistApiTests(_StoreCase, unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("track_meta", listed["Plain"])
 
     async def test_malformed_reference_is_a_400(self):
-        with self.assertRaises(library_api.HTTPException) as ctx:
-            await library_api.create_or_update_playlist(PlaylistSaveRequest(name="Bad", track_ids=["tidal:"]))
-        self.assertEqual(ctx.exception.status_code, 400)
+        for bad in ("tidal:", "tidal:tidal:101"):
+            with self.assertRaises(library_api.HTTPException) as ctx:
+                await library_api.create_or_update_playlist(PlaylistSaveRequest(name="Bad", track_ids=["a", bad]))
+            self.assertEqual(ctx.exception.status_code, 400, bad)
 
 
 def _track(track_id, rel, title, artist):

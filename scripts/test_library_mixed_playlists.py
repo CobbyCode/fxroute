@@ -4,8 +4,9 @@
 
 Covers:
 
-* a mixed selection saves one local playlist: local ids first, then
-  ``tidal:<id>`` references with their display data, and both selections end;
+* a mixed selection saves one local playlist in the order the tracks were
+  added (local ids and ``tidal:<id>`` references interleaved) with the
+  references' display data, and both selections end;
 * such a playlist keeps its order, carries the TIDAL glyph on its card and row
   and plays as one queue (``queue_refs``) from a local or a TIDAL row;
 * what the server had to leave out is told to the user ("Starting 2/3 ...");
@@ -191,7 +192,7 @@ def _run():
             page.click("#save-playlist")
             page.wait_for_function("window.__saved.length === 1")
             saved = page.evaluate("window.__saved[0]")
-            check(f"local tracks first, then the TIDAL reference ({saved['track_ids']})",
+            check(f"the added order is kept ({saved['track_ids']})",
                   saved["track_ids"] == ["local_C/two.flac", "tidal:9001"])
             check("the TIDAL reference carries its display data",
                   saved["track_meta"] == {"tidal:9001": {"title": "Tidal Song", "artist": "Bravo",
@@ -203,6 +204,22 @@ def _run():
             check("the playlist list shows the new mixed playlist with the TIDAL glyph",
                   page.locator('.playlist-item[data-playlist-id="saved-1"] .source-glyph--tidal').count() == 1
                   and page.locator('.playlist-item[data-playlist-id="local-mix"] .source-glyph').count() == 0)
+
+            # Local and TIDAL tracks interleave: the order of adding wins, not
+            # "local first".
+            page.click('#tracks-list .track-item[data-track-id="local_C/two.flac"] .track-add')
+            page.click("#tracks-list .streaming-result .streaming-add")
+            page.click('#tracks-list .track-item[data-track-id="local_A/one.flac"] .track-add')
+            page.wait_for_selector("#playlist-save-row:not(.hidden)")
+            check("the save row explains the order",
+                  "order you added" in page.locator("#playlist-save-row").inner_text())
+            page.fill("#playlist-name", "Interleaved")
+            page.click("#save-playlist")
+            page.wait_for_function("window.__saved.length === 2")
+            interleaved = page.evaluate("window.__saved[1]")
+            check(f"TIDAL between the local tracks keeps its place ({interleaved['track_ids']})",
+                  interleaved["track_ids"] == ["local_C/two.flac", "tidal:9001", "local_A/one.flac"])
+            page.wait_for_selector("#playlist-save-row.hidden", state="attached")
 
             # Favorites: the card carries the glyph; the detail keeps the order.
             page.click("#library-view-favorites")

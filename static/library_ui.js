@@ -2613,6 +2613,20 @@ function tidalSelectedTrackIds() {
     return tidal ? tidal.selectedIds() : [];
 }
 
+// Order in which tracks were added to the + selection, local ids and TIDAL
+// references interleaved, so a mixed playlist is saved in that order. Entries
+// that left the selection drop out; new ones go to the end.
+let selectionOrder = [];
+
+function orderedSelectionRefs(localIds, tidalRefs) {
+    const selected = localIds.concat(tidalRefs);
+    const stillSelected = new Set(selected);
+    const kept = selectionOrder.filter(ref => stillSelected.has(ref));
+    const known = new Set(kept);
+    selectionOrder = kept.concat(selected.filter(ref => !known.has(ref)));
+    return selectionOrder.slice();
+}
+
 // Save row variant per selection: local tracks save a local playlist, TIDAL
 // tracks save to TIDAL (new or existing playlist), a mix saves a local playlist
 // that keeps the TIDAL tracks as references.
@@ -2622,7 +2636,7 @@ const PLAYLIST_SAVE_MODES = {
     mixed: {
         placeholder: 'Save as playlist…',
         save: 'Save',
-        hint: 'Saved as one FXRoute playlist: local tracks first, then the TIDAL tracks.',
+        hint: 'Saved as one FXRoute playlist, in the order you added the tracks.',
     },
 };
 
@@ -3181,6 +3195,7 @@ function updatePlaylistSaveRowVisibility() {
     // view: with no track selected the row stays hidden. Local and TIDAL
     // tracks keep separate selections; the row variant follows their mix.
     applyPlaylistSaveMode(localCount && tidalCount ? 'mixed' : tidalCount ? 'tidal' : 'local');
+    orderedSelectionRefs(getSelectedPlayableTrackIds(), tidalSelectedTrackIds().map(id => TIDAL_REF_PREFIX + id));
     const hasPlaylistSelection = count >= 1;
     const showRow = hasPlaylistSelection;
     deps.getElements().playlistSaveRow.classList.toggle('hidden', !showRow);
@@ -3332,10 +3347,10 @@ async function savePlaylist() {
         return;
     }
     // A mix keeps the TIDAL tracks as references (with the display data TIDAL
-    // gave us), after the local ones.
+    // gave us), in the order the tracks were added.
     const tidal = mode === 'mixed' ? tidalLibrary() : null;
     const tidalIds = tidal ? tidalSelectedTrackIds() : [];
-    const trackIds = getSelectedPlayableTrackIds().concat(tidalIds.map(id => TIDAL_REF_PREFIX + id));
+    const trackIds = orderedSelectionRefs(getSelectedPlayableTrackIds(), tidalIds.map(id => TIDAL_REF_PREFIX + id));
     const name = (deps.getElements().playlistName?.value || '').trim();
     if (!name) {
         deps.showToast('Please enter a playlist name', 'error');
