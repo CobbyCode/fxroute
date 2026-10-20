@@ -70,12 +70,13 @@ Source and app volumes (Spotify client, Qobuz app) stay separate from the FXRout
 FXRoute works from a sofa without an air pointer. A TV remote that sends standard keyboard keys behaves like a keyboard:
 
 - **Arrow keys** move the focus ring to the nearest button, card, tab, menu entry or slider.
-- **Enter** activates the focused control. Focused text fields keep normal typing.
+- **Enter** activates the focused control exactly like a click (buttons, rows, cards, checkboxes). On a dropdown it opens remote-friendly choices: arrows move, Enter confirms, Escape/Back cancels. Mouse and touch still open the native dropdown.
+- **Escape** leaves a text field or a dropdown without changing the page.
 - **Page Up / Page Down** switch to the previous/next tab of the active tab strip.
 - **Backspace** closes the top dialog or returns from a detail view.
-- **Browser Back** opens and closes Technical settings.
-- **Context menu key** opens and closes the audio input picker.
-- Sliders keep Left/Right for value changes; Up/Down leaves the slider.
+- **Browser Back** (also Alt+Left) opens and closes Technical settings instead of navigating the browser history.
+- **Context menu key** opens and closes the audio input picker, including during app playback; the browser's keyboard context menu is suppressed. Mouse right-click is unchanged.
+- Sliders keep Left/Right for value changes; Up/Down leaves the slider. Closed dropdowns and text fields reached by the remote are navigation stops, not arrow-key traps. Enter starts text editing; Up/Down leaves a single-line editor. Tab keeps normal keyboard focus and caret behavior.
 
 Power, volume, mute and play/pause keys keep their system behavior.
 

@@ -61,8 +61,8 @@ class _Handler(http.server.SimpleHTTPRequestHandler):
         pass
 
 
-def _serve():
-    server = http.server.ThreadingHTTPServer(("127.0.0.1", PORT), _Handler)
+def _serve(port=PORT):
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", port), _Handler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     return server
 
@@ -129,7 +129,7 @@ def _run():
                   page.evaluate("document.activeElement.id") == "tab-btn-library")
             check("focus ring class is applied", _focus(page)["ring"])
             check("focus ring is visible",
-                  page.evaluate("getComputedStyle(document.activeElement).outlineWidth") == "3px")
+                  page.evaluate("getComputedStyle(document.activeElement).outlineWidth") == "2px")
 
             page.keyboard.press("PageUp")
             page.wait_for_timeout(120)
@@ -186,6 +186,72 @@ def _run():
             check("Enter activates a native button once",
                   page.evaluate("window.__nativeClicks") == 1)
 
+            # A row that already handles Enter must not be clicked a second
+            # time by the generic activation.
+            page.evaluate("""() => {
+                const own = document.createElement('div');
+                own.id = 'tv-nav-own-enter';
+                own.tabIndex = 0;
+                own.textContent = 'Own Enter';
+                own.addEventListener('keydown', (event) => {
+                    if (event.key !== 'Enter') return;
+                    event.preventDefault();
+                    window.__ownEnter = (window.__ownEnter || 0) + 1;
+                });
+                own.addEventListener('click', () => {
+                    window.__ownClicks = (window.__ownClicks || 0) + 1;
+                });
+                document.getElementById('tab-radio').append(own);
+            }""")
+            page.focus("#tv-nav-own-enter")
+            page.keyboard.press("Enter")
+            check("a row with its own Enter handler runs once",
+                  page.evaluate("window.__ownEnter") == 1)
+            check("the generic activation does not click that row again",
+                  page.evaluate("window.__ownClicks || 0") == 0)
+
+            # Enter must also activate focusable rows without an ARIA role and
+            # toggle checkboxes, which do not activate on Enter natively.
+            page.evaluate("""() => {
+                const row = document.createElement('div');
+                row.id = 'tv-nav-row';
+                row.tabIndex = 0;
+                row.textContent = 'Row';
+                row.addEventListener('click', () => {
+                    window.__rowClicks = (window.__rowClicks || 0) + 1;
+                });
+                const box = document.createElement('input');
+                box.type = 'checkbox';
+                box.id = 'tv-nav-checkbox';
+                document.getElementById('tab-radio').append(row, box);
+            }""")
+            page.focus("#tv-nav-row")
+            page.keyboard.press("Enter")
+            check("Enter activates a focusable row without a role",
+                  page.evaluate("window.__rowClicks") == 1)
+            page.focus("#tv-nav-checkbox")
+            page.keyboard.press("Enter")
+            check("Enter toggles a checkbox like a click",
+                  page.evaluate("document.getElementById('tv-nav-checkbox').checked"))
+
+            # A closed select must not own the arrows: otherwise the remote
+            # can never leave e.g. "Preset 3 optional".
+            page.evaluate("""() => {
+                const select = document.createElement('select');
+                select.id = 'tv-nav-select';
+                select.innerHTML = '<option value="a">A</option>'
+                    + '<option value="b">B</option>';
+                select.value = 'a';
+                document.getElementById('tab-radio').append(select);
+            }""")
+            page.focus("#tv-nav-select")
+            page.keyboard.press("ArrowUp")
+            page.wait_for_timeout(120)
+            check("ArrowUp leaves a select instead of trapping the remote",
+                  page.evaluate("document.activeElement.id") != "tv-nav-select")
+            check("leaving a select does not change its value",
+                  page.evaluate("document.getElementById('tv-nav-select').value") == "a")
+
             # Backspace uses the visible back control of a detail view, not a
             # hidden back button of another tab that comes first in the DOM.
             page.evaluate("""() => {
@@ -214,6 +280,16 @@ def _run():
                   page.input_value("#station-search") == "aXb")
             page.keyboard.press("Backspace")
             check("Backspace deletes text instead of closing UI",
+                  page.input_value("#station-search") == "ab")
+
+            # Text fields own the arrows, so Escape is the exit.
+            page.keyboard.press("Escape")
+            page.wait_for_timeout(120)
+            check("Escape leaves a text field",
+                  page.evaluate("document.activeElement.id") != "station-search")
+            check("the control reached by Escape carries the focus ring",
+                  _focus(page)["ring"])
+            check("Escape keeps the typed value",
                   page.input_value("#station-search") == "ab")
 
             # Sliders keep their left/right adjustment; up/down leaves them
@@ -268,6 +344,20 @@ def _run():
             page.wait_for_timeout(150)
             check("BrowserBack closes settings again",
                   page.evaluate("document.getElementById('settings-panel').classList.contains('hidden')"))
+
+            # Alt+ArrowLeft is the desktop back shortcut some remotes send;
+            # it must open settings instead of navigating the browser back.
+            page.keyboard.down("Alt")
+            page.keyboard.press("ArrowLeft")
+            page.keyboard.up("Alt")
+            page.wait_for_timeout(150)
+            check("Alt+ArrowLeft opens settings instead of navigating back",
+                  page.evaluate("!document.getElementById('settings-panel').classList.contains('hidden')"))
+            check("Alt+ArrowLeft keeps the URL",
+                  page.evaluate("location.pathname") == "/static/index.html")
+            page.focus("#close-settings")
+            page.keyboard.press("Backspace")
+            page.wait_for_timeout(150)
 
             # ContextMenu opens the input picker built from the footer select.
             page.evaluate("""() => {
@@ -335,6 +425,51 @@ def _run():
                   page.evaluate("document.getElementById('source-select').value") == "optical")
             check("the existing change handler ran",
                   page.evaluate("window.__sourceChange") == "optical")
+
+            # Escape and a backdrop click also close the picker.
+            page.keyboard.press("ContextMenu")
+            page.wait_for_timeout(120)
+            page.keyboard.press("Escape")
+            page.wait_for_timeout(150)
+            check("Escape closes the picker",
+                  page.evaluate("document.getElementById('source-picker').classList.contains('hidden') && !FXRouteModal.topRoot()"))
+            page.keyboard.press("ContextMenu")
+            page.wait_for_timeout(120)
+            page.evaluate("FXRouteModal.topRoot().querySelector('.manage-overlay-backdrop').click()")
+            page.wait_for_timeout(150)
+            check("a backdrop click closes the picker",
+                  page.evaluate("document.getElementById('source-picker').classList.contains('hidden') && !FXRouteModal.topRoot()"))
+
+            # A keyboard context menu (Menu/Compose key, Shift+F10) can arrive
+            # only as a contextmenu event under Wayland. It must be suppressed
+            # and open the picker; a mouse right-click stays native.
+            page.wait_for_timeout(800)
+            # The status poll may have hidden the line-input switcher again.
+            page.evaluate("document.getElementById('source-switcher').classList.remove('hidden')")
+            prevented = page.evaluate("""() => {
+                const event = new MouseEvent('contextmenu', {
+                    button: 0, bubbles: true, cancelable: true });
+                document.body.dispatchEvent(event);
+                return event.defaultPrevented;
+            }""")
+            page.wait_for_timeout(150)
+            check("a keyboard context menu is suppressed", prevented)
+            check("a keyboard context menu opens the picker",
+                  page.evaluate("!document.getElementById('source-picker').classList.contains('hidden')"),
+                  page.evaluate("({top: FXRouteModal.topRoot()?.id, source: document.getElementById('source-select').outerHTML, switcher: document.getElementById('source-switcher').className})"))
+            page.keyboard.press("Escape")
+            page.wait_for_timeout(150)
+            page.wait_for_timeout(800)
+            right_clicked = page.evaluate("""() => {
+                const event = new MouseEvent('contextmenu', {
+                    button: 2, bubbles: true, cancelable: true });
+                document.body.dispatchEvent(event);
+                return event.defaultPrevented;
+            }""")
+            page.wait_for_timeout(150)
+            check("a mouse right-click keeps the native context menu", not right_clicked)
+            check("a mouse right-click does not open the picker",
+                  page.evaluate("document.getElementById('source-picker').classList.contains('hidden')"))
 
             # No browser navigation was triggered by the navigation keys.
             check("navigation keys never change the URL",

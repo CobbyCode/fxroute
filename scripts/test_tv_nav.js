@@ -29,12 +29,16 @@ const intents = {
     Backspace: 'back',
     BrowserBack: 'browser-back',
     ContextMenu: 'source-picker',
+    Compose: 'source-picker',
     Enter: 'activate',
     ' ': 'activate',
 };
 for (const [key, action] of Object.entries(intents)) {
     assert.equal(TvNav.keyAction({ key }), action, `key ${key}`);
 }
+assert.equal(TvNav.keyAction({ key: 'ArrowLeft', altKey: true }), 'browser-back',
+    'remotes may send the desktop back shortcut');
+assert.equal(TvNav.keyAction({ key: 'ArrowRight', altKey: true }), 'nav-right');
 assert.equal(TvNav.keyAction({ key: 'a' }), null);
 assert.equal(TvNav.keyAction({ key: 'Tab' }), null, 'Tab keeps native focus traversal');
 assert.equal(TvNav.keyAction({ key: 'Escape' }), null, 'Escape stays with the modal manager');
@@ -64,8 +68,9 @@ assert.equal(TvNav.isNativeArrowOwner(fakeInput('range'), 'right'), true);
 assert.equal(TvNav.isNativeArrowOwner(fakeInput('range'), 'up'), false,
     'up/down leave a slider instead of trapping the focus');
 assert.equal(TvNav.isNativeArrowOwner(fakeInput('range'), 'down'), false);
-assert.equal(TvNav.isNativeArrowOwner(fakeInput(null, 'SELECT'), 'down'), true,
-    'dropdown arrows stay native');
+assert.equal(TvNav.isNativeArrowOwner(fakeInput(null, 'SELECT'), 'down'), false,
+    'a closed dropdown must not trap the remote arrows');
+assert.equal(TvNav.isNativeArrowOwner(fakeInput(null, 'SELECT'), 'up'), false);
 assert.equal(TvNav.isNativeArrowOwner(fakeInput('text'), 'left'), true,
     'typing owns all keys');
 assert.equal(TvNav.isNativeArrowOwner(fakeInput('checkbox'), 'down'), false,
@@ -145,7 +150,7 @@ assert.match(indexSource, /id="source-select"[^>]*aria-expanded="false"/);
 assert.match(modalSource, /function topRoot\(\)/);
 assert.match(modalSource, /function closeTop\(\)/);
 assert.match(modalSource, /topRoot,\s*\n\s*closeTop/);
-assert.match(baseCss, /\.tv-nav-focus\.tv-nav-focus:focus\s*\{[^}]*outline:\s*3px solid var\(--accent\)/);
+assert.match(baseCss, /\.tv-nav-focus\.tv-nav-focus:focus\s*\{[^}]*outline:\s*2px solid var\(--accent\)/);
 assert.match(overlaysCss, /\.source-picker-option\[aria-selected="true"\]/);
 
 // The module must stay device-agnostic: no vendor/product IDs and no
@@ -153,6 +158,12 @@ assert.match(overlaysCss, /\.source-picker-option\[aria-selected="true"\]/);
 assert.doesNotMatch(navSource, /1915|1025|XING|evdev|uinput|xdotool/i);
 assert.match(navSource, /BrowserBack/);
 assert.match(navSource, /ContextMenu/);
+assert.match(navSource, /addEventListener\('contextmenu'/,
+    'a keyboard context menu must be suppressed, not just its keydown');
+assert.match(navSource, /activateFocused/,
+    'Enter/Space must click focusable rows, not only ARIA roles');
+assert.match(navSource, /releaseNativeFocus/,
+    'text fields and dropdowns need an Escape exit');
 assert.doesNotMatch(navSource, /addEventListener\('keyup'/);
 
 console.log('tv nav tests: ok');

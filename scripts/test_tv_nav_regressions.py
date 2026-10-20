@@ -1,0 +1,282 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: AGPL-3.0-only
+"""Focused rendered regressions for remote navigation and scroll boundaries."""
+
+from test_tv_nav import STUB, _serve
+import traceback
+
+
+def run():
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError:
+        print('SKIP  test_tv_nav_regressions.py (playwright not installed)')
+        return
+
+    server = _serve(port=0)
+    failures = []
+    count = 0
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch()
+
+            def scenario(name, test):
+                nonlocal count
+                page = browser.new_page(viewport={"width": 1280, "height": 720})
+                page.add_init_script(STUB.replace(
+                    "presets: [], presets_available: []",
+                    "available: true, mode: 'native', presets: [{name: 'b', bank: 'global', mode: 'stereo'}, {name: 'd', bank: 'global', mode: 'stereo'}]"))
+                page.goto(f"http://127.0.0.1:{server.server_port}/static/index.html")
+                page.wait_for_timeout(500)
+                try:
+                    test(page)
+                    count += 1
+                    print(f"PASS {name}")
+                except Exception as error:
+                    traceback.print_exc()
+                    failures.append(f"{name}: {error}")
+                    print(f"FAIL {failures[-1]}")
+                finally:
+                    page.close()
+
+            def search_exit(page):
+                page.focus('#tab-btn-radio')
+                page.keyboard.press('ArrowDown')
+                assert page.evaluate('document.activeElement.id') == 'station-search'
+                page.keyboard.press('ArrowDown')
+                assert page.evaluate('document.activeElement.id') != 'station-search', 'search traps D-pad'
+                # Direct keyboard focus still owns its caret and text editing.
+                page.focus('#station-search')
+                page.keyboard.type('ab')
+                page.keyboard.press('ArrowLeft')
+                page.keyboard.type('X')
+                assert page.input_value('#station-search') == 'aXb'
+
+            def combine_exit(page):
+                page.click('#tab-btn-effects')
+                page.focus('#effects-combine-preset-3')
+                page.keyboard.press('ArrowDown')
+                assert page.evaluate('document.activeElement.id') == 'effects-combine-preset-name'
+                page.keyboard.press('ArrowUp')
+                assert page.evaluate('document.activeElement.id') != 'effects-combine-preset-name', 'name traps D-pad'
+
+            def catalog(page):
+                page.focus('#tab-btn-radio')
+                reached = False
+                for _ in range(12):
+                    page.keyboard.press('ArrowDown')
+                    if page.evaluate("document.activeElement.matches('.station-catalog-summary')"):
+                        reached = True
+                        break
+                assert reached, 'catalog summary unreachable'
+                page.keyboard.press('Enter')
+                assert page.evaluate("document.getElementById('station-catalog-section').open")
+                # Nested closed details must not expose their summaries.
+                page.evaluate("""() => {
+                    const d = document.createElement('details');
+                    d.innerHTML = '<summary>Outer</summary><details><summary id="nested-summary">Inner</summary></details>';
+                    document.querySelector('#tab-radio').append(d);
+                }""")
+                page.focus('#nested-summary')
+                assert page.evaluate('document.activeElement.id') != 'nested-summary'
+
+            def select_interaction(page):
+                page.click('#tab-btn-effects')
+                page.evaluate("""() => {
+                    const s = document.querySelector('#effects-combine-preset-3');
+                    s.innerHTML = '<option value="">Optional</option><optgroup label="Unavailable" disabled><option value="bad">Bad</option></optgroup><option value="b">B</option><option value="c" disabled>C</option><option value="d">D</option>';
+                    window.selectChanges = 0;
+                    s.addEventListener('change', () => window.selectChanges++);
+                }""")
+                page.focus('#effects-combine-preset-3')
+                page.keyboard.press('Enter')
+                assert page.locator('#tv-select-picker').is_visible(), 'OK did not open remote choices'
+                page.keyboard.press('ArrowDown')
+                page.keyboard.press('Enter')
+                assert page.input_value('#effects-combine-preset-3') == 'b'
+                assert page.evaluate('window.selectChanges') == 1
+                assert page.evaluate('document.activeElement.id') == 'effects-combine-preset-3'
+                page.keyboard.press('Enter')
+                page.keyboard.press('ArrowDown')
+                page.keyboard.press('Escape')
+                assert page.input_value('#effects-combine-preset-3') == 'b', 'cancel changed value'
+                page.keyboard.press('ArrowDown')
+                assert page.evaluate('document.activeElement.id') != 'effects-combine-preset-3'
+
+            def scroll_boundaries(page):
+                page.evaluate("""() => {
+                    document.body.innerHTML = `<div id="outer" style="position:fixed;left:80px;top:40px;width:600px;height:280px;overflow:auto">
+                      <div style="height:350px"></div>
+                      <div style="display:flex;gap:20px">
+                        <div id="left" style="width:240px;height:180px;overflow:auto;flex-shrink:0">
+                          <button id="left-top">Top</button><div style="height:600px"></div><button id="left-bottom">Bottom</button>
+                        </div>
+                        <div id="right" style="width:240px;height:180px;overflow:auto;flex-shrink:0">
+                          <button id="right-top">Other top</button><div style="height:600px"></div><button id="right-bottom">Other bottom</button>
+                        </div>
+                      </div><div style="height:300px"></div></div>`;
+                    document.querySelector('#outer').scrollTop = 350;
+                    document.querySelector('#left').scrollTop = 1000;
+                    document.querySelector('#left-bottom').focus();
+                }""")
+                page.keyboard.press('ArrowRight')
+                assert page.evaluate('document.activeElement.id') == 'right-top', 'cannot leave bottom of independently scrolled tile'
+                page.keyboard.press('ArrowLeft')
+                assert page.evaluate('document.activeElement.id') == 'left-bottom', 'cannot return to scrolled tile'
+                page.keyboard.press('ArrowUp')
+                assert page.evaluate('document.activeElement.id') == 'left-top'
+                assert page.evaluate("document.querySelector('#left').scrollTop") == 0
+
+            def footer_visibility(page):
+                page.evaluate("""() => {
+                    const host = document.createElement('div');
+                    host.style.cssText = 'margin-top:1000px;height:1100px';
+                    host.innerHTML = '<button id="reveal-before">Before</button><div style="height:400px"></div><button id="reveal-target">Target</button>';
+                    document.querySelector('#tab-radio').append(host);
+                    document.querySelector('#reveal-before').focus();
+                }""")
+                page.keyboard.press('ArrowDown')
+                assert page.evaluate('document.activeElement.id') == 'reveal-target'
+                assert page.evaluate("""() => {
+                    const r = document.activeElement.getBoundingClientRect();
+                    const footer = document.querySelector('.playback-bar').getBoundingClientRect();
+                    return r.top >= 0 && r.bottom <= footer.top - 4;
+                }"""), 'focus hidden behind playback footer'
+
+            def tabs_from_text(page):
+                page.click('#tab-btn-effects')
+                page.focus('#effects-combine-preset-3')
+                page.keyboard.press('ArrowDown')
+                page.keyboard.press('PageUp')
+                assert page.get_attribute('#tab-btn-library', 'aria-selected') == 'true', 'text focus swallowed PageUp'
+                page.keyboard.press('PageDown')
+                assert page.get_attribute('#tab-btn-effects', 'aria-selected') == 'true'
+
+            def settings_select(page):
+                page.keyboard.press('Alt+ArrowLeft')
+                page.wait_for_function("!document.getElementById('settings-source-select').disabled")
+                page.focus('#settings-source-select')
+                page.keyboard.press('Enter')
+                assert page.locator('#tv-select-picker').is_visible()
+                page.keyboard.press('Backspace')
+                assert page.locator('#tv-select-picker').count() == 0
+                assert page.locator('#settings-panel').is_visible(), 'cancel closed parent dialog'
+                assert page.evaluate('document.activeElement.id') == 'settings-source-select'
+                page.keyboard.press('Alt+ArrowLeft')
+                assert not page.locator('#settings-panel').is_visible()
+                assert page.evaluate('!document.querySelector("#tab-content").inert')
+
+            def app_input_picker(page):
+                page.keyboard.press('ContextMenu')
+                assert page.locator('#tv-select-picker').is_visible(), 'no input choices during app playback'
+                assert page.locator('#tv-select-picker [role="option"]').count() >= 2
+                page.keyboard.press('ContextMenu')
+                assert page.locator('#tv-select-picker').count() == 0
+                assert page.evaluate('document.activeElement !== document.body'), 'input picker lost opener focus'
+
+            def keyboard_tab(page):
+                page.keyboard.press('PageDown')
+                page.keyboard.press('PageUp')
+                page.keyboard.press('Tab')
+                page.keyboard.press('Tab')
+                page.keyboard.press('Tab')
+                assert page.evaluate('document.activeElement.id') == 'station-search'
+                page.keyboard.press('ArrowLeft')
+                assert page.evaluate('document.activeElement.id') == 'station-search', 'Tab focus was treated as D-pad focus'
+
+            def select_poll(page):
+                page.keyboard.press('Alt+ArrowLeft')
+                page.wait_for_function("!document.getElementById('settings-source-select').disabled")
+                page.focus('#settings-source-select')
+                page.keyboard.press('Enter')
+                # The real settings poll replaces option nodes while a picker
+                # stays open. Model that boundary without waiting on a timer.
+                page.evaluate("""() => {
+                    const s = document.getElementById('settings-source-select');
+                    s.innerHTML = s.innerHTML;
+                }""")
+                page.keyboard.press('ArrowDown')
+                page.keyboard.press('Enter')
+                assert page.locator('#tv-select-picker').count() == 0
+                assert page.locator('#custom-mapping-panel').is_visible(), 'poll invalidated selected option'
+
+            def back_from_text(page):
+                page.focus('#tab-btn-radio')
+                page.keyboard.press('ArrowDown')
+                page.keyboard.press('Alt+ArrowLeft')
+                assert page.locator('#settings-panel').is_visible(), 'text focus leaks browser Back shortcut'
+
+            def initial_context_focus(page):
+                page.evaluate("""() => {
+                    document.querySelector('#source-switcher').classList.remove('hidden');
+                    const s = document.querySelector('#source-select');
+                    s.innerHTML = Array.from({length:30}, (_,i)=>`<option value="${i}">Input ${i}</option>`).join('');
+                    s.value = '29';
+                    document.body.dispatchEvent(new MouseEvent('contextmenu', {button:-1,bubbles:true,cancelable:true}));
+                }""")
+                assert page.locator('#source-picker').is_visible(), 'keyboard contextmenu button -1 was ignored'
+                assert page.evaluate("""() => {
+                    const r = document.activeElement.getBoundingClientRect();
+                    return document.activeElement.textContent==='Input 29'
+                        && document.activeElement.classList.contains('tv-nav-focus')
+                        && r.top>=0 && r.bottom<=innerHeight;
+                }"""), 'initial context-menu focus is clipped or has no ring'
+
+            def combine_tall_screen(page):
+                page.set_viewport_size({'width':1280, 'height':887})
+                page.focus('#tab-btn-effects')
+                page.keyboard.press('Enter')
+                page.keyboard.press('ArrowDown')
+                page.focus('#effects-combine-preset-3')
+                page.keyboard.press('ArrowDown')
+                assert page.evaluate('document.activeElement.id') == 'effects-combine-preset-name', 'footer steals next focus inside Combine'
+
+            def tile_before_footer(page):
+                page.evaluate("""() => {
+                    document.body.innerHTML = `<section class="effects-card" style="position:absolute;left:80px;top:100px;width:600px;height:700px">
+                      <button id="origin" style="position:absolute;left:344px;top:350px;width:160px;height:46px">Optional</button>
+                      <input id="target" style="position:absolute;left:0;top:412px;width:294px;height:46px">
+                    </section><footer class="playback-bar" style="top:620px;bottom:auto;height:98px;display:block">
+                      <button id="footer-control" style="position:absolute;left:414px;top:0;width:160px;height:46px">Previous</button>
+                    </footer>`;
+                    document.querySelector('#origin').focus();
+                }""")
+                page.keyboard.press('ArrowDown')
+                assert page.evaluate('document.activeElement.id') == 'target', 'aligned fixed footer beats the next field in the tile'
+
+            def trusted_context_menu(page):
+                page.evaluate("""() => {
+                    document.addEventListener('contextmenu', e => { window.contextPrevented = e.defaultPrevented; }, true);
+                }""")
+                page.keyboard.press('Shift+F10')
+                assert page.evaluate('window.contextPrevented'), 'native keyboard menu was not prevented'
+                assert page.locator('#tv-select-picker').is_visible()
+
+            for name, test in [
+                ('search exit and native typing', search_exit),
+                ('combine name exit', combine_exit),
+                ('catalog D-pad access', catalog),
+                ('select choose and cancel', select_interaction),
+                ('nested and sibling scroll containers', scroll_boundaries),
+                ('focus clears fixed playback footer', footer_visibility),
+                ('tabs after scroll and text focus', tabs_from_text),
+                ('select dialog inside settings', settings_select),
+                ('input picker during app playback', app_input_picker),
+                ('Tab keeps native text navigation', keyboard_tab),
+                ('select survives option replacement', select_poll),
+                ('Back shortcut from remote text focus', back_from_text),
+                ('initial keyboard context-menu focus', initial_context_focus),
+                ('Combine before fixed footer on tall screens', combine_tall_screen),
+                ('tile field wins over aligned footer', tile_before_footer),
+                ('trusted keyboard context-menu event', trusted_context_menu),
+            ]:
+                scenario(name, test)
+            browser.close()
+    finally:
+        server.shutdown()
+    assert not failures, '\n'.join(failures)
+    print(f'tv nav regressions: ok ({count} scenarios)')
+
+
+if __name__ == '__main__':
+    run()

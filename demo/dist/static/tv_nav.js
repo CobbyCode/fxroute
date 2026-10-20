@@ -5,14 +5,18 @@
  * Device-independent spatial focus navigation for a TV-style remote or a
  * normal keyboard:
  *   Arrow keys    move focus to the nearest control in that direction
- *   Enter/Space   activate a focused custom (ARIA) control
+ *   Enter/Space   activate the focused control (native handling first)
+ *   Escape        leave a text field or dropdown that owns the arrow keys
  *   PageUp/Down   previous/next tab of the tab strip that owns the focus
  *   Backspace     close the top dialog, else return within the current view
- *   BrowserBack   settings open/close (closes an open dialog first)
- *   ContextMenu   audio-input picker open/close
+ *   BrowserBack   settings open/close (closes an open dialog first); the
+ *                 menu back button may also arrive as Alt+ArrowLeft
+ *   ContextMenu   audio-input picker open/close. A remote's menu key often
+ *                 arrives as Compose/Unidentified; Firefox then emits a
+ *                 contextmenu event with button 0, which is handled too.
  *
  * No device-specific mapping is used: the remote just sends normal keyboard
- * events. Text fields, selects and sliders keep their native key handling.
+ * events. Pointer-opened dropdowns and text editing keep native handling.
  * Browser-loadable UMD, no build step; Node-testable via require().
  */
 (function (root, factory) {
@@ -49,10 +53,6 @@
         'date', 'time', 'datetime-local', 'month', 'week',
     ]);
 
-    const ACTIVATE_ROLES = new Set([
-        'button', 'tab', 'menuitem', 'option', 'switch', 'checkbox', 'link',
-    ]);
-
     // Per-document navigation state: the element the remote focused and the
     // observer that restores it when a status-driven re-render replaces it.
     const docStates = new WeakMap();
@@ -82,7 +82,9 @@
         if (!event) return null;
         const key = event.key;
         if (key === 'BrowserBack' || event.keyCode === 166) return 'browser-back';
-        if (key === 'ContextMenu' || event.keyCode === 93) return 'source-picker';
+        // Some remotes map their back button to the desktop shortcut.
+        if (event.altKey && key === 'ArrowLeft') return 'browser-back';
+        if (key === 'ContextMenu' || key === 'Compose' || event.keyCode === 93) return 'source-picker';
         if (NAV_KEYS[key]) return 'nav-' + NAV_KEYS[key];
         if (key === 'PageUp') return 'tabs-previous';
         if (key === 'PageDown') return 'tabs-next';
@@ -101,13 +103,15 @@
         return TEXT_ENTRY_TYPES.has(type);
     }
 
-    // Controls whose native arrow handling must win. Text entry and native
-    // dropdowns own all four arrows; a horizontal slider owns left/right so
-    // up/down can still move the focus away from it (a remote has no Tab).
+    // Controls whose native arrow handling must win. Text entry owns all
+    // arrows; a horizontal slider owns left/right so up/down can still move
+    // the focus away from it (a remote has no Tab). A closed <select> does
+    // not own the arrows: Enter opens its remote selection dialog. Letting
+    // a closed select keep the
+    // arrows traps the remote there (e.g. "Preset 3 optional").
     function isNativeArrowOwner(element, direction) {
         if (!element || element.nodeType !== 1) return false;
         if (isTextEntry(element)) return true;
-        if (element.tagName === 'SELECT') return true;
         if (element.tagName !== 'INPUT') return false;
         const type = String(element.getAttribute('type') || 'text').toLowerCase();
         return type === 'range' && (direction === 'left' || direction === 'right');
@@ -172,8 +176,9 @@
         if (element.closest('[inert]')) return false;
         const hiddenAncestor = element.closest('[aria-hidden="true"]');
         if (hiddenAncestor) return false;
-        const closedDetails = element.closest('details:not([open])');
-        if (closedDetails && element.tagName !== 'SUMMARY') return false;
+        for (let parent = element.parentElement; parent; parent = parent.parentElement) {
+            if (parent.matches('details:not([open])') && parent.firstElementChild !== element) return false;
+        }
         if (typeof element.checkVisibility === 'function'
             && !element.checkVisibility({ checkOpacity: false, checkVisibilityCSS: true })) {
             return false;
@@ -230,14 +235,15 @@
         ctx.observer?.disconnect();
     }
 
-    function nearestToRect(rect, scope) {
+    function nearestToRect(rect, scope, exclude = null) {
         const candidates = focusablesIn(scope);
-        if (!rect) return candidates[0] || null;
+        if (!rect) return candidates.find(element => element !== exclude) || null;
         const cx = (rect.left + rect.right) / 2;
         const cy = (rect.top + rect.bottom) / 2;
         let best = null;
         let bestDistance = Infinity;
         for (const element of candidates) {
+            if (element === exclude) continue;
             const candidate = rectOf(element);
             if (!candidate) continue;
             const dx = (candidate.left + candidate.right) / 2 - cx;
@@ -289,12 +295,42 @@
         }
         if (doc.activeElement !== element) return false;
         element.classList?.add(FOCUS_CLASS);
-        if (typeof element.scrollIntoView === 'function') {
-            element.scrollIntoView({ block: 'nearest', inline: 'nearest' });
-        }
+        revealFocus(element, doc);
         const ctx = docStates.get(doc);
         if (ctx) setNavFocus(ctx, element);
         return true;
+    }
+
+    function revealFocus(element, doc) {
+        element.scrollIntoView?.({ block: 'nearest', inline: 'nearest', behavior: 'instant' });
+        // scrollIntoView knows nested scrollports, but not the fixed player.
+        const footer = doc.querySelector('.playback-bar');
+        if (!footer || footer.contains(element) || resolveScope(doc) !== doc.body) return;
+        const rect = rectOf(element);
+        const bar = rectOf(footer);
+        if (!rect || !bar || rect.right <= bar.left || rect.left >= bar.right) return;
+        if (rect.bottom > bar.top - 6) {
+            doc.defaultView?.scrollBy({ top: rect.bottom - bar.top + 6, behavior: 'instant' });
+        }
+    }
+
+    // A sibling scrollport's off-screen children have misleading page-space
+    // coordinates. Only its exposed controls compete with the current tile;
+    // children in a shared scrollport remain eligible for scroll-to-focus.
+    function inIndependentScrollport(element, current, doc) {
+        let rect = rectOf(element);
+        for (let parent = element.parentElement; parent && !parent.contains(current); parent = parent.parentElement) {
+            const style = doc.defaultView.getComputedStyle(parent);
+            const box = rectOf(parent);
+            if (!rect || !box) continue;
+            if (/(auto|scroll|hidden|clip)/.test(style.overflowY)) {
+                if (rect.bottom <= box.top || rect.top >= box.bottom) return true;
+            }
+            if (/(auto|scroll|hidden|clip)/.test(style.overflowX)) {
+                if (rect.right <= box.left || rect.left >= box.right) return true;
+            }
+        }
+        return false;
     }
 
     function firstVisibleCandidate(scope, doc) {
@@ -328,11 +364,32 @@
             return initial ? focusElement(initial, doc) : false;
         }
         const candidates = focusablesIn(scope)
-            .filter(element => element !== current)
+            .filter(element => element !== current && !element.contains(current)
+                && !inIndependentScrollport(element, current, doc))
             .map(element => ({ element, rect: rectOf(element) }))
             .filter(candidate => candidate.rect);
-        const target = pickSpatial(from, candidates, direction);
+        const tile = current.closest('.effects-card, .radio-panel, .library-panel, .streaming-panel, .manage-dialog');
+        const local = tile ? candidates.filter(candidate => tile.contains(candidate.element)) : [];
+        const target = pickSpatial(from, local, direction) || pickSpatial(from, candidates, direction);
         return target ? focusElement(target, doc) : false;
+    }
+
+    // Escape can release a native editor without closing the page.
+    function isNativeKeyOwner(element) {
+        if (!element || element.nodeType !== 1) return false;
+        if (isTextEntry(element)) return true;
+        if (element.tagName === 'SELECT') return true;
+        if (element.tagName !== 'INPUT') return false;
+        return String(element.getAttribute('type') || 'text').toLowerCase() === 'range';
+    }
+
+    function releaseNativeFocus(doc) {
+        const active = doc.activeElement;
+        if (!isNativeKeyOwner(active)) return false;
+        const target = nearestToRect(rectOf(active), resolveScope(doc), active);
+        active.blur();
+        if (target) focusElement(target, doc);
+        return true;
     }
 
     // ------------------------------------------------------------------
@@ -468,11 +525,14 @@
 
     function closeSourcePicker(doc) {
         const panel = doc.getElementById('source-picker');
-        if (!panel || panel.classList.contains('hidden')) return false;
-        root.FXRouteModal?.close(panel);
+        if (!panel) return false;
+        const wasOpen = !panel.classList.contains('hidden');
+        // Close through the modal manager even if the panel was already
+        // hidden: a stale stack entry would keep the page inert.
+        root.FXRouteModal?.close?.(panel);
         panel.classList.add('hidden');
         doc.getElementById('source-select')?.setAttribute('aria-expanded', 'false');
-        return true;
+        return wasOpen;
     }
 
     function openSourcePicker(doc) {
@@ -481,9 +541,18 @@
         const select = doc.getElementById('source-select');
         const switcher = doc.getElementById('source-switcher');
         if (!panel || !list || !select || !switcher) return false;
-        // The switcher only exists for line inputs; elsewhere the context
-        // menu key has no selection to offer.
-        if (switcher.classList.contains('hidden') || select.disabled) return false;
+        // Do not stack the picker on another dialog (settings, power menu).
+        const top = root.FXRouteModal?.topRoot?.();
+        if (top && top !== panel) return false;
+        // During app playback the footer has no line-input entries. The
+        // settings select still owns the available input modes and handlers.
+        if (switcher.classList.contains('hidden') || select.disabled || !select.options.length) {
+            const source = doc.getElementById('settings-source-select');
+            const ctx = docStates.get(doc);
+            if (!source || !ctx || !openSelect(source, ctx)) return false;
+            doc.getElementById('tv-select-picker').dataset.sourcePicker = 'true';
+            return true;
+        }
         const options = Array.from(select.options || []);
         if (!options.length) return false;
 
@@ -512,10 +581,13 @@
         panel.classList.remove('hidden');
         select.setAttribute('aria-expanded', 'true');
         if (root.FXRouteModal) {
+            const opener = isVisible(select) ? select : undefined;
             root.FXRouteModal.open(panel, {
                 initialFocus: initial || list,
                 onEscape: () => closeSourcePicker(doc),
+                opener,
             });
+            focusElement(doc.activeElement, doc);
         } else if (initial) {
             focusElement(initial, doc);
         }
@@ -523,22 +595,118 @@
     }
 
     function toggleSourcePicker(doc) {
+        if (root.FXRouteModal?.topRoot?.()?.dataset.sourcePicker === 'true') return closeTopDialog(doc);
         const panel = doc.getElementById('source-picker');
         if (panel && !panel.classList.contains('hidden')) return closeSourcePicker(doc);
         return openSourcePicker(doc);
+    }
+
+    // Remote OK uses a DOM dialog rather than a platform popup: Firefox's
+    // native select popup does not consistently open on Enter under Wayland.
+    // Pointer activation is untouched and continues to use the native select.
+    function openSelect(element, ctx) {
+        const doc = ctx.doc;
+        if (element.disabled || !element.options.length || !root.FXRouteModal?.open) return false;
+        const panel = doc.createElement('div');
+        panel.id = 'tv-select-picker';
+        panel.className = 'manage-overlay';
+        panel.innerHTML = '<div class="manage-overlay-backdrop"></div>'
+            + '<section class="manage-dialog source-picker-dialog" role="dialog" aria-modal="true" aria-labelledby="tv-select-title">'
+            + '<div class="manage-dialog-header"><h2 id="tv-select-title" class="section-title"></h2>'
+            + '<button type="button" class="btn-ghost" aria-label="Close selection">✕</button></div>'
+            + '<div class="source-picker-list" role="listbox"></div></section>';
+        panel.querySelector('h2').textContent = element.labels?.[0]?.textContent?.trim()
+            || element.getAttribute('aria-label') || 'Select';
+        const expanded = element.getAttribute('aria-expanded');
+        const active = doc.activeElement;
+        const opener = isVisible(element) ? element
+            : (active !== doc.body && isVisible(active) ? active : firstVisibleCandidate(resolveScope(doc), doc));
+        const close = () => {
+            root.FXRouteModal.close(panel);
+            panel.remove();
+            if (expanded === null) element.removeAttribute('aria-expanded');
+            else element.setAttribute('aria-expanded', expanded);
+            if (isVisible(opener) && !isDisabled(opener)) focusElement(opener, doc);
+        };
+        const list = panel.querySelector('[role="listbox"]');
+        let initial = null;
+        for (const option of element.options) {
+            if (option.hidden) continue;
+            // Polls replace <option> nodes; a detached option's index is 0.
+            const value = option.value;
+            const index = option.index;
+            const button = doc.createElement('button');
+            button.type = 'button';
+            button.className = 'source-picker-option';
+            button.setAttribute('role', 'option');
+            button.setAttribute('aria-selected', String(option.selected));
+            button.textContent = option.label;
+            button.disabled = option.disabled || option.parentElement?.disabled === true;
+            button.addEventListener('click', () => {
+                const options = Array.from(element.options);
+                let selected = options[index];
+                if (!selected || selected.value !== value) selected = options.find(item => item.value === value);
+                if (!element.isConnected || element.disabled || !selected
+                    || selected.disabled || selected.parentElement?.disabled === true) {
+                    close();
+                    return;
+                }
+                const changed = element.selectedIndex !== selected.index;
+                element.selectedIndex = selected.index;
+                close();
+                if (changed) {
+                    element.dispatchEvent(new root.Event('input', { bubbles: true }));
+                    element.dispatchEvent(new root.Event('change', { bubbles: true }));
+                }
+            });
+            list.append(button);
+            if (option.selected && !button.disabled) initial = button;
+        }
+        panel.querySelector('button').addEventListener('click', close);
+        panel.querySelector('.manage-overlay-backdrop').addEventListener('click', close);
+        doc.body.append(panel);
+        element.setAttribute('aria-expanded', 'true');
+        root.FXRouteModal.open(panel, { opener, initialFocus: initial || list.querySelector('button:not(:disabled)'), onEscape: close });
+        focusElement(doc.activeElement, doc);
+        return true;
     }
 
     // ------------------------------------------------------------------
     // Key handling
     // ------------------------------------------------------------------
 
-    function activateCustom(element, event) {
+    function inputType(element) {
+        return String(element.getAttribute?.('type') || 'text').toLowerCase();
+    }
+
+    // Enter/Space must behave like a click on the focused element. Native
+    // controls keep their own activation (buttons, links, summaries, picker
+    // inputs); everything else that accepts a click gets one. This covers
+    // list rows, cards and ARIA controls, including rows without a role.
+    function activateFocused(element, event) {
         if (!element || element.nodeType !== 1) return false;
-        if (['BUTTON', 'A', 'SUMMARY', 'INPUT', 'SELECT', 'TEXTAREA'].includes(element.tagName)) {
-            return false; // native activation already runs
+        const tag = element.tagName;
+        if (isTextEntry(element) || tag === 'SELECT' || tag === 'TEXTAREA') return false;
+        const space = event.key === ' ';
+        if (tag === 'BUTTON' || tag === 'SUMMARY') return false;
+        if (tag === 'A' && element.hasAttribute('href')) {
+            if (!space) return false; // Enter is native for links
+            event.preventDefault();
+            element.click();
+            return true;
         }
-        const role = element.getAttribute('role');
-        if (!role || !ACTIVATE_ROLES.has(role)) return false;
+        if (tag === 'INPUT') {
+            const type = inputType(element);
+            // Checkboxes and radios do not activate on Enter natively.
+            if (type === 'checkbox' || type === 'radio') {
+                if (space) return false; // Space toggles natively
+                event.preventDefault();
+                element.click();
+                return true;
+            }
+            return false; // submit/button/picker inputs are native
+        }
+        if (typeof element.click !== 'function') return false;
         event.preventDefault();
         element.click();
         return true;
@@ -546,44 +714,117 @@
 
     function handleKeyDown(event, ctx) {
         if (event.defaultPrevented || event.isComposing) return;
-        if (event.ctrlKey || event.metaKey || event.altKey) return;
+        if (event.key === 'Tab') {
+            ctx.remote = false;
+            ctx.editing = null;
+            ctx.navFocus?.classList?.remove(FOCUS_CLASS);
+            clearNavFocus(ctx);
+            return;
+        }
         const action = keyAction(event);
-        if (!action) return;
+        if (!action) {
+            if (event.key?.length === 1 && isTextEntry(event.target)) ctx.editing = event.target;
+            // Escape is the only way out of a control that owns all arrows.
+            // An open dialog keeps Escape for the modal manager.
+            if (event.key === 'Escape' && !root.FXRouteModal?.topRoot?.()) {
+                if (releaseNativeFocus(ctx.doc)) event.preventDefault();
+            }
+            return;
+        }
+        if (event.ctrlKey || event.metaKey) return;
+        if (event.altKey && action !== 'browser-back') return;
+        // Activation runs after the page's own key handlers (bubble), so a
+        // control that already handles Enter/Space is not clicked twice.
+        if (action === 'activate') return;
         const doc = ctx.doc;
         const target = event.target && event.target.nodeType === 1 ? event.target : doc.activeElement;
+        ctx.remote = true;
+
+        if (action === 'tabs-previous' || action === 'tabs-next') {
+            event.preventDefault();
+            if (root.FXRouteModal?.topRoot?.()?.id === 'tv-select-picker') closeTopDialog(doc);
+            stepTab(doc, action === 'tabs-next' ? 1 : -1);
+            return;
+        }
 
         if (action === 'browser-back') {
             event.preventDefault();
+            event.stopPropagation();
+            if (event.repeat) return;
             toggleSettings(doc);
             return;
         }
         if (action === 'source-picker') {
             event.preventDefault();
+            event.stopPropagation();
+            if (event.repeat) return;
+            // The same physical menu key also emits a contextmenu event;
+            // suppress its picker toggle instead of closing again.
+            ctx.sourcePickerHandledAt = Date.now();
             toggleSourcePicker(doc);
             return;
         }
-        // Typing owns every key.
-        if (isTextEntry(target)) return;
-        if (action === 'activate') {
-            activateCustom(target, event);
-            return;
-        }
+        // A text field reached by D-pad is a navigation stop until OK enters
+        // editing. Up/Down can always leave a single-line remote editor.
+        const remoteText = isTextEntry(target) && ctx.navFocus === target;
+        if (isTextEntry(target) && action === 'back') return;
+        if (isTextEntry(target) && !remoteText) return;
+        if (remoteText && ctx.editing === target
+            && (target.tagName === 'TEXTAREA' || target.isContentEditable
+                || action === 'nav-left' || action === 'nav-right' || action === 'back')) return;
         if (action === 'back') {
             event.preventDefault();
             goBack(doc);
             return;
         }
-        if (action === 'tabs-previous' || action === 'tabs-next') {
-            event.preventDefault();
-            stepTab(doc, action === 'tabs-next' ? 1 : -1);
-            return;
-        }
         if (action.startsWith('nav-')) {
             const direction = action.slice(4);
-            if (isNativeArrowOwner(target, direction)) return;
+            if (!remoteText && isNativeArrowOwner(target, direction)) return;
             event.preventDefault();
+            ctx.editing = null;
             moveFocus(doc, direction);
         }
+    }
+
+    function handleActivation(event, ctx) {
+        if (event.defaultPrevented || event.isComposing) return;
+        if (event.ctrlKey || event.metaKey || event.altKey) return;
+        if (keyAction(event) !== 'activate' || event.repeat) return;
+        const target = event.target && event.target.nodeType === 1
+            ? event.target
+            : ctx.doc.activeElement;
+        ctx.remote = true;
+        if (target.tagName === 'SELECT' && event.key === 'Enter') {
+            event.preventDefault();
+            openSelect(target, ctx);
+            return;
+        }
+        if (isTextEntry(target)) {
+            if (ctx.navFocus === target && event.key === 'Enter') {
+                ctx.editing = ctx.editing === target ? null : target;
+            }
+            return;
+        }
+        activateFocused(target, event);
+    }
+
+    // Firefox turns the menu/Compose key (and Shift+F10) into a contextmenu
+    // event with button 0 (-1 in Chromium). Under Wayland keydown can be `Unidentified`,
+    // so this event is the reliable way to open the picker. Mouse right-clicks
+    // use button 2 and keep the browser menu.
+    function handleContextMenu(event, ctx) {
+        if (event.button > 0) return;
+        event.preventDefault();
+        event.stopPropagation();
+        ctx.remote = true;
+        const now = Date.now();
+        // Firefox fires this event on both the press and the release of the
+        // menu/Compose key. Toggling twice would open and immediately close
+        // the picker, so one press may only toggle once.
+        if (now - (ctx.contextMenuAt || 0) < 600) return;
+        ctx.contextMenuAt = now;
+        if (now - (ctx.sourcePickerHandledAt || 0) < 700) return;
+        toggleSourcePicker(ctx.doc);
     }
 
     function init(options = {}) {
@@ -596,20 +837,47 @@
             navFocus: null,
             navRect: null,
             restoring: false,
+            remote: false,
+            editing: null,
+            sourcePickerHandledAt: 0,
+            contextMenuAt: 0,
             observer: typeof MutationObserver === 'function'
                 ? new MutationObserver(() => restoreLostFocus(ctx))
                 : null,
         };
         docStates.set(doc, ctx);
-        doc.addEventListener('keydown', event => handleKeyDown(event, ctx), false);
+        // Window capture runs before page handlers that stop key propagation;
+        // the modal manager still receives Escape at document capture.
+        const win = doc.defaultView || (typeof window !== 'undefined' ? window : null);
+        const keyTarget = win && typeof win.addEventListener === 'function' ? win : doc;
+        keyTarget.addEventListener('keydown', event => handleKeyDown(event, ctx), true);
+        // Bubble phase: page handlers run first and can consume the key.
+        keyTarget.addEventListener('keydown', event => handleActivation(event, ctx), false);
+        doc.addEventListener('contextmenu', event => handleContextMenu(event, ctx), true);
         doc.addEventListener('focusin', event => {
             if (ctx.navFocus && event.target !== ctx.navFocus) clearNavFocus(ctx);
+            if (ctx.remote) {
+                event.target.classList?.add(FOCUS_CLASS);
+                revealFocus(event.target, doc);
+                setNavFocus(ctx, event.target);
+            }
+        }, true);
+        doc.addEventListener('pointerdown', () => {
+            ctx.remote = false;
+            ctx.editing = null;
+            ctx.navFocus?.classList?.remove(FOCUS_CLASS);
+            clearNavFocus(ctx);
+        }, true);
+        doc.addEventListener('input', event => {
+            if (isTextEntry(event.target)) ctx.editing = event.target;
         }, true);
         doc.addEventListener('focusout', event => {
             event.target?.classList?.remove(FOCUS_CLASS);
         }, true);
-        const closeButton = doc.getElementById('source-picker-close');
-        if (closeButton) closeButton.addEventListener('click', () => closeSourcePicker(doc));
+        doc.getElementById('source-picker-close')
+            ?.addEventListener('click', () => closeSourcePicker(doc));
+        doc.querySelector('#source-picker .manage-overlay-backdrop')
+            ?.addEventListener('click', () => closeSourcePicker(doc));
         return ctx;
     }
 
