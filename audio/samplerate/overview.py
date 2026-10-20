@@ -177,7 +177,7 @@ def _derived_output_mode(
         return None
     try:
         from audio.output_routing import device_key
-        from audio.output_state import (bass_crossover_for_group, bass_crossover_for_side, filter_label,
+        from audio.output_state import (bass_crossover_for_group, bass_crossover_for_side, effective_crossover_enabled, filter_label,
                                         routing_for_device, shared_bass_crossover)
         from audio.output_topology import derive_topology
     except ImportError:
@@ -195,7 +195,7 @@ def _derived_output_mode(
         # A device with no routing entry cannot be attributed roles; callers
         # degrade to stereo instead of misreporting a subwoofer mode.
         return None
-    crossover_enabled = bool(spec.get("crossover_enabled"))
+    crossover_enabled = effective_crossover_enabled(head, mode, output_key=output_key)
     try:
         assignments = routing_for_device(head, mode, output_key or "")
         topology = derive_topology(mode, assignments, channels=len(assignments),

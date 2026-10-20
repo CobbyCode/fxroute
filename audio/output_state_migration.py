@@ -83,14 +83,28 @@ def _upgrade_v6_surround_global_groups(payload: dict) -> dict:
     return result
 
 
+def _upgrade_v7_device_crossovers(payload: dict) -> dict:
+    """Keep legacy mode intent until an explicit device selection scopes it."""
+    result = copy.deepcopy(payload)
+    result["version"] = 8
+    modes = result.get("modes")
+    if not isinstance(modes, dict):
+        raise ValueError("Invalid version-seven output state")
+    for config in modes.values():
+        if not isinstance(config, dict):
+            raise ValueError("Invalid version-seven output state")
+        config.setdefault("device_crossovers", {})
+    return result
+
+
 _UPGRADES = {3: _upgrade_v3_surround, 4: _upgrade_v4_level_calibration, 5: _upgrade_v5_av_sync,
-             6: _upgrade_v6_surround_global_groups}
+             6: _upgrade_v6_surround_global_groups, 7: _upgrade_v7_device_crossovers}
 
 
 def upgrade_output_state(payload: dict) -> dict:
     """Upgrade a released document step by step and validate the result.
 
-    Releases wrote version three; versions four to six are the steps of
+    Releases wrote version three; versions four to seven are the steps of
     that chain. Loading does not write; the next revision-checked commit
     atomically persists the upgraded document.
     """

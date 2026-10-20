@@ -20,7 +20,7 @@ from collections.abc import Callable, Sequence
 
 import numpy as np
 
-from audio.output_state import validate_output_state
+from audio.output_state import effective_crossover_enabled, validate_output_state
 from dsp.processing_plan import rendered_crossover_filters
 from measurement.constants import CAPTURE_CLIP_FAIL_DBFS
 from measurement.speaker_verification import side_confirmation
@@ -99,7 +99,7 @@ class SpeakerAlignment:
             raise ValueError("Speaker Align side must be left or right")
         self._state = validate_output_state(state)
         config = self._state["modes"][self._state["active_mode"]]
-        if not config["crossover_enabled"]:
+        if not effective_crossover_enabled(self._state, self._state["active_mode"], channels, output_key=output_key):
             raise ValueError("Speaker Align requires crossover speaker ways")
         self._side = side
         self._reference_id = _identity(reference_id, "upstream reference")

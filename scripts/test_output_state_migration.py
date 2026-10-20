@@ -25,6 +25,8 @@ def released(version, state=None):
         state.pop("input_modes")
         state["modes"].pop("surround")
     for config in state["modes"].values():
+        if version < 8:
+            config.pop("device_crossovers")
         if version < 6:
             config.pop("av_sync")
         if version < 5:

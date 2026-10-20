@@ -114,7 +114,7 @@ def autosub_topology_from_state(state: dict, *, output_key: str,
     mode = validated["active_mode"]
     return derive_topology(
         mode, routing_for_device(validated, mode, output_key, channels), channels=channels,
-        crossover_enabled=effective_crossover_enabled(validated, mode, channels),
+        crossover_enabled=effective_crossover_enabled(validated, mode, channels, output_key=output_key),
     )
 
 

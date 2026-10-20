@@ -112,7 +112,8 @@ def require_speaker_candidate(start_state: dict, candidate_state: dict, *,
             candidate["active_mode"],
             routing_for_device(candidate, candidate["active_mode"], output_key, channels),
             channels=channels,
-            crossover_enabled=effective_crossover_enabled(candidate, candidate["active_mode"], channels))
+            crossover_enabled=effective_crossover_enabled(candidate, candidate["active_mode"], channels,
+                                                          output_key=output_key))
         topology.require_activatable()
         # The common delay-rebase offset is the smallest routed alignment
         # change (0 without a rebase): the reference way and every unmeasured

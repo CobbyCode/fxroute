@@ -98,7 +98,7 @@ def _measurement_area(validated: dict, *, bank_id: object, output_key: object, c
         raise ValueError("Output device key must be a non-empty string")
     _bounded_int(channels, "Measurement channel count", MAX_CHANNELS)
     topology = derive_topology(mode, routing_for_device(validated, mode, output_key, channels), channels=channels,
-                               crossover_enabled=effective_crossover_enabled(validated, mode, channels))
+                               crossover_enabled=effective_crossover_enabled(validated, mode, channels, output_key=output_key))
     topology.require_activatable()
     if all_banks:
         if not topology.roles:

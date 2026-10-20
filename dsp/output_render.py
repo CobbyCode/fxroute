@@ -115,6 +115,13 @@ class OutputRenderer:
             keep_running = service.applied_graph_matches(
                 snapshot, output_key=output_key, channels=channels,
                 hardware_ports=ports, sample_rate_hz=rate)
+            config = snapshot.get("config") or {}
+            if not keep_running and config.get("output_key") != output_key:
+                # Rendering a new device has not touched the confirmed source graph.
+                source_ports = config.get("hardware_ports") or []
+                keep_running = service.applied_graph_matches(
+                    snapshot, output_key=config.get("output_key"), channels=len(source_ports),
+                    hardware_ports=source_ports, sample_rate_hz=config.get("sample_rate"))
             if native is not None and not keep_running:
                 await native.fail_closed(str(exc), output_key=output_key)
             raise RuntimeError(f"V2 output unavailable: {exc}") from exc

@@ -10,7 +10,7 @@ from audio import hdmi
 from audio.filter_banks import bank_catalog, resolve_bank, selected_bank, summarize_all_banks
 from audio.output_context import output_state_device, output_state_topology
 from audio.output_state import (
-    FILTER_SLOPES, bass_crossover_for_group, bass_crossover_for_side, roles_for_mode,
+    FILTER_SLOPES, bass_crossover_for_group, bass_crossover_for_side, effective_crossover_enabled, roles_for_mode,
     routing_for_device, select_bank, set_av_sync, set_bank_preset, set_bass_management,
     set_crossover, set_mode_extras, set_mode_routing, set_output_processing,
     shared_bass_crossover, switch_all_banks, switch_mode, seed_device_routing,
@@ -69,7 +69,7 @@ def build_output_state_mutation(mutation: dict, *, output_key: str, channels: in
     if kind == "set_crossover":
         args = strict({"mode", "enabled"})
         mode = require_state_mode(args.get("mode"))
-        return lambda state: set_crossover(state, mode, args.get("enabled"))
+        return lambda state: set_crossover(state, mode, args.get("enabled"), output_key=output_key)
     if kind == "set_subwoofers":
         args = strict({"mode", "frequency_hz", "main_highpass_enabled", "processing",
                        "family", "slope_db_oct", "sub_link", "sub_filters"})
@@ -188,7 +188,7 @@ def output_state_response(state: dict, overview: dict) -> dict:
         if mode == "surround" and "main" in banks:
             banks["main"]["label"] = "Front L/R"
         modes[mode] = {
-            "crossover_enabled": config["crossover_enabled"],
+            "crossover_enabled": topology["crossover_enabled"],
             "selected_bank": selected_bank(config, topology["roles"], mode),
             "banks": banks,
             "all_banks": summarize_all_banks([config["banks"][role] for role in topology["roles"]]),
@@ -207,7 +207,8 @@ def output_state_response(state: dict, overview: dict) -> dict:
         "modes": modes,
         "capabilities": {
             "modes": list(MODES),
-            "roles": {mode: list(roles_for_mode(mode, crossover_enabled=state["modes"][mode]["crossover_enabled"]))
+            "roles": {mode: list(roles_for_mode(mode, crossover_enabled=effective_crossover_enabled(
+                state, mode, channels, output_key=output_key)))
                       for mode in MODES},
             "filter_families": {family: list(slopes) for family, slopes in FILTER_SLOPES.items()},
             "max_slope_db_oct": 72, "max_biquads_per_output": DSPManager.OUTPUT_FILTER_MAX_BIQUADS,

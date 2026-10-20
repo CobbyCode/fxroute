@@ -16,7 +16,7 @@ from dsp.latency import default_av_sync, validate_av_sync
 from dsp.surround_global import neutral_selection
 
 SCHEMA = "fxroute.output-state"
-VERSION = 7
+VERSION = 8
 # Level Calibration slots per role: "global" holds the whole-speaker match
 # (Global measurement; Surround Front), "bank" the match of the role's own bank.
 LEVEL_CAL_SLOTS = ("global", "bank")
@@ -72,7 +72,7 @@ def default_output_state() -> dict:
     for mode in MODES:
         roles = MAIN_ROLES
         modes[mode] = {
-            "routing": {}, "crossover_enabled": False, "selected_bank": "global",
+            "routing": {}, "crossover_enabled": False, "device_crossovers": {}, "selected_bank": "global",
             "banks": {"global": default_global_bank(mode), **{role: BankState().to_dict() for role in roles}},
             "processing": {role: default_processing() for role in roles},
             "bass_management": default_bass_management(),
@@ -253,9 +253,15 @@ def validate_output_state(payload: object) -> dict:
     if not isinstance(payload["legacy"], dict):
         raise ValueError("Legacy snapshot must be an object")
     for mode, config in payload["modes"].items():
-        _object_fields(config, {"routing", "crossover_enabled", "selected_bank", "banks", "processing", "bass_management", "extras", "av_sync"}, "Mode state")
+        _object_fields(config, {"routing", "crossover_enabled", "device_crossovers", "selected_bank", "banks", "processing", "bass_management", "extras", "av_sync"}, "Mode state")
         enabled = config["crossover_enabled"]
         roles_for_mode(mode, crossover_enabled=enabled)
+        crossovers = config["device_crossovers"]
+        if not isinstance(crossovers, dict):
+            raise ValueError("Device crossovers must be an object keyed by device")
+        for key, value in crossovers.items():
+            if hdmi.routing_key(_device_identity(key)) != key or type(value) is not bool:
+                raise ValueError("Device crossovers require normalized device keys and booleans")
         # Dormant banks retain their filters when crossover is toggled.
         allowed = (*roles_for_mode(mode), *roles_for_mode(mode, crossover_enabled=True))
         banks, processing, routing = config["banks"], config["processing"], config["routing"]
@@ -280,7 +286,8 @@ def validate_output_state(payload: object) -> dict:
                 raise ValueError("Stored routing requires normalized device keys")
             # Dormant crossover-path assignments stay stored while the
             # crossover is off (see routing_for_device).
-            roles = validate_assignments(mode, assignments, crossover_enabled=enabled, allow_dormant=True)
+            roles = validate_assignments(mode, assignments, crossover_enabled=effective_crossover_enabled(
+                payload, mode, output_key=key), allow_dormant=True)
             if any(role != "off" and role not in banks for role in roles):
                 raise ValueError("Every assigned role requires an area bank")
         bass = config["bass_management"]
@@ -329,17 +336,19 @@ def routing_for_device(state: dict, mode: str, output_key: str, channels: int | 
         if count == 2 and not hdmi.is_hdmi_key(output_key):
             return list(MAIN_ROLES)
     config = state["modes"][mode]
-    fallback = [] if config["crossover_enabled"] else list(MAIN_ROLES)
+    enabled = effective_crossover_enabled(state, mode, output_key=output_key)
+    fallback = [] if enabled else list(MAIN_ROLES)
     saved = hdmi.stored_routing(config["routing"], _device_identity(output_key))
     stored = list(saved if saved is not None else fallback)
     if count is not None and count > 0:
         stored = stored[:count]
-    dormant = set(dormant_roles(mode, crossover_enabled=config["crossover_enabled"]))
+    dormant = set(dormant_roles(mode, crossover_enabled=enabled))
     return ["off" if role in dormant else role for role in stored]
 
 
-def effective_crossover_enabled(state: dict, mode: str, channels: int | None = None) -> bool:
-    """Stored crossover flag, forced off on two-output devices.
+def effective_crossover_enabled(state: dict, mode: str, channels: int | None = None, *,
+                                 output_key: str | None = None) -> bool:
+    """Device crossover selection, or legacy mode intent, off on two outputs.
 
     Two outputs can only carry Main L/R, so the effective system is Stereo
     without crossover even when the stored mode still enables it (e.g. after
@@ -352,7 +361,9 @@ def effective_crossover_enabled(state: dict, mode: str, channels: int | None = N
             count = None
         if count == 2:
             return False
-    return bool(state["modes"][mode]["crossover_enabled"])
+    config = state["modes"][mode]
+    key = hdmi.routing_key(_device_identity(output_key)) if output_key is not None else None
+    return config["device_crossovers"].get(key, config["crossover_enabled"])
 
 
 def fallback_bank(mode: str, roles) -> str:
@@ -374,12 +385,14 @@ def set_mode_routing(state: dict, mode: str, output_key: str, assignments: objec
     """
     result = validate_output_state(state)
     config = result["modes"][mode]
-    values = list(validate_assignments(mode, assignments, crossover_enabled=config["crossover_enabled"]))
+    enabled = effective_crossover_enabled(result, mode, output_key=output_key)
+    values = list(validate_assignments(mode, assignments, crossover_enabled=enabled))
     count = len(values)
     key = hdmi.routing_key(_device_identity(output_key))
     config = result["modes"][mode]
+    config["device_crossovers"][key] = enabled
     stored = hdmi.stored_routing(config["routing"], output_key) or []
-    dormant = set(dormant_roles(mode, crossover_enabled=config["crossover_enabled"]))
+    dormant = set(dormant_roles(mode, crossover_enabled=enabled))
     values = [stored[index] if (value == "off" and index < len(stored) and stored[index] in dormant)
               else value for index, value in enumerate(values)]
     values.extend(stored[count:])
@@ -389,7 +402,7 @@ def set_mode_routing(state: dict, mode: str, output_key: str, assignments: objec
             config["banks"].setdefault(role, BankState().to_dict())
             config["processing"].setdefault(role, default_processing())
     masked = ["off" if value in dormant else value for value in values]
-    topology = derive_topology(mode, masked, channels=count, crossover_enabled=config["crossover_enabled"])
+    topology = derive_topology(mode, masked, channels=count, crossover_enabled=enabled)
     active = topology.bank_ids
     fallback = fallback_bank(mode, topology.roles)
     try:
@@ -421,7 +434,7 @@ def seed_device_routing(state: dict, output_key: str, assignments_by_mode: dict,
             continue
         if saved is not None:
             config["routing"][key] = list(saved[:capacity] if capacity is not None and capacity > 0 else saved)
-        elif assignments and not config["crossover_enabled"]:
+        elif assignments and not effective_crossover_enabled(result, mode, output_key=output_key):
             result = set_mode_routing(result, mode, output_key, assignments)
     return result
 
@@ -433,7 +446,7 @@ def switch_mode(state: dict, mode: str) -> dict:
     return result
 
 
-def set_crossover(state: dict, mode: str, enabled: bool) -> dict:
+def set_crossover(state: dict, mode: str, enabled: bool, *, output_key: str | None = None) -> dict:
     """Change the role domain in the same routing, retaining dormant DSP banks.
 
     Main ports become Low ports on enable. On disable only Low ports become
@@ -444,14 +457,22 @@ def set_crossover(state: dict, mode: str, enabled: bool) -> dict:
     roles_for_mode(mode, crossover_enabled=enabled)
     result = validate_output_state(state)
     config = result["modes"][mode]
-    if config["crossover_enabled"] == enabled:
+    if effective_crossover_enabled(result, mode, output_key=output_key) == enabled:
+        if output_key is not None:
+            config["device_crossovers"][hdmi.routing_key(_device_identity(output_key))] = enabled
         return result
     mapping = {"main_l": "left_low", "main_r": "right_low"} if enabled else {
         "left_low": "main_l", "right_low": "main_r"}
     allowed = (*roles_for_mode(mode, crossover_enabled=enabled), "off")
     domain = (*roles_for_mode(mode), *roles_for_mode(mode, crossover_enabled=True), "off")
-    config["crossover_enabled"] = enabled
+    if output_key is None:
+        config["crossover_enabled"] = enabled
+        config["device_crossovers"] = {key: enabled for key in config["device_crossovers"]}
+    else:
+        config["device_crossovers"][hdmi.routing_key(_device_identity(output_key))] = enabled
     for key, assignments in config["routing"].items():
+        if output_key is not None and hdmi.routing_key(key) != hdmi.routing_key(_device_identity(output_key)):
+            continue
         device_mapping = dict(mapping)
         # A full-range Center stays full-range unless dormant ways restore its split.
         # A Low-only draft stays dormant rather than becoming a full-range speaker.
@@ -552,7 +573,7 @@ def switch_all_banks(state: dict, mode: str, output_key: str, channels: int, act
     result = validate_output_state(state)
     config = result["modes"][mode]
     topology = derive_topology(mode, routing_for_device(result, mode, output_key, channels), channels=channels,
-                               crossover_enabled=effective_crossover_enabled(result, mode, channels))
+                               crossover_enabled=effective_crossover_enabled(result, mode, channels, output_key=output_key))
     if not topology.roles:
         raise ValueError("No configured area banks")
     if active_side not in {"A", "B"}:
@@ -646,7 +667,7 @@ def set_mode_extras(state: dict, mode: str, extras: dict) -> dict:
 def select_bank(state: dict, mode: str, output_key: str, channels: int, bank_id: str) -> dict:
     result = validate_output_state(state)
     active = derive_topology(mode, routing_for_device(result, mode, output_key, channels), channels=channels,
-                             crossover_enabled=effective_crossover_enabled(result, mode, channels))
+                             crossover_enabled=effective_crossover_enabled(result, mode, channels, output_key=output_key))
     if pure_stereo_roles(mode, active.roles) and bank_id != "global":
         raise ValueError("Pure stereo uses the Global bank; no bank selection is shown")
     if bank_id == "all":

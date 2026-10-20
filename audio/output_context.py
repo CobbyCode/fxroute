@@ -27,7 +27,7 @@ def output_state_device(overview: dict) -> tuple[str, int | None]:
 
 def output_state_topology(state: dict, mode: str, output_key: str, channels: int | None) -> dict:
     topology = derive_topology(mode, routing_for_device(state, mode, output_key, channels), channels=channels,
-                               crossover_enabled=effective_crossover_enabled(state, mode, channels))
+                               crossover_enabled=effective_crossover_enabled(state, mode, channels, output_key=output_key))
     return {"mode": topology.mode, "crossover_enabled": topology.crossover_enabled, "roles": list(topology.roles),
             "sub_roles": list(topology.sub_roles), "sub_mode": topology.sub_mode,
             "left_ways": list(topology.left_ways), "right_ways": list(topology.right_ways),

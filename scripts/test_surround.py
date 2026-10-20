@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from audio.filter_banks import bank_catalog, bank_definitions, selected_bank
 from audio.output_state import (default_output_state, referenced_presets, release_bank_preset, select_bank,
                                 set_bank_preset, set_bass_management, set_crossover, set_mode_routing,
-                                switch_mode, validate_output_state)
+                                switch_mode, validate_output_state, VERSION)
 from audio.output_state_migration import upgrade_output_state
 from audio.output_topology import derive_topology, roles_for_mode
 from audio.output_service import OutputService, OutputServiceDeps
@@ -306,7 +306,7 @@ class SurroundTests(unittest.TestCase):
         state["modes"]["surround"]["banks"]["global"] = {"preset": "Rear FIR", "preset_a": "Rear FIR",
                                                          "preset_b": "Neutral"}
         upgraded = upgrade_output_state(state)
-        self.assertEqual(upgraded["version"], 7)
+        self.assertEqual(upgraded["version"], VERSION)
         # A named preset has no known group: both slots start without filters.
         self.assertEqual(upgraded["modes"]["surround"]["banks"]["global"],
                          {"preset": neutral_selection(), "preset_a": neutral_selection(), "preset_b": neutral_selection()})

@@ -37,7 +37,7 @@ def _live_topology_key(state: dict, *, output_key: str, channels: int | None, ra
     """Equal keys permit coefficient/bank edits without rebuilding the port graph."""
     mode = state.get("active_mode") if isinstance(state, dict) else None
     assignments = routing_for_device(state, mode, output_key, channels) if mode else []
-    crossover = effective_crossover_enabled(state, mode, channels) if mode else False
+    crossover = effective_crossover_enabled(state, mode, channels, output_key=output_key) if mode else False
     return (mode, crossover, tuple(assignments[:channels or 0]), channels, rate)
 
 

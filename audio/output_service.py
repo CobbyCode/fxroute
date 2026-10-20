@@ -98,6 +98,11 @@ class OutputService:
     def _applied_path(self) -> Path:
         return self._deps.store.path.with_name("output-state-applied.json")
 
+    def _context_applied_path(self, *, output_key: str, channels: int, hardware_ports: list[str]) -> Path:
+        identity = json.dumps([output_key, channels, list(hardware_ports)], separators=(",", ":"))
+        digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()
+        return self._applied_path().with_suffix("") / f"{digest}.json"
+
     def activation_token(self) -> bytes | None:
         """Include missing/corrupt heads in freshness checks without normalizing them."""
         try:
@@ -118,6 +123,20 @@ class OutputService:
                    "sample_rate_hz": sample_rate_hz,
                    "fingerprint": fingerprint or self.fingerprint(
                        state, output_key=output_key, channels=channels, sample_rate_hz=sample_rate_hz)}
+        # Preserve the previous physical context before promoting another one.
+        # The single-file checkpoint remains compatible with existing installs.
+        try:
+            previous = json.loads(self._applied_path().read_text(encoding="utf-8"))
+            previous_state = upgrade_output_state(previous["state"])
+            context = {key: previous[key] for key in ("output_key", "channels", "hardware_ports")}
+            if any(payload[key] != value for key, value in context.items()):
+                previous["state"] = previous_state
+                atomic_write_text(self._context_applied_path(**context),
+                                  json.dumps(previous, sort_keys=True, allow_nan=False) + "\n")
+        except FileNotFoundError:
+            pass
+        except (ValueError, KeyError, TypeError):
+            logger.warning("Discarding an invalid previous output checkpoint")
         atomic_write_text(self._applied_path(),
                           json.dumps(payload, sort_keys=True, allow_nan=False) + "\n")
 
@@ -130,6 +149,15 @@ class OutputService:
     def _applied_record(self, *, output_key: str, channels: int,
                         hardware_ports: list[str]) -> dict:
         payload = json.loads(self._applied_path().read_text(encoding="utf-8"))
+        if isinstance(payload, dict) and all(key in payload for key in (
+                "state", "output_key", "channels", "hardware_ports")):
+            if (payload["output_key"], payload["channels"], payload["hardware_ports"]) != (
+                    output_key, channels, list(hardware_ports)):
+                try:
+                    payload = json.loads(self._context_applied_path(
+                        output_key=output_key, channels=channels, hardware_ports=hardware_ports).read_text(encoding="utf-8"))
+                except FileNotFoundError:
+                    raise ValueError("Last applied output state belongs to a different device or port layout") from None
         if (not isinstance(payload, dict) or payload.get("output_key") != output_key
                 or payload.get("channels") != channels
                 or payload.get("hardware_ports") != list(hardware_ports)):

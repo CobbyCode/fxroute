@@ -181,7 +181,7 @@ def rendered_crossover_filters(state: dict, *, output_key: str, channels: int) -
     state = validate_output_state(state)
     mode = state["active_mode"]
     config = state["modes"][mode]
-    xo_enabled = effective_crossover_enabled(state, mode, channels)
+    xo_enabled = effective_crossover_enabled(state, mode, channels, output_key=output_key)
     topology = derive_topology(mode, routing_for_device(state, mode, output_key, channels), channels=channels,
                                crossover_enabled=xo_enabled)
     topology.require_activatable()
@@ -211,7 +211,7 @@ def compile_processing_plan(state: dict, *, output_key: str, channels: int,
         raise ValueError("neutralize_banks must be a boolean")
     mode = state["active_mode"]
     config = state["modes"][mode]
-    xo_enabled = effective_crossover_enabled(state, mode, channels)
+    xo_enabled = effective_crossover_enabled(state, mode, channels, output_key=output_key)
     assignments = routing_for_device(state, mode, output_key, channels)
     topology = derive_topology(mode, assignments, channels=channels, crossover_enabled=xo_enabled)
     topology.require_activatable()

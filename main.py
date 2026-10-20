@@ -528,7 +528,9 @@ from audio.output_ports import (hardware_link_target, hardware_playback_port_fal
                                 resolve_hardware_playback_ports)
 from audio.output_service import OutputService, OutputServiceDeps
 from audio.output_state_store import OutputStateStore, StateConflictError
-from audio.output_state import seed_device_routing, routing_for_device
+from audio.output_state import effective_crossover_enabled, seed_device_routing, routing_for_device
+from audio.output_device_state import prepare_device_state
+from audio.output_routing import device_key as output_device_key
 from audio.output_topology import MODES as OUTPUT_STATE_MODES, SUB_ROLES, side_for_role
 from audio import hdmi
 from audio.filter_banks import resolve_bank, selected_bank
@@ -5019,6 +5021,8 @@ async def save_audio_output_selection_route(request: Request):
         return await _owned_output_change(lambda: _apply_audio_output_selection(output_key), what="Output selection")
     except HTTPException:
         raise
+    except StateConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:
         raise bad_request(exc)
     except Exception as exc:
@@ -5048,10 +5052,28 @@ async def _apply_audio_output_selection(key: str, *, seed_routing: bool = True) 
     target = await asyncio.to_thread(get_audio_output_overview, selection_key=key)
     if (target.get("selected_output") or {}).get("key") != key:
         raise RuntimeError("Selected output is no longer available")
-    if seed_routing:
-        await asyncio.to_thread(_seed_hdmi_routing, key, target)
-
+    service = None
+    previous_state = prepared_state = None
     try:
+        if seed_routing:
+            previous_key = previous_graph_key or (previous.get("selected_output") or {}).get("key")
+            if (previous_key and hdmi.routing_key(output_device_key(previous_key))
+                    != hdmi.routing_key(output_device_key(key))):
+                service = get_output_service()
+                previous_state = await asyncio.to_thread(service.load)
+                ports = (target.get("output_mode") or {}).get("hardware_playback_ports") or []
+                capacity = hdmi.routing_capacity(target)
+                if capacity is not None:
+                    ports = hdmi.overview_routing_ports(target, capacity)
+                defaults = {mode: hdmi.default_assignments(ports, mode, hdmi=True)
+                            for mode in OUTPUT_STATE_MODES} if hdmi.is_hdmi_key(key) else {}
+                candidate = await asyncio.to_thread(prepare_device_state, previous_state, key, defaults=defaults)
+                if candidate != previous_state:
+                    prepared_state = await asyncio.to_thread(
+                        service.commit_unowned, candidate, expected_revision=previous_state["revision"])
+                target = await asyncio.to_thread(get_audio_output_overview, selection_key=key)
+            else:
+                await asyncio.to_thread(_seed_hdmi_routing, key, target)
         await asyncio.to_thread(samplerate._set_default_sink, selected["name"])
         await dsp_orchestrator.sync_runtime(
             reason="output-selection", target_overview=target, ownership=DspSyncOwnership.RATE,
@@ -5063,6 +5085,25 @@ async def _apply_audio_output_selection(key: str, *, seed_routing: bool = True) 
             raise RuntimeError("Default sink changed before output selection commit")
         await asyncio.to_thread(samplerate._save_audio_output_selection, key)
     except BaseException:
+        rollback_error = graph_error = None
+        needs_source_sync = False
+        source_state = previous_state
+        try:
+            if service is not None:
+                head = await asyncio.to_thread(service.load)
+                if prepared_state is not None and head == prepared_state:
+                    try:
+                        source_state = await asyncio.to_thread(
+                            service.revert, previous_state, expected_revision=head["revision"])
+                    except StateConflictError:
+                        needs_source_sync = True
+                        logger.warning("Output selection rollback superseded by a newer edit")
+                elif head != previous_state:
+                    needs_source_sync = True
+        except BaseException as exc:
+            rollback_error = exc
+            needs_source_sync = True
+            logger.exception("Output state preparation rollback failed")
         try:
             current_bytes = await asyncio.to_thread(
                 lambda: selection_path.read_bytes() if selection_path.exists() else None
@@ -5072,24 +5113,55 @@ async def _apply_audio_output_selection(key: str, *, seed_routing: bool = True) 
                     await asyncio.to_thread(selection_path.unlink, missing_ok=True)
                 else:
                     await asyncio.to_thread(atomic_write_bytes, selection_path, previous_bytes)
-            from audio.samplerate.parsing import successor_sink_key
+        except BaseException as exc:
+            rollback_error = exc
+            logger.exception("Output selection persistence rollback failed")
+        from audio.samplerate.parsing import successor_sink_key
+        live_keys = [item["key"] for item in previous.get("outputs", [])]
+        try:
             live = await asyncio.to_thread(get_audio_output_overview)
             live_keys = [item['key'] for item in live.get('outputs', [])]
+        except BaseException as exc:
+            rollback_error = exc
+            logger.exception("Output selection rollback inventory failed")
+        try:
             restore_default = successor_sink_key(previous_default, live_keys) or previous_default
             await asyncio.to_thread(samplerate._set_default_sink, restore_default)
+        except BaseException as exc:
+            rollback_error = exc
+            logger.exception("Output default rollback failed")
+        try:
             if previous_graph_key:
-                restore_key = successor_sink_key(previous_graph_key, live_keys) or previous_graph_key
-                restore = await asyncio.to_thread(get_audio_output_overview, selection_key=restore_key)
-                try:
+                async with _dsp_graph_write_lock():
+                    # Earlier cleanup awaited hardware; a newer editor may have
+                    # committed since then. Only accept a retained graph here.
+                    if service is not None and await asyncio.to_thread(service.load) != source_state:
+                        needs_source_sync = True
+                    restore_key = successor_sink_key(previous_graph_key, live_keys) or previous_graph_key
+                    restore = await asyncio.to_thread(get_audio_output_overview, selection_key=restore_key)
+                    if not needs_source_sync:
+                        try:
+                            await _verify_audio_output_selection(restore_key, restore)
+                        except RuntimeError:
+                            needs_source_sync = True
+                    if needs_source_sync:
+                        await dsp_orchestrator.sync_runtime(
+                            reason="output-selection-rollback", target_overview=restore,
+                            ownership=DspSyncOwnership.RATE_AND_GRAPH,
+                        )
                     await _verify_audio_output_selection(restore_key, restore)
-                except RuntimeError:
-                    await dsp_orchestrator.sync_runtime(
-                        reason="output-selection-rollback", target_overview=restore, ownership=DspSyncOwnership.RATE,
-                    )
-                await _verify_audio_output_selection(restore_key, restore)
-        except BaseException:
-            logger.exception("Output selection rollback failed")
-            raise RuntimeError("Output selection failed and previous graph could not be restored")
+        except BaseException as exc:
+            graph_error = exc
+            logger.exception("Output graph rollback failed")
+        if rollback_error is not None or graph_error is not None:
+            if runtime.dsp_runtime is not None:
+                try:
+                    await runtime.dsp_runtime.fail_closed("Output selection rollback failed", output_key=key)
+                except BaseException:
+                    logger.exception("Output selection fail-closed cleanup failed")
+            message = ("Output selection failed and previous graph could not be restored" if graph_error else
+                       "Output selection failed and rollback could not be completed")
+            raise RuntimeError(message) from (graph_error or rollback_error)
         raise
 
     result = with_subwoofer_derived_delays(await asyncio.to_thread(get_audio_output_overview))
@@ -5359,8 +5431,9 @@ def _hdmi_watch_snapshot() -> tuple | None:
     service = get_output_service()
     state = service.load()
     needs_seed = any(sink.identity not in config["routing"] and
-                     (not config["crossover_enabled"] or hdmi.stored_routing(config["routing"], selected) is not None)
-                     for config in state["modes"].values())
+                     (not effective_crossover_enabled(state, mode, output_key=selected)
+                      or hdmi.stored_routing(config["routing"], selected) is not None)
+                     for mode, config in state["modes"].items())
     capacity = max((item["channels"] for item in probe["options"] if item["available"]), default=2)
     if needs_seed and capacity > 2 and probe["connected"] and probe["current_key"]:
         _seed_hdmi_routing(selected, overview or get_audio_output_overview())
