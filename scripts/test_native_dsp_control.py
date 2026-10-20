@@ -254,7 +254,12 @@ def test_pipewire_process_callback_tolerates_unlinked_output_ports():
     body = source[start:source.index("\n}", start)]
     assert "if (!input[i] && i < 2U) complete = 0;" in body
     kernel = (NATIVE / "dsp.c").read_text()
-    assert "if (input[channel]) memcpy" in kernel
+    # Only a linked, unmuted input is read: the copy-in tests the buffer and the
+    # input mute mask, everything else zero-fills the scratch, so an unlinked port
+    # never reaches into NULL and a muted input stays silent for the whole block.
+    assert "input_mute_mask=atomic_load_explicit(&d->input_mute_mask,memory_order_relaxed)" in kernel
+    assert ("if (input[channel] && !(input_mute_mask&(UINT32_C(1)<<channel))) "
+            "memcpy(d->scratch[0][channel],input[channel]+offset,count*sizeof(float));") in kernel
     assert "else memset(d->scratch[0][channel],0,count*sizeof(float));" in kernel
     assert "if (!output[i]) complete = 0;" not in body
     assert "memset(output[i], 0, frames * sizeof *output[i])" in body
