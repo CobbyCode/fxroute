@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Favorite Tracks">
+  <defs>
+    <radialGradient id="bg" cx="50%" cy="42%" r="75%">
+      <stop offset="0" stop-color="#1b1830"/>
+      <stop offset="0.6" stop-color="#0d0c16"/>
+      <stop offset="1" stop-color="#060609"/>
+    </radialGradient>
+    <linearGradient id="wave" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#4f46e5"/>
+      <stop offset="0.5" stop-color="#a855f7"/>
+      <stop offset="1" stop-color="#f97316"/>
+    </linearGradient>
+    <linearGradient id="gold" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#f6d27a"/>
+      <stop offset="0.55" stop-color="#d9a441"/>
+      <stop offset="1" stop-color="#a8742a"/>
+    </linearGradient>
+    <filter id="glow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="9"/>
+    </filter>
+  </defs>
+  <rect width="512" height="512" fill="url(#bg)"/>
+  <circle cx="256" cy="232" r="176" fill="none" stroke="#c98a3a" stroke-opacity="0.55" stroke-width="2"/>
+  <g fill="none" stroke="url(#wave)" stroke-linecap="round" opacity="0.85">
+    <path d="M0 250 C70 214 120 292 186 250 S300 206 352 250 S446 292 512 246" stroke-width="2.4"/>
+    <path d="M0 262 C76 230 124 300 190 262 S302 220 356 262 S448 302 512 258" stroke-width="1.6" opacity="0.7"/>
+    <path d="M0 238 C66 202 118 280 182 238 S298 194 348 238 S444 280 512 234" stroke-width="1.2" opacity="0.5"/>
+  </g>
+  <path d="M256 330 C256 330 150 266 150 196 C150 160 178 134 212 134 C232 134 248 144 256 160 C264 144 280 134 300 134 C334 134 362 160 362 196 C362 266 256 330 256 330 Z" fill="#d9a441" opacity="0.45" filter="url(#glow)"/>
+  <path d="M256 330 C256 330 150 266 150 196 C150 160 178 134 212 134 C232 134 248 144 256 160 C264 144 280 134 300 134 C334 134 362 160 362 196 C362 266 256 330 256 330 Z" fill="url(#gold)"/>
+  <text x="256" y="402" text-anchor="middle" font-family="Inter, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="44" font-weight="800" letter-spacing="2" fill="#efe9dc">FAVORITE</text>
+  <text x="256" y="446" text-anchor="middle" font-family="Inter, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="22" font-weight="600" letter-spacing="7" fill="#c9c3b6">TRACKS</text>
+</svg>

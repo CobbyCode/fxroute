@@ -64,6 +64,26 @@
         return '/static/artwork-placeholder.svg?v=2';
     }
 
+    // Source mark for streaming items shown next to local music (TIDAL tiles
+    // and track rows in the Library). Same four-diamond glyph as the TIDAL
+    // tab button, painted from currentColor.
+    function sourceGlyphHtml(source, extraClass) {
+        if (source !== 'tidal') return '';
+        const cls = 'source-glyph source-glyph--tidal' + (extraClass ? ' ' + extraClass : '');
+        return '<span class="' + cls + '" role="img" aria-label="TIDAL" data-tooltip="TIDAL">'
+            + '<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">'
+            + '<path d="M12 6.2 14.6 8.9 12 11.6 9.4 8.9Z"/><path d="M6.4 9 9 11.6 6.4 14.3 3.8 11.6Z"/>'
+            + '<path d="M17.6 9 20.2 11.6 17.6 14.3 15 11.6Z"/><path d="M12 11.6 14.6 14.3 12 17 9.4 14.3Z"/>'
+            + '</svg></span>';
+    }
+
+    // Accent-folded, punctuation-free key for comparing artist/album names
+    // across sources ("Beyoncé" == "beyonce", "AC/DC" == "ac dc").
+    function nameKey(value) {
+        return String(value == null ? '' : value).normalize('NFKD').replace(/\p{M}+/gu, '').toLowerCase()
+            .replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+    }
+
     function albumArtFallbackSvg() {
         return artworkPlaceholderUrl();
     }
@@ -198,6 +218,8 @@
         favoriteHeartSvg,
         artworkPlaceholderUrl,
         albumArtFallbackSvg,
+        sourceGlyphHtml,
+        nameKey,
         setRangeProgress,
         setContentState,
         formatRateKhz,

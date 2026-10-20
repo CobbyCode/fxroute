@@ -163,6 +163,39 @@ body {
     }
 }
 .hidden { display: none !important; }
+/* Source mark for TIDAL items shown next to local music (Library tiles and
+   track rows); painted from currentColor like the favorite heart. */
+.source-glyph {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+    width: 1em;
+    height: 1em;
+    color: var(--text-muted);
+}
+.source-glyph svg { width: 100%; height: 100%; fill: currentColor; display: block; }
+.track-sub .source-glyph {
+    width: 0.95em;
+    height: 0.95em;
+    margin-right: 0.3em;
+    vertical-align: -0.14em;
+}
+/* Cover mark: bottom-left, opposite the heart in the top-right corner. */
+.source-glyph--tile {
+    position: absolute;
+    left: 0.45rem;
+    bottom: 0.45rem;
+    z-index: var(--z-raised);
+    width: 26px;
+    height: 26px;
+    padding: 4px;
+    border-radius: 50%;
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    background: rgba(8, 18, 26, 0.72);
+    backdrop-filter: blur(4px);
+    color: #f5f7fa;
+}
 @keyframes bannerSlide {
     from { transform: translateY(-100%); }
     to   { transform: translateY(0); }

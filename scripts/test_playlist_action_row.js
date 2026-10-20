@@ -86,7 +86,8 @@ function extractFunction(source, name) {
     const dockSrc = extractFunction(libraryJs, 'dockPlaylistSaveRow');
     assert.ok(dockSrc.includes('playlistDetail') && dockSrc.includes('playlistDetailTracks'),
         'dockPlaylistSaveRow must also dock inside the playlist detail (header/tracks) like the album detail');
-    assert.ok(dockSrc.includes('tracksList'),
+    const homeSrc = extractFunction(libraryJs, 'dockPlaylistSaveRowHome');
+    assert.ok(dockSrc.includes('dockPlaylistSaveRowHome()') && homeSrc.includes('tracksList'),
         'dockPlaylistSaveRow must home the row before the tracks list for Tracks/Folders/Favorites');
 }
 

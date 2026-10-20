@@ -324,52 +324,75 @@ def _cached_or_raise(user_id: str, kind: str, message: str, cause: Exception) ->
     raise auth.TidalAuthError(message) from cause
 
 
+def _favorite_collection(favorites: Any, kind: str, limit: int) -> tuple[list, bool]:
+    """Return ``(items, complete)`` for one favorites listing.
+
+    ``limit <= 0`` walks the whole collection page by page; a positive limit
+    returns the first page only, which is complete when it is not full.
+    """
+    if limit <= 0:
+        return _favorite_items(favorites, kind), True
+    items = list(getattr(favorites, kind)(limit=limit) or [])
+    return items, len(items) < limit
+
+
 def favorites_tracks(limit: int = 50) -> list[dict]:
-    """Return the user's favorited tracks (normalized); last-known state on failure."""
+    """Return the user's favorited tracks (normalized); last-known state on failure.
+
+    ``limit <= 0`` returns the whole collection. Only a complete listing is
+    cached, so a first page never truncates the cached full collection.
+    """
     _require_tidalapi()
     session = _session()
     user_id = _cache_user_id(session)
     try:
-        user = session.user
-        favorites = user.favorites
-        tracks = favorites.tracks(limit=limit)
+        tracks, complete = _favorite_collection(session.user.favorites, "tracks", limit)
     except Exception as exc:  # noqa: BLE001
         return _cached_or_raise(user_id, "tracks", f"TIDAL favorites failed: {exc}", exc)
     payload = [normalize_track(t) for t in tracks]
-    library_cache.put(user_id, "tracks", payload)
+    if complete:
+        library_cache.put(user_id, "tracks", payload)
     return payload
 
 
 def favorites_albums(limit: int = 50) -> list[dict]:
-    """Return the user's favorited albums (normalized); last-known state on failure."""
+    """Return the user's favorited albums (normalized); last-known state on failure.
+
+    ``limit <= 0`` returns the whole collection; see :func:`favorites_tracks`.
+    """
     _require_tidalapi()
     session = _session()
     user_id = _cache_user_id(session)
     try:
-        albums = session.user.favorites.albums(limit=limit)
+        albums, complete = _favorite_collection(session.user.favorites, "albums", limit)
     except Exception as exc:  # noqa: BLE001
         return _cached_or_raise(user_id, "albums", f"TIDAL favorite albums failed: {exc}", exc)
     payload = _dedupe_albums([normalize_album(a) for a in albums])
-    library_cache.put(user_id, "albums", payload)
+    if complete:
+        library_cache.put(user_id, "albums", payload)
     return payload
 
 
 def favorites_artists(limit: int = 50) -> list[dict]:
-    """Return the user's favorited artists (normalized); last-known state on failure."""
+    """Return the user's favorited artists (normalized); last-known state on failure.
+
+    ``limit <= 0`` returns the whole collection; see :func:`favorites_tracks`.
+    """
     _require_tidalapi()
     session = _session()
     user_id = _cache_user_id(session)
     try:
-        artists = session.user.favorites.artists(limit=limit)
+        artists, complete = _favorite_collection(session.user.favorites, "artists", limit)
     except Exception as exc:  # noqa: BLE001
         return _cached_or_raise(user_id, "artists", f"TIDAL favorite artists failed: {exc}", exc)
     payload = [normalize_artist(a) for a in artists]
-    library_cache.put(user_id, "artists", payload)
+    if complete:
+        library_cache.put(user_id, "artists", payload)
     return payload
 
 
 def _favorite_items(favorites: Any, kind: str, page_size: int = 50) -> list:
-    """Return all favorited items of ``kind`` (``tracks``/``albums``).
+    """Return all favorited items of ``kind`` (tracks/albums/artists/playlists).
 
     Prefer the paginated helper when tidalapi offers it (it already walks the
     full collection via the count endpoint); otherwise page explicitly with
@@ -561,8 +584,7 @@ def user_playlists(limit: int = 200) -> list[dict]:
     session = _session()
     user_id = _cache_user_id(session)
     try:
-        favorites = session.user.favorites
-        items = favorites.playlists()
+        items = _favorite_items(session.user.favorites, "playlists")
     except Exception as exc:  # noqa: BLE001
         return _cached_or_raise(user_id, "playlists", f"TIDAL playlists failed: {exc}", exc)
     payload = [normalize_playlist(item) for item in items]

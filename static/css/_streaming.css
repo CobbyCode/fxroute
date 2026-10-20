@@ -726,7 +726,8 @@
    stays untouched. */
 #tidal-search-items > .streaming-results-list,
 #tidal-search-items > .tidal-tiles { margin-top: 1.125rem; }
-.tidal-tiles .album-card .streaming-fav {
+.tidal-tiles .album-card .streaming-fav,
+.albums-grid .album-card .streaming-fav {
     position: absolute;
     /* Same cover inset as Library favorites on the shared album card. */
     top: 1.05rem;
@@ -740,7 +741,8 @@
 }
 /* List view: the heart leaves the cover corner and joins the row end
    (same canonical favorite control, only repositioned). */
-.tidal-tiles.is-list .album-card .streaming-fav {
+.tidal-tiles.is-list .album-card .streaming-fav,
+.albums-grid.is-list .album-card .streaming-fav {
     position: static;
     order: 5;
     z-index: auto;

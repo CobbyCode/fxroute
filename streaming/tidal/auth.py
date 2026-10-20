@@ -42,6 +42,17 @@ def tidalapi_available() -> bool:
     return tidalapi is not None
 
 
+def _is_auth_rejection(exc: BaseException) -> bool:
+    """Return whether ``exc`` is tidalapi's rejected-refresh-token error.
+
+    ``tidalapi`` refreshes an expired access token inside the request layer and
+    raises ``AuthenticationError`` when TIDAL rejects the refresh token. That is
+    a lost login, not a transient outage.
+    """
+    error_type = getattr(getattr(tidalapi, "exceptions", None), "AuthenticationError", None)
+    return isinstance(error_type, type) and isinstance(exc, error_type)
+
+
 def _config_dir() -> Path:
     base = os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
     return Path(base) / "fxroute"
@@ -131,6 +142,10 @@ class TidalSession:
         try:
             resp = basic("GET", "users/%s/subscription" % user_id)
         except Exception as exc:  # noqa: BLE001 - network/transport failures
+            if _is_auth_rejection(exc):
+                logger.info("TIDAL rejected the refresh token; a new login is required")
+                self._last_user = None
+                return False
             logger.debug("TIDAL login check failed transiently: %s", exc)
             return bool(self._last_user)
         status = int(getattr(resp, "status_code", 0) or 0)
@@ -148,6 +163,10 @@ class TidalSession:
         try:
             ok = bool(s.check_login())
         except Exception as exc:  # noqa: BLE001
+            if _is_auth_rejection(exc):
+                logger.info("TIDAL rejected the refresh token; a new login is required")
+                self._last_user = None
+                return False
             logger.debug("TIDAL login check failed transiently: %s", exc)
             return bool(self._last_user)
         if ok:

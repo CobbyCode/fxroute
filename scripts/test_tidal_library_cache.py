@@ -264,6 +264,54 @@ class CatalogCacheTests(unittest.TestCase):
             served = catalog.favorites_tracks()
         self.assertEqual([t["id"] for t in served], ["1", "2"])
 
+    def test_full_collection_returns_every_page_and_caches_it(self):
+        store = self._store()
+        favorites = FakeFavorites(tracks=[_track(i) for i in range(1, 121)])
+        session = _session(42, favorites)
+        p1, p2, p3 = self._patch_catalog(session, store)
+        with p1, p2, p3:
+            payload = catalog.favorites_tracks(limit=0)
+        self.assertEqual(len(payload), 120)
+        self.assertEqual(len(store.get("42", "tracks")), 120)
+
+    def test_full_collection_pages_without_paginated_helper(self):
+        class PlainFavorites(FakeFavorites):
+            albums_paginated = None
+
+        def album(album_id):
+            return SimpleNamespace(
+                id=album_id, name=f"Album {album_id}", artist=SimpleNamespace(name="Artist"),
+                artists=[], num_tracks=10, image=lambda size=640: "",
+            )
+
+        store = self._store()
+        favorites = PlainFavorites(albums=[album(f"a{i}") for i in range(130)])
+        session = _session(42, favorites)
+        p1, p2, p3 = self._patch_catalog(session, store)
+        with p1, p2, p3:
+            payload = catalog.favorites_albums(limit=0)
+        self.assertEqual(len(payload), 130)
+
+    def test_first_page_does_not_truncate_cached_full_collection(self):
+        store = self._store()
+        favorites = FakeFavorites(tracks=[_track(i) for i in range(1, 121)])
+        session = _session(42, favorites)
+        p1, p2, p3 = self._patch_catalog(session, store)
+        with p1, p2, p3:
+            catalog.favorites_tracks(limit=0)
+            first_page = catalog.favorites_tracks(limit=50)
+        self.assertEqual(len(first_page), 50)
+        self.assertEqual(len(store.get("42", "tracks")), 120)
+
+    def test_playlists_beyond_one_page_are_complete(self):
+        store = self._store()
+        favs = FakeFavorites(playlists=[_playlist(f"p{i}") for i in range(75)])
+        session = _session(42, favs)
+        p1, p2, p3 = self._patch_catalog(session, store)
+        with p1, p2, p3:
+            payload = catalog.user_playlists()
+        self.assertEqual(len(payload), 75)
+
     def test_failure_without_cache_raises(self):
         store = self._store()
         favorites = FakeFavorites(tracks=[_track(1)])
@@ -482,6 +530,39 @@ class AuthResilienceTests(unittest.TestCase):
         manager._last_user = {"id": "42", "email": "u@example.com", "country_code": "US"}
         self.assertFalse(manager.authenticated())
         self.assertEqual(manager.last_user_id(), "")
+        self.assertIsNone(manager._last_user)
+
+    def test_rejected_refresh_token_clears_last_user(self):
+        class AuthenticationError(Exception):
+            pass
+
+        fake_tidalapi = SimpleNamespace(exceptions=SimpleNamespace(AuthenticationError=AuthenticationError))
+        manager = auth.TidalSession()
+        manager._session = _auth_session(
+            user_id=42,
+            request_layer=FakeRequestLayer(AuthenticationError("invalid_grant: refresh token expired")),
+        )
+        manager._last_user = {"id": "42", "email": "u@example.com", "country_code": "US"}
+        with mock.patch.object(auth, "tidalapi", fake_tidalapi):
+            self.assertFalse(manager.authenticated())
+        self.assertEqual(manager.last_user_id(), "")
+        self.assertIsNone(manager._last_user)
+
+    def test_rejected_refresh_token_in_fallback_check_clears_last_user(self):
+        class AuthenticationError(Exception):
+            pass
+
+        def rejected_check_login():
+            raise AuthenticationError("invalid_grant")
+
+        fake_tidalapi = SimpleNamespace(exceptions=SimpleNamespace(AuthenticationError=AuthenticationError))
+        manager = auth.TidalSession()
+        session = _auth_session(user_id=None)
+        session.check_login = rejected_check_login
+        manager._session = session
+        manager._last_user = {"id": "42", "email": "u@example.com", "country_code": "US"}
+        with mock.patch.object(auth, "tidalapi", fake_tidalapi):
+            self.assertFalse(manager.authenticated())
         self.assertIsNone(manager._last_user)
 
     def test_server_error_keeps_last_known_state(self):

@@ -7,9 +7,9 @@
 // the Albums/Favorites grid at the same full content width), but while an
 // album or playlist detail is open it docks inside the detail between header
 // and tracks — like the TIDAL save row — instead of sitting misplaced under
-// the track list. This test executes the real
-// dockPlaylistSaveRow/updatePlaylistSaveRowVisibility functions extracted
-// from static/library_ui.js against a minimal parent/child DOM model and
+// the track list. This test runs the real
+// dockPlaylistSaveRow/updatePlaylistSaveRowVisibility functions of
+// static/library_ui.js against a minimal parent/child DOM model and
 // asserts that:
 //
 //   1. with an open album detail the row docks between header and tracks,
@@ -21,7 +21,11 @@
 //      name field never moves the focused input),
 //   6. visibility follows the selection in every view including the
 //      playlist detail (hidden at 0, visible with selection, hidden again
-//      after the last deselect).
+//      after the last deselect),
+//   7. the row variant follows the selection mix: local tracks keep the
+//      local save, TIDAL tracks get "Save as new" + existing TIDAL playlist,
+//      a mixed selection cannot be saved and explains why,
+//   8. with an open TIDAL detail the row docks right below its header.
 //
 // It also asserts the desktop CSS contract: the local row uses the full
 // content width with the name field absorbing the extra space while
@@ -30,7 +34,6 @@
 const assert = require('assert/strict');
 const fs = require('fs');
 const path = require('path');
-const vm = require('vm');
 
 const root = path.join(__dirname, '..');
 const libraryJs = fs.readFileSync(path.join(root, 'static', 'library_ui.js'), 'utf8');
@@ -74,8 +77,10 @@ function extractFunction(source, name) {
     throw new Error(`unterminated ${name}`);
 }
 
-const dockSrc = extractFunction(libraryJs, 'dockPlaylistSaveRow');
-const visibilitySrc = extractFunction(libraryJs, 'updatePlaylistSaveRowVisibility');
+// Both functions must exist; they run from the real module below.
+extractFunction(libraryJs, 'dockPlaylistSaveRow');
+extractFunction(libraryJs, 'updatePlaylistSaveRowVisibility');
+const libraryModule = require(path.join(root, 'static', 'library_ui.js'));
 
 // --- minimal parent/child DOM model ----------------------------------------
 
@@ -121,6 +126,28 @@ function makeNode(name, { hidden = false } = {}) {
             return child;
         },
         appendChild(child) { return el.insertBefore(child, null); },
+        get previousSibling() {
+            if (!el.parentElement) return null;
+            const sibs = el.parentElement.children;
+            const idx = sibs.indexOf(el);
+            return idx > 0 ? sibs[idx - 1] : null;
+        },
+        querySelector(selector) {
+            const want = selector.replace(/^\./, '');
+            const walk = (node) => {
+                for (const child of node.children) {
+                    if (child.name === want) return child;
+                    const hit = walk(child);
+                    if (hit) return hit;
+                }
+                return null;
+            };
+            return walk(el);
+        },
+        dataset: {},
+        disabled: false,
+        placeholder: '',
+        value: '',
     };
     return el;
 }
@@ -151,13 +178,27 @@ function makeTree() {
     playlistDetail.appendChild(playlistTracks);
     const saveControls = makeNode('playlist-save-controls');
     const libraryInfo = makeNode('library-info');
+    const tidalDetail = makeNode('library-tidal-detail', { hidden: true });
+    const tidalShell = makeNode('streaming-detail');
+    const tidalHeader = makeNode('tidal-detail-header');
+    const tidalResults = makeNode('tidal-detail-results');
+    tidalShell.appendChild(tidalHeader);
+    tidalShell.appendChild(tidalResults);
+    tidalDetail.appendChild(tidalShell);
     tab.appendChild(saveRow);
     tab.appendChild(tracksList);
     tab.appendChild(albumsGrid);
     tab.appendChild(albumDetail);
     tab.appendChild(playlistDetail);
+    tab.appendChild(tidalDetail);
     tab.appendChild(libraryInfo);
     const elements = {
+        libraryTidalDetail: tidalDetail,
+        playlistName: makeNode('playlist-name'),
+        savePlaylistBtn: makeNode('save-playlist'),
+        playlistTidalTarget: makeNode('playlist-tidal-target', { hidden: true }),
+        playlistTidalAddBtn: makeNode('playlist-tidal-add', { hidden: true }),
+        playlistSaveHint: makeNode('playlist-save-hint', { hidden: true }),
         albumDetail,
         albumDetailTracks: albumTracks,
         playlistDetail,
@@ -170,11 +211,15 @@ function makeTree() {
     };
     return {
         tab, elements, albumDetail, albumTracks, playlistDetail, playlistTracks,
-        saveRow, tracksList, albumsGrid, libraryInfo,
+        saveRow, tracksList, albumsGrid, libraryInfo, tidalShell, tidalHeader, tidalResults,
     };
 }
 
-function makeSandbox(tree, { selected = 0, editingPlaylist = false } = {}) {
+function makeSandbox(tree, { selected = 0, editingPlaylist = false, tidalSelected = 0, tidalDetailOpen = false } = {}) {
+    // TIDAL selection through the streaming adapter (absent without TIDAL).
+    globalThis.FXRouteStreaming = tidalSelected
+        ? { tidal: { selectedIds: () => Array.from({ length: tidalSelected }, (_, i) => String(100 + i)), items: () => [] } }
+        : undefined;
     const sandbox = {
         console: { warn() {} },
         window: { scrollTo() {} },
@@ -183,6 +228,7 @@ function makeSandbox(tree, { selected = 0, editingPlaylist = false } = {}) {
             library: {
                 selectedTrackIds: Array.from({ length: selected }, (_, i) => `t${i}`),
                 playlistDetail: editingPlaylist ? { playlist: { id: 'p1' } } : null,
+                tidalDetailOpen,
             },
         },
     };
@@ -195,7 +241,8 @@ function makeSandbox(tree, { selected = 0, editingPlaylist = false } = {}) {
 }
 
 async function runVisibility(sandbox) {
-    await vm.runInNewContext(`${dockSrc}\n${visibilitySrc}\nupdatePlaylistSaveRowVisibility();`, sandbox);
+    libraryModule.init(sandbox.deps);
+    libraryModule.updatePlaylistSaveRowVisibility();
 }
 
 (async () => {
@@ -290,7 +337,53 @@ async function runVisibility(sandbox) {
             'the save row must be visible with a track selection');
     }
 
-    // 7. Desktop CSS contract: full-width row, growing name field, compact
+    // 7. Row variant follows the selection mix.
+    {
+        const tree = makeTree();
+        const els = tree.elements;
+        await runVisibility(makeSandbox(tree, { selected: 2 }));
+        assert.equal(tree.saveRow.dataset.saveMode, 'local', 'local tracks keep the local save');
+        assert.equal(els.savePlaylistBtn.textContent, 'Save');
+        assert.ok(els.playlistTidalTarget.classList.contains('hidden'),
+            'the TIDAL target stays hidden for a local selection');
+
+        await runVisibility(makeSandbox(tree, { tidalSelected: 2 }));
+        assert.ok(!tree.saveRow.classList.contains('hidden'), 'a TIDAL-only selection shows the row');
+        assert.equal(tree.saveRow.dataset.saveMode, 'tidal');
+        assert.equal(els.savePlaylistBtn.textContent, 'Save as new',
+            'a TIDAL selection saves a new TIDAL playlist');
+        assert.ok(!els.playlistTidalTarget.classList.contains('hidden')
+            && !els.playlistTidalAddBtn.classList.contains('hidden'),
+            'a TIDAL selection offers adding to an existing TIDAL playlist');
+        assert.equal(els.savePlaylistBtn.disabled, false);
+
+        await runVisibility(makeSandbox(tree, { selected: 1, tidalSelected: 1 }));
+        assert.equal(tree.saveRow.dataset.saveMode, 'mixed');
+        assert.equal(els.savePlaylistBtn.disabled, true, 'a mixed selection cannot be saved yet');
+        assert.ok(!els.playlistSaveHint.classList.contains('hidden') && els.playlistSaveHint.textContent,
+            'a mixed selection explains why it cannot be saved');
+        assert.ok(els.playlistTidalTarget.classList.contains('hidden'));
+
+        await runVisibility(makeSandbox(tree, { selected: 1 }));
+        assert.ok(els.playlistSaveHint.classList.contains('hidden'), 'the hint leaves with the mix');
+        assert.equal(els.savePlaylistBtn.disabled, false);
+    }
+
+    // 8. Open TIDAL detail: row docks right below the TIDAL detail header and
+    // returns home when the detail closes.
+    {
+        const tree = makeTree();
+        await runVisibility(makeSandbox(tree, { tidalSelected: 1, tidalDetailOpen: true }));
+        assert.deepEqual(orderNames(tree.tidalShell),
+            ['tidal-detail-header', 'playlist-save-row', 'tidal-detail-results'],
+            'the save row must dock below the TIDAL detail header');
+        await runVisibility(makeSandbox(tree, { tidalSelected: 1, tidalDetailOpen: false }));
+        assert.equal(tree.saveRow.nextSibling, tree.tracksList,
+            'the save row must return home once the TIDAL detail is closed');
+    }
+    globalThis.FXRouteStreaming = undefined;
+
+    // 9. Desktop CSS contract: full-width row, growing name field, compact
     // buttons — the local row follows the TIDAL album row language.
     const rowRule = css.match(/\.playlist-save-row\s*\{[^}]*\}/);
     assert.ok(rowRule && /width:\s*100%/.test(rowRule[0]),

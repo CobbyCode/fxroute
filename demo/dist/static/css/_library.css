@@ -152,6 +152,13 @@
     font-size: 0.95rem;
 }
 .albums-grid.is-list .playlist-collage-cell.is-fallback { padding: 8%; }
+.albums-grid.is-list .source-glyph--tile {
+    left: 2px;
+    bottom: 2px;
+    width: 16px;
+    height: 16px;
+    padding: 2px;
+}
 .albums-grid.is-list .album-smart-badge {
     top: 0.3rem;
     left: 0.3rem;
@@ -744,6 +751,32 @@
     gap: var(--action-gap);
     flex-wrap: wrap;
 }
+/* Compact TIDAL connect/status button next to Import: the glyph plus
+   "Connect TIDAL" while signed out, glyph + mint dot + "TIDAL" when
+   connected (click refreshes the TIDAL favorites). */
+.library-tidal-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    white-space: nowrap;
+}
+.library-tidal-status .source-glyph {
+    width: 1.05rem;
+    height: 1.05rem;
+    color: var(--text-primary);
+}
+.library-tidal-status-dot {
+    display: none;
+    width: 0.42rem;
+    height: 0.42rem;
+    border-radius: 50%;
+    background: var(--accent);
+}
+.library-tidal-status.is-connected .library-tidal-status-dot { display: inline-block; }
+/* TIDAL album/playlist/artist details opened from the Library. */
+.library-tidal-detail {
+    margin-top: 0.9rem;
+}
 .library-actions-row {
     display: flex;
     align-items: center;
@@ -898,6 +931,22 @@
 .playlist-save-row .btn-secondary {
     flex: 0 0 auto;
     white-space: nowrap;
+}
+/* TIDAL selection: the existing-playlist target is a little wider than the
+   name field, like the TIDAL album row. A mixed selection explains below
+   the controls why it cannot be saved. */
+.playlist-save-row #playlist-tidal-target {
+    flex: 1.25 1 0;
+    min-width: 170px;
+}
+.playlist-save-row[data-save-mode="mixed"] {
+    flex-wrap: wrap;
+}
+.playlist-save-hint {
+    flex: 0 0 100%;
+    margin: 0;
+    color: var(--text-muted);
+    font-size: 0.84rem;
 }
 /* TIDAL save row: the library save concept extended with the "add to
    existing playlist" target, so the row wraps instead of clipping. */

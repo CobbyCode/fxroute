@@ -236,8 +236,7 @@ async function runOpen(fnSrc, fnName, sandbox, args) {
                     detailArt: '',
                 },
             },
-            entryFor: () => null,
-            renderTidalBrowse() { throw new Error('must not render without an entry'); },
+            renderTidalSurface() {},
         };
         const driver = `(async () => { await openTidalDetail(${JSON.stringify(view)}, 'id1', 'Title', ''); })()`;
         await vm.runInNewContext(`${openTidalDetailSrc}\n${driver}`, sandbox);

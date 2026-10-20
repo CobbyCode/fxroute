@@ -1194,7 +1194,8 @@
     }
     /* TIDAL save row: with the full-width controls container the five
        controls wrap left-aligned instead of overflowing. */
-    .tidal-playlist-save-row .playlist-save-controls {
+    .tidal-playlist-save-row .playlist-save-controls,
+    .playlist-save-row[data-save-mode="tidal"] .playlist-save-controls {
         flex-wrap: wrap;
     }
 }

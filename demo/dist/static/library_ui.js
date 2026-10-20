@@ -35,6 +35,7 @@
         favoriteHeartSvg: () => '',
         artworkPlaceholderUrl: () => '',
         albumArtFallbackSvg: () => '',
+        sourceGlyphHtml: () => '',
         isLibraryModeRequestInFlight: () => false,
         setLibraryModeRequestInFlight: () => {},
         isTidalFavoriteRequestInFlight: () => false,
@@ -60,11 +61,110 @@ function readStoredViewMode(surface) {
 
 let trackFavoriteRequestInFlight = false;
 
+// -- TIDAL in the shared Library ---------------------------------------------
+// TIDAL is optional: without the streaming adapter, an installed and enabled
+// provider or a login, every helper below yields nothing and the Library
+// stays purely local. Data, hearts, rows and details stay owned by
+// static/streaming.js (window.FXRouteStreaming.tidal).
+function tidalLibrary() {
+    const streaming = root && root.FXRouteStreaming;
+    return (streaming && streaming.tidal) || null;
+}
+
+function libraryQuery() {
+    return (deps.getState().library.searchQuery || '').trim().toLowerCase();
+}
+
+function tidalItemSearchText(kind, item) {
+    if (kind === 'albums') return [item.title, item.artist, item.year];
+    if (kind === 'tracks') return [item.title, item.artist, item.album];
+    return [item.name];
+}
+
+// TIDAL favorites of one kind (albums/tracks/playlists) for the Library:
+// only items that are still favorited, so an un-hearted item leaves at once,
+// filtered by the current search.
+function tidalLibraryFavorites(kind, options = {}) {
+    const tidal = tidalLibrary();
+    if (!tidal || !tidal.connection().authenticated) return [];
+    const query = options.ignoreQuery ? '' : libraryQuery();
+    return tidal.items(kind).filter(item => {
+        if (!item || item.id == null || !tidal.isFavorite(kind, item.id)) return false;
+        if (!query) return true;
+        return tidalItemSearchText(kind, item).filter(Boolean).join(' ').toLowerCase().includes(query);
+    });
+}
+
+// Same order as the backend album list: "Various" last, then artist, then
+// album name, compared case-insensitively.
+function compareAlbumEntries(a, b) {
+    if (a.various !== b.various) return a.various ? 1 : -1;
+    if (a.artist !== b.artist) return a.artist < b.artist ? -1 : 1;
+    if (a.name !== b.name) return a.name < b.name ? -1 : 1;
+    return 0;
+}
+
+function tidalCardHtml(kind, item) {
+    const tidal = tidalLibrary();
+    const isAlbum = kind === 'album';
+    const title = (isAlbum ? item.title : item.name) || '';
+    const sub = isAlbum ? (item.artist || '') : (item.track_count ? `${item.track_count} tracks` : 'Playlist');
+    return `
+        <div class="album-card" data-tidal-kind="${kind}" data-tidal-id="${deps.escapeHtml(item.id)}" data-tidal-name="${deps.escapeHtml(title)}" data-tidal-art="${deps.escapeHtml(item.art_url || '')}" role="button" tabindex="0">
+            <div class="album-art-wrap">${tidal.cardArtHtml(item.art_url, title)}${deps.sourceGlyphHtml('tidal', 'source-glyph--tile')}</div>
+            ${tidal.favoriteButtonHtml(isAlbum ? 'albums' : 'playlists', item.id)}
+            <div class="album-name">${deps.escapeHtml(title)}</div>
+            <div class="album-artist">${deps.escapeHtml(sub)}</div>
+        </div>`;
+}
+
+function bindTidalCards(container) {
+    const tidal = tidalLibrary();
+    if (!tidal || !container) return;
+    container.querySelectorAll('.album-card[data-tidal-kind]').forEach(card => {
+        const open = () => tidal.openDetail(card.dataset.tidalKind, card.dataset.tidalId, card.dataset.tidalName || '', card.dataset.tidalArt || '');
+        card.addEventListener('click', open);
+        card.addEventListener('keydown', (event) => {
+            if (event.target !== event.currentTarget) return;
+            if (event.key !== 'Enter' && event.key !== ' ') return;
+            event.preventDefault();
+            open();
+        });
+    });
+    tidal.bindFavoriteButtons(container);
+}
+
+// TIDAL track rows inside a Library list: built by the TIDAL adapter (its
+// heart, + selection and playback), marked with the TIDAL glyph. A click
+// plays the TIDAL rows of the same list as one queue.
+function appendTidalTrackRows(container, items, options = {}) {
+    const tidal = tidalLibrary();
+    if (!tidal || !container || !items.length) return;
+    const queueIds = items.map(item => String(item.id));
+    const firstIndex = options.firstIndex;
+    items.forEach((item, offset) => {
+        const sub = options.albumContext
+            ? (item.artist || '')
+            : [item.artist, item.album].filter(Boolean).join(' · ');
+        container.appendChild(tidal.buildTrackRow(item, {
+            tag: 'div',
+            index: firstIndex != null ? firstIndex + offset : undefined,
+            sub,
+            queueIds,
+            badge: deps.sourceGlyphHtml('tidal'),
+            favoriteClass: options.favoriteClass,
+        }));
+    });
+}
+
 let downloadStatusPollTimer = null;
 
 let lastDownloadStatus = null;
 
 const LIBRARY_SCAN_POLL_INTERVAL_MS = 1200;
+
+const FAVORITE_TRACKS_ID = 'smart_favorite_tracks';
+const FAVORITE_TRACKS_COVER = '/static/FavoriteTracks.svg?v=1';
 
 const DOWNLOAD_STATUS_POLL_INTERVAL_MS = 1500;
 
@@ -422,10 +522,13 @@ function getFolderChildren() {
 function renderLibraryView() {
     if (deps.getState().library.viewMode === 'albums') {
         if (deps.getState().library.albumDetail) {
-            // Re-open the album detail if we were viewing one
+            // Re-open the album detail if we were viewing one; the smart
+            // playlists rebuild through their own loaders.
             const albumId = deps.getState().library.albumDetail.album.id;
             deps.getState().library.albumDetail = null;
-            openAlbumDetail(albumId);
+            if (albumId === FAVORITE_TRACKS_ID) openSmartFavoriteTracks();
+            else if (albumId === 'smart_top40') openSmartTopTracks();
+            else openAlbumDetail(albumId);
         } else if (deps.getState().library.playlistDetail) {
             const playlistId = deps.getState().library.playlistDetail.playlist.id;
             deps.getState().library.playlistDetail = null;
@@ -508,6 +611,7 @@ function formatLibraryScanStatus() {
 }
 
 function renderTracks() {
+    if (deps.getState().library.tidalDetailOpen) return;
     renderLibraryViewButtons();
     updateLibraryViewModeToggle();
     renderLibraryFolderPath();
@@ -528,12 +632,14 @@ function renderTracks() {
     const loadingEl = document.querySelector('#tab-library .content-state');
     const scanText = formatLibraryScanStatus();
     const hasSearch = !!(deps.getState().library.searchQuery || '').trim();
+    // Tracks lists TIDAL favorite tracks after the local ones; Folders stay local.
+    const tidalTracks = deps.getState().library.viewMode === 'tracks' ? tidalLibraryFavorites('tracks') : [];
 
     // Playlists count as library content: an empty track list must not wipe
     // them, because a running scan (or a library whose first scan is still
     // filling the cache) would otherwise read as "nothing here". The shared
     // scan status renders above the list until the scan finished.
-    if (allTracks.length === 0 && filteredPlaylists.length === 0) {
+    if (allTracks.length === 0 && filteredPlaylists.length === 0 && tidalTracks.length === 0) {
         window.FXRouteContentState.set(loadingEl, scanText ? 'loading' : 'empty',
             scanText || (hasSearch
                 ? 'No matching tracks or playlists. Try a broader search.'
@@ -550,7 +656,7 @@ function renderTracks() {
 
     const folderMode = deps.getState().library.viewMode === 'folders';
     const childFolders = folderMode ? getFolderChildren() : [];
-    if (filteredTracks.length === 0 && childFolders.length === 0 && filteredPlaylists.length === 0) {
+    if (filteredTracks.length === 0 && childFolders.length === 0 && filteredPlaylists.length === 0 && tidalTracks.length === 0) {
         window.FXRouteContentState.set(loadingEl, 'empty',
             hasSearch ? 'No matching tracks or playlists. Try a broader search.' : 'No tracks in this folder.');
         deps.getElements().tracksList.innerHTML = '';
@@ -608,6 +714,7 @@ function renderTracks() {
     }).join('');
 
     deps.getElements().tracksList.innerHTML = html;
+    appendTidalTrackRows(deps.getElements().tracksList, tidalTracks);
 
     deps.getElements().tracksList.querySelectorAll('.track-play[data-folder]').forEach(item => {
         item.addEventListener('click', (e) => {
@@ -697,6 +804,7 @@ function renderTracks() {
 }
 
 function setLibraryViewMode(mode) {
+    leaveTidalLibraryDetail();
     // Favorites is a tab but reuses the albums view with the existing
     // favorites filter (same position as the Playlists tab in TIDAL: fourth tab).
     if (mode === 'favorites') {
@@ -722,6 +830,7 @@ function setLibraryViewMode(mode) {
 }
 
 function setLibraryFolder(folder) {
+    leaveTidalLibraryDetail();
     updateLibrarySearchPlaceholder();
     deps.getState().library.viewMode = 'folders';
     deps.getState().library.currentFolder = folder || '';
@@ -746,7 +855,7 @@ function setAlbumLayout(mode) {
 }
 
 function updateLibraryViewModeToggle() {
-    const active = deps.getState().library.viewMode === 'albums' && !deps.getState().library.albumDetail && !deps.getState().library.playlistDetail;
+    const active = deps.getState().library.viewMode === 'albums' && !deps.getState().library.albumDetail && !deps.getState().library.playlistDetail && !deps.getState().library.tidalDetailOpen;
     if (deps.getElements().libraryViewModeToggle) deps.getElements().libraryViewModeToggle.classList.toggle('hidden', !active);
     const layout = deps.getState().library.albumLayout || 'grid';
     if (deps.getElements().libraryViewModeGridBtn) {
@@ -797,6 +906,9 @@ async function fetchAlbums() {
 }
 
 function renderAlbums() {
+    // An open TIDAL detail owns the content area; background refreshes must
+    // not bring the grid back underneath it.
+    if (deps.getState().library.tidalDetailOpen) return;
     renderLibraryViewButtons();
     updateLibraryViewModeToggle();
     updateLibrarySelectionUI();
@@ -838,8 +950,12 @@ function renderAlbums() {
     // Playlists live with the personal collections (Favorites), not in the
     // plain albums overview.
     const playlists = showSmartFavorites ? getFilteredPlaylists() : [];
+    // TIDAL favorites join the same grids: favorite albums in Albums and
+    // Favorites, favorite playlists next to the local ones in Favorites.
+    const tidalAlbums = tidalLibraryFavorites('albums');
+    const tidalPlaylists = showSmartFavorites ? tidalLibraryFavorites('playlists') : [];
 
-    if (albums.length === 0 && playlists.length === 0 && !showSmartFavorites) {
+    if (albums.length === 0 && tidalAlbums.length === 0 && playlists.length === 0 && !showSmartFavorites) {
         // A running scan is not an empty library: the shared library scan
         // status stays visible until the scan actually finished, so the empty
         // message never reports "no albums" while the scan is still filling
@@ -869,6 +985,17 @@ function renderAlbums() {
             <div class="album-name">Top 40</div>
             <div class="album-artist">Most Played Tracks</div>
         </div>
+        <div class="album-card album-card-smart" data-smart-favorite="favorite-tracks" role="button" tabindex="0">
+            <div class="album-art-wrap">
+                <div class="album-smart-badge">Smart Mix</div>
+                <img class="album-art" src="${FAVORITE_TRACKS_COVER}"
+                     alt="Favorite Tracks"
+                     onload="this.classList.add('loaded')"
+                     onerror="this.onerror=null;this.src='${deps.albumArtFallbackSvg('Favorite Tracks')}'" />
+            </div>
+            <div class="album-name">Favorite Tracks</div>
+            <div class="album-artist">Hearted Tracks</div>
+        </div>
     ` : '';
     // Grid and list show the same cards; only the container class changes.
     deps.getElements().albumsGrid.classList.toggle('is-list', (deps.getState().library.albumLayout || 'grid') === 'list');
@@ -878,30 +1005,27 @@ function renderAlbums() {
             <button type="button" class="album-card-fav is-active" data-playlist-fav="${deps.escapeHtml(playlist.id)}" aria-label="Delete playlist" data-tooltip="Delete playlist">${deps.favoriteHeartSvg()}</button>
             <div class="album-name">${deps.escapeHtml(playlist.name)}</div>
             <div class="album-artist">${playlist.track_count} track${playlist.track_count === 1 ? '' : 's'}</div>
-        </div>`).join('');
-    const manualHtml = albums.length > 0 ? albums.map(album => {
-        const coverUrl = albumCoverUrl(album);
-        const fallbackSvg = deps.albumArtFallbackSvg(album.name || album.artist || 'Album');
-        const imageSrc = coverUrl || fallbackSvg;
-        const favClass = album.favorite ? ' is-active' : '';
-        return `
-        <div class="album-card" data-album-id="${deps.escapeHtml(album.id)}" role="button" tabindex="0">
-            <div class="album-art-wrap">
-                <img class="album-art" src="${deps.escapeHtml(imageSrc)}"
-                     alt="${deps.escapeHtml(album.name)}"
-                     onload="this.classList.add('loaded')"
-                     onerror="this.onerror=null;this.src='${fallbackSvg}'" />
-            </div>
-            <button type="button" class="album-card-fav${favClass}" data-fav-id="${deps.escapeHtml(album.id)}" aria-label="${album.favorite ? 'Remove from favorites' : 'Add to favorites'}" data-tooltip="${album.favorite ? 'Remove from favorites' : 'Add to favorites'}">${deps.favoriteHeartSvg()}</button>
-            <div class="album-name">${deps.escapeHtml(album.name)}</div>
-            <div class="album-artist">${deps.escapeHtml(album.artist)}</div>
-        </div>`;
-    }).join('') : '';
+        </div>`).join('') + tidalPlaylists.map(item => tidalCardHtml('playlist', item)).join('');
+    const albumEntries = albums.map(album => ({
+        various: album.name === 'Various',
+        artist: String(album.artist || '').toLowerCase(),
+        name: String(album.name || '').toLowerCase(),
+        html: localAlbumCardHtml(album),
+    })).concat(tidalAlbums.map(item => ({
+        various: false,
+        artist: String(item.artist || '').toLowerCase(),
+        name: String(item.title || '').toLowerCase(),
+        html: tidalCardHtml('album', item),
+    })));
+    // Local albums arrive in this order already; only a merge needs sorting.
+    if (tidalAlbums.length) albumEntries.sort(compareAlbumEntries);
+    const manualHtml = albumEntries.map(entry => entry.html).join('');
     deps.getElements().albumsGrid.innerHTML = smartHtml + playlistHtml + manualHtml;
     deps.getElements().albumsGrid.classList.remove('hidden');
 
     const openAlbumCard = (card) => () => {
         if (card.dataset.playlistId) openPlaylistDetail(card.dataset.playlistId);
+        else if (card.dataset.smartFavorite === 'favorite-tracks') openSmartFavoriteTracks();
         else if (card.dataset.smartFavorite) openSmartTopTracks();
         else openAlbumDetail(card.dataset.albumId);
     };
@@ -911,14 +1035,15 @@ function renderAlbums() {
         event.preventDefault();
         openAlbumCard(card)();
     };
-    deps.getElements().albumsGrid.querySelectorAll('.album-card').forEach(card => {
+    deps.getElements().albumsGrid.querySelectorAll('.album-card:not([data-tidal-kind])').forEach(card => {
         card.addEventListener('click', openAlbumCard(card));
         card.addEventListener('keydown', handleAlbumCardKeydown(card));
     });
+    bindTidalCards(deps.getElements().albumsGrid);
     // Heart toggle: reuse the same local album favorite endpoint the detail
     // view uses; the card stays visible in all views (favorite toggles don't
     // remove albums from the main grid).
-    deps.getElements().albumsGrid.querySelectorAll('.album-card-fav').forEach((btn) => {
+    deps.getElements().albumsGrid.querySelectorAll('.album-card-fav[data-fav-id]').forEach((btn) => {
         btn.addEventListener('click', (event) => {
             event.preventDefault();
             event.stopPropagation();
@@ -938,6 +1063,25 @@ function renderAlbums() {
             deletePlaylistById(playlistId);
         });
     });
+}
+
+function localAlbumCardHtml(album) {
+    const coverUrl = albumCoverUrl(album);
+    const fallbackSvg = deps.albumArtFallbackSvg(album.name || album.artist || 'Album');
+    const imageSrc = coverUrl || fallbackSvg;
+    const favClass = album.favorite ? ' is-active' : '';
+    return `
+        <div class="album-card" data-album-id="${deps.escapeHtml(album.id)}" role="button" tabindex="0">
+            <div class="album-art-wrap">
+                <img class="album-art" src="${deps.escapeHtml(imageSrc)}"
+                     alt="${deps.escapeHtml(album.name)}"
+                     onload="this.classList.add('loaded')"
+                     onerror="this.onerror=null;this.src='${fallbackSvg}'" />
+            </div>
+            <button type="button" class="album-card-fav${favClass}" data-fav-id="${deps.escapeHtml(album.id)}" aria-label="${album.favorite ? 'Remove from favorites' : 'Add to favorites'}" data-tooltip="${album.favorite ? 'Remove from favorites' : 'Add to favorites'}">${deps.favoriteHeartSvg()}</button>
+            <div class="album-name">${deps.escapeHtml(album.name)}</div>
+            <div class="album-artist">${deps.escapeHtml(album.artist)}</div>
+        </div>`;
 }
 
 function albumMatchesLibraryQuery(album) {
@@ -1234,6 +1378,40 @@ async function openSmartTopTracks() {
     }
 }
 
+// Smart playlist of every hearted track: local favorites in library order,
+// then the TIDAL favorite tracks. Built when opened, so it always reflects
+// the current hearts.
+function openSmartFavoriteTracks() {
+    const els = deps.getElements();
+    const tracks = (deps.getState().library.tracks || []).filter(track => track && track.favorite);
+    const tidalTracks = tidalLibraryFavorites('tracks', { ignoreQuery: true });
+    const album = {
+        id: FAVORITE_TRACKS_ID,
+        name: 'Favorite Tracks',
+        artist: 'Hearted Tracks',
+        smart: true,
+    };
+    deps.getState().library.albumDetail = { album, tracks, tidalTracks };
+    deps.getState().library.playlistDetail = null;
+    updateLibraryViewModeToggle();
+    setAlbumCoverImage(els.albumDetailCover, FAVORITE_TRACKS_COVER, album.name);
+    setAlbumDetailBackdrop(FAVORITE_TRACKS_COVER);
+    els.albumDetailName.textContent = album.name;
+    els.albumDetailArtist.textContent = album.artist;
+    updateAlbumFavoriteButton(album);
+    els.albumDetail.querySelectorAll('.album-detail-facts, .album-detail-about').forEach(node => node.remove());
+    renderAlbumDetailTracks();
+    if (els.albumDiscover) {
+        els.albumDiscover.classList.add('hidden');
+        els.albumDiscover.innerHTML = '';
+    }
+    els.albumsGrid.classList.add('hidden');
+    if (els.playlistDetail) els.playlistDetail.classList.add('hidden');
+    els.albumDetail.classList.remove('hidden');
+    updatePlaylistSaveRowVisibility();
+    scrollLibraryDetailToTop();
+}
+
 async function loadAlbumDiscover(albumId) {
     if (!deps.getElements().albumDiscover) return;
     deps.getElements().albumDiscover.classList.remove('hidden');
@@ -1296,14 +1474,19 @@ function renderAlbumDetailTracks() {
     const tracks = query
         ? (detail.tracks || []).filter(track => trackMatchesLibraryQuery(track, query))
         : (detail.tracks || []);
-    const total = (detail.tracks || []).length;
+    // Favorite Tracks also lists TIDAL favorites (TIDAL rows after local).
+    const allTidalTracks = detail.tidalTracks || [];
+    const tidalTracks = query
+        ? allTidalTracks.filter(item => tidalItemSearchText('tracks', item).filter(Boolean).join(' ').toLowerCase().includes(query))
+        : allTidalTracks;
+    const total = (detail.tracks || []).length + allTidalTracks.length;
     const trackCount = query
-        ? `${tracks.length} of ${total} track${total === 1 ? '' : 's'}`
+        ? `${tracks.length + tidalTracks.length} of ${total} track${total === 1 ? '' : 's'}`
         : `${total} track${total === 1 ? '' : 's'}`;
     const album = detail.album;
     deps.getElements().albumDetailCount.textContent = [trackCount, album.release_type, album.year, album.country]
         .filter(Boolean).join(' · ');
-    if (tracks.length === 0) {
+    if (tracks.length === 0 && tidalTracks.length === 0) {
         deps.getElements().albumDetailTracks.innerHTML = '<div class="track-item track-item-empty">No matching tracks.</div>';
         return;
     }
@@ -1322,10 +1505,15 @@ function renderAlbumDetailTracks() {
             }) +
         '</div>';
     }).join('');
+    appendTidalTrackRows(deps.getElements().albumDetailTracks, tidalTracks, {
+        firstIndex: tracks.length + 1,
+        albumContext: true,
+        favoriteClass: 'track-fav',
+    });
     // Whole-row and round play-button clicks both start the track (matching
     // the Tidal detail rows); the selection Plus and favorite button stop
     // propagation themselves.
-    deps.getElements().albumDetailTracks.querySelectorAll('.track-item').forEach(row => {
+    deps.getElements().albumDetailTracks.querySelectorAll('.track-item[data-track-id]').forEach(row => {
         const play = () => playTrackInAlbum(row.dataset.trackId, row.dataset.albumContext);
         row.querySelector('.track-play').addEventListener('click', (event) => {
             event.stopPropagation();
@@ -1375,17 +1563,18 @@ function librarySelectionButtonHtml(trackId, isSelected) {
 // context, selection Plus, favorite, duration. Rows with an index wrap the
 // number and the play button in one leading element so narrow phones can
 // share a single slot; rows without an index keep a lone play button.
-function detailTrackRowHtml({ index, title, sub, album, favoriteButton, selectionButton, duration, thumb }) {
+function detailTrackRowHtml({ index, title, sub, album, favoriteButton, selectionButton, duration, thumb, badge }) {
     const playButton = '<button type="button" class="track-play" aria-label="Play" data-tooltip="Play">▶</button>';
     const lead = index != null
         ? '<span class="track-numplay"><span class="track-index">' + index + '</span>' + playButton + '</span>'
         : playButton;
+    // Optional source mark (TIDAL rows in the Library) leads the sub line.
     return (
         lead +
         (thumb || '') +
         '<div class="track-info">' +
             '<div class="track-title">' + title + '</div>' +
-            (sub ? '<div class="track-sub">' + sub + '</div>' : '') +
+            ((sub || badge) ? '<div class="track-sub">' + (badge || '') + (sub || '') + '</div>' : '') +
         '</div>' +
         (album ? '<div class="track-album">' + album + '</div>' : '') +
         (selectionButton || '') +
@@ -1719,10 +1908,118 @@ function clearTrackSelection() {
     syncRenderedTrackSelection();
 }
 
+function tidalSelectedTrackIds() {
+    const tidal = tidalLibrary();
+    return tidal ? tidal.selectedIds() : [];
+}
+
+// Save row variant per selection: local tracks save a local playlist, TIDAL
+// tracks save to TIDAL (new or existing playlist), a mix cannot be saved yet.
+const PLAYLIST_SAVE_MODES = {
+    local: { placeholder: 'Save as playlist…', save: 'Save', hint: '' },
+    tidal: { placeholder: 'New TIDAL playlist…', save: 'Save as new', hint: '' },
+    mixed: {
+        placeholder: 'Save as playlist…',
+        save: 'Save',
+        hint: 'Local and TIDAL tracks cannot be saved in one playlist yet. Clear one of the selections to save.',
+    },
+};
+
+function applyPlaylistSaveMode(mode) {
+    const els = deps.getElements();
+    const config = PLAYLIST_SAVE_MODES[mode] || PLAYLIST_SAVE_MODES.local;
+    if (els.playlistSaveRow) els.playlistSaveRow.dataset.saveMode = mode;
+    if (els.playlistName) els.playlistName.placeholder = config.placeholder;
+    if (els.savePlaylistBtn) {
+        els.savePlaylistBtn.textContent = config.save;
+        els.savePlaylistBtn.disabled = mode === 'mixed';
+    }
+    const tidalMode = mode === 'tidal';
+    if (els.playlistTidalTarget) {
+        els.playlistTidalTarget.classList.toggle('hidden', !tidalMode);
+        if (tidalMode) populateTidalPlaylistTarget();
+    }
+    if (els.playlistTidalAddBtn) els.playlistTidalAddBtn.classList.toggle('hidden', !tidalMode);
+    if (els.playlistSaveHint) {
+        els.playlistSaveHint.textContent = config.hint;
+        els.playlistSaveHint.classList.toggle('hidden', !config.hint);
+    }
+}
+
+function populateTidalPlaylistTarget() {
+    const select = deps.getElements().playlistTidalTarget;
+    const tidal = tidalLibrary();
+    if (!select || !tidal) return;
+    const current = select.value;
+    const options = tidal.items('playlists')
+        .filter(item => item && item.id != null)
+        .map(item => `<option value="${deps.escapeHtml(item.id)}">${deps.escapeHtml(item.name || 'Playlist')}</option>`)
+        .join('');
+    select.innerHTML = '<option value="">Add to existing TIDAL playlist…</option>' + options;
+    if (current) select.value = current;
+}
+
+async function saveTidalPlaylistFromSelection() {
+    const tidal = tidalLibrary();
+    const els = deps.getElements();
+    const name = (els.playlistName?.value || '').trim();
+    const trackIds = tidalSelectedTrackIds();
+    if (!tidal) return;
+    if (!name) {
+        deps.showToast('Please enter a playlist name', 'error');
+        return;
+    }
+    if (!trackIds.length) {
+        deps.showToast('Select at least 1 track', 'error');
+        return;
+    }
+    els.savePlaylistBtn.disabled = true;
+    try {
+        const data = await tidal.createPlaylist(name, trackIds);
+        if (els.playlistName) els.playlistName.value = '';
+        deps.showToast(`Saved to TIDAL: ${data?.name || name}`, 'success');
+    } catch (e) {
+        deps.showToast(tidal.friendlyError(e?.message || e), 'error');
+    } finally {
+        els.savePlaylistBtn.disabled = false;
+        updatePlaylistSaveRowVisibility();
+    }
+}
+
+async function addSelectionToTidalPlaylist() {
+    const tidal = tidalLibrary();
+    const els = deps.getElements();
+    const select = els.playlistTidalTarget;
+    const playlistId = select?.value || '';
+    const trackIds = tidalSelectedTrackIds();
+    if (!tidal) return;
+    if (!playlistId) {
+        deps.showToast('Choose a TIDAL playlist', 'error');
+        return;
+    }
+    if (!trackIds.length) {
+        deps.showToast('Select at least 1 track', 'error');
+        return;
+    }
+    if (els.playlistTidalAddBtn) els.playlistTidalAddBtn.disabled = true;
+    try {
+        await tidal.addToPlaylist(playlistId, trackIds);
+        const label = select.options?.[select.selectedIndex]?.textContent || 'playlist';
+        deps.showToast(`Added ${trackIds.length} track${trackIds.length === 1 ? '' : 's'} to ${label}`, 'success');
+    } catch (e) {
+        deps.showToast(tidal.friendlyError(e?.message || e), 'error');
+    } finally {
+        if (els.playlistTidalAddBtn) els.playlistTidalAddBtn.disabled = false;
+        updatePlaylistSaveRowVisibility();
+    }
+}
+
 // Conscious end of the playlist-build selection: clears the cross-album
 // selectedTrackIds (+/check marks), the name field, and the save row.
 // Used by the Cancel button; Save calls clearTrackSelection on success.
 function cancelPlaylistSelection() {
+    const tidal = tidalLibrary();
+    if (tidal && tidal.selectedIds().length) tidal.clearSelection();
     clearTrackSelection();
     if (deps.getElements().playlistName) deps.getElements().playlistName.value = '';
     updatePlaylistSaveRowVisibility();
@@ -1758,6 +2055,8 @@ function toggleVisibleTrackSelection() {
 function setLibrarySearchQuery(value) {
     deps.getState().library.searchQuery = value || '';
     updateLibrarySearchControls();
+    // A TIDAL detail is not filtered; the grids apply the query on Back.
+    if (deps.getState().library.tidalDetailOpen) return;
     if (deps.getState().library.viewMode === 'albums' && deps.getState().library.albumDetail) {
         renderAlbumDetailTracks();
     } else if (deps.getState().library.viewMode === 'albums' && deps.getState().library.playlistDetail) {
@@ -1827,6 +2126,16 @@ function dockPlaylistSaveRow() {
     const els = deps.getElements();
     const row = els.playlistSaveRow;
     if (!row || !els.albumDetail || !els.albumDetailTracks) return;
+    // An open TIDAL detail docks the row right below its header.
+    const tidalHeader = deps.getState().library.tidalDetailOpen && els.libraryTidalDetail
+        ? els.libraryTidalDetail.querySelector('.tidal-detail-header')
+        : null;
+    if (tidalHeader && tidalHeader.parentElement) {
+        if (row.parentElement !== tidalHeader.parentElement || row.previousSibling !== tidalHeader) {
+            tidalHeader.parentElement.insertBefore(row, tidalHeader.nextSibling);
+        }
+        return;
+    }
     if (!els.albumDetail.classList.contains('hidden')) {
         if (row.parentElement !== els.albumDetail || row.nextSibling !== els.albumDetailTracks) {
             els.albumDetail.insertBefore(row, els.albumDetailTracks);
@@ -1839,11 +2148,18 @@ function dockPlaylistSaveRow() {
         }
         return;
     }
-    // Home above the lists: the same logical position (before the content)
-    // and the same full width as the docked album-detail row, for Tracks,
-    // Folders, Albums grid and Favorites alike.
+    dockPlaylistSaveRowHome();
+}
+
+// Home above the lists: the same logical position (before the content) and
+// the same full width as the docked album-detail row, for Tracks, Folders,
+// Albums grid and Favorites alike. Also used to move the row out of a TIDAL
+// detail before that detail re-renders (its markup is replaced wholesale).
+function dockPlaylistSaveRowHome() {
+    const els = deps.getElements();
+    const row = els.playlistSaveRow;
     const home = els.tracksList || els.libraryInfo;
-    if (!home) return;
+    if (!row || !home) return;
     if (row.parentElement !== home.parentElement || row.nextSibling !== home) {
         home.parentElement.insertBefore(row, home);
     }
@@ -1851,13 +2167,17 @@ function dockPlaylistSaveRow() {
 
 function updatePlaylistSaveRowVisibility() {
     if (!deps.getElements().playlistSaveRow) return;
-    const count = deps.getState().library.selectedTrackIds.length;
+    const localCount = deps.getState().library.selectedTrackIds.length;
+    const tidalCount = tidalSelectedTrackIds().length;
+    const count = localCount + tidalCount;
     // The playlist-build selection is independent of the view mode: as soon
     // as at least one track is consciously added via the + action (never via
     // playback), the save-playlist row is reachable. Playback never touches
     // selectedTrackIds, so this trigger stays exclusive to the + selection.
     // The playlist detail follows the same selection state as every other
-    // view: with no track selected the row stays hidden.
+    // view: with no track selected the row stays hidden. Local and TIDAL
+    // tracks keep separate selections; the row variant follows their mix.
+    applyPlaylistSaveMode(localCount && tidalCount ? 'mixed' : tidalCount ? 'tidal' : 'local');
     const hasPlaylistSelection = count >= 1;
     const showRow = hasPlaylistSelection;
     deps.getElements().playlistSaveRow.classList.toggle('hidden', !showRow);
@@ -1998,6 +2318,15 @@ function uploadTrackFile() {
 }
 
 async function savePlaylist() {
+    const mode = deps.getElements().playlistSaveRow?.dataset.saveMode || 'local';
+    if (mode === 'tidal') {
+        await saveTidalPlaylistFromSelection();
+        return;
+    }
+    if (mode === 'mixed') {
+        deps.showToast(PLAYLIST_SAVE_MODES.mixed.hint, 'error');
+        return;
+    }
     const trackIds = getSelectedPlayableTrackIds();
     const name = (deps.getElements().playlistName?.value || '').trim();
     if (!name) {
@@ -2442,6 +2771,138 @@ function updateDownloadUI() {
     deps.getElements().downloadStatus.classList.toggle('hidden', !html.trim());
 }
 
+// -- TIDAL detail host, header button and live updates ------------------------
+// TIDAL album/playlist/artist details render into #library-tidal-detail. The
+// streaming module calls onOpen before each render and onClose when the
+// detail chain ends; the save row is moved home first because a TIDAL render
+// replaces the container markup wholesale.
+function attachTidalLibraryHost() {
+    const tidal = tidalLibrary();
+    const container = deps.getElements().libraryTidalDetail;
+    if (!tidal || !container) return;
+    tidal.attachLibraryHost({
+        container,
+        onOpen: showTidalLibraryDetail,
+        onClose: hideTidalLibraryDetail,
+        onRender: () => updatePlaylistSaveRowVisibility(),
+    });
+}
+
+function showTidalLibraryDetail() {
+    const els = deps.getElements();
+    dockPlaylistSaveRowHome();
+    deps.getState().library.tidalDetailOpen = true;
+    [els.albumsGrid, els.tracksList, els.albumDetail, els.playlistDetail, els.libraryFolderPath].forEach(el => {
+        if (el) el.classList.add('hidden');
+    });
+    root.FXRouteContentState?.hide(document.querySelector('#tab-library .content-state'));
+    if (els.libraryTidalDetail) els.libraryTidalDetail.classList.remove('hidden');
+    updateLibraryViewModeToggle();
+}
+
+function hideTidalLibraryDetail() {
+    const els = deps.getElements();
+    deps.getState().library.tidalDetailOpen = false;
+    dockPlaylistSaveRowHome();
+    if (els.libraryTidalDetail) els.libraryTidalDetail.classList.add('hidden');
+    renderLibraryView();
+}
+
+// Library navigation (view tabs, folders) leaves an open TIDAL detail
+// without re-rendering it; the caller renders the target view.
+function leaveTidalLibraryDetail() {
+    const library = deps.getState().library;
+    if (!library.tidalDetailOpen) return;
+    dockPlaylistSaveRowHome();
+    library.tidalDetailOpen = false;
+    const tidal = tidalLibrary();
+    if (tidal) tidal.closeLibraryDetail();
+    deps.getElements().libraryTidalDetail?.classList.add('hidden');
+}
+
+function renderTidalHeaderButton() {
+    const btn = deps.getElements().libraryTidalButton;
+    if (!btn) return;
+    const tidal = tidalLibrary();
+    const connection = tidal ? tidal.connection() : null;
+    // Hidden without an installed, enabled provider: TIDAL stays optional.
+    const usable = !!(connection && connection.usable);
+    btn.classList.toggle('hidden', !usable);
+    if (!usable) return;
+    const connected = connection.authenticated === true;
+    btn.classList.toggle('is-connected', connected);
+    const label = btn.querySelector('.library-tidal-status-label');
+    if (label) label.textContent = connected ? 'TIDAL' : 'Connect TIDAL';
+    const text = connected ? 'TIDAL connected · refresh favorites' : 'Connect TIDAL';
+    btn.setAttribute('aria-label', text);
+    btn.setAttribute('data-tooltip', text);
+}
+
+async function onTidalHeaderButtonClick() {
+    const tidal = tidalLibrary();
+    const btn = deps.getElements().libraryTidalButton;
+    if (!tidal || !btn || btn.disabled) return;
+    if (!tidal.connection().authenticated) {
+        tidal.beginLogin();
+        return;
+    }
+    btn.disabled = true;
+    try {
+        await tidal.refreshCatalog();
+    } finally {
+        btn.disabled = false;
+    }
+}
+
+let tidalConnectionKey = '';
+let tidalRefreshTimer = null;
+
+// Status events arrive on every TIDAL status read; only a changed login
+// re-renders, while a visible Library always (throttled) re-reads the
+// favorite collections.
+function onTidalStatusChanged() {
+    renderTidalHeaderButton();
+    const tidal = tidalLibrary();
+    const connection = tidal ? tidal.connection() : null;
+    const connected = !!(connection && connection.authenticated);
+    if (connected && root.__visibleTab === 'library') void tidal.ensureLibrary();
+    const key = connected ? `on:${connection.userId}` : 'off';
+    if (key === tidalConnectionKey) return;
+    tidalConnectionKey = key;
+    if (!connected && deps.getState().library.tidalDetailOpen) {
+        leaveTidalLibraryDetail();
+        renderLibraryView();
+        return;
+    }
+    scheduleTidalLibraryRender();
+}
+
+// Coalesce bursts of TIDAL data events (snapshot, collections, hearts) into
+// one grid/list render. Open details keep their content.
+function scheduleTidalLibraryRender() {
+    if (tidalRefreshTimer !== null) return;
+    tidalRefreshTimer = setTimeout(() => {
+        tidalRefreshTimer = null;
+        const library = deps.getState().library;
+        if (library.tidalDetailOpen || library.albumDetail || library.playlistDetail) return;
+        if (library.viewMode === 'albums') renderAlbums();
+        else if (library.viewMode === 'tracks') renderTracks();
+    }, 60);
+}
+
+function setupTidalLibrary() {
+    attachTidalLibraryHost();
+    deps.getElements().libraryTidalButton?.addEventListener('click', () => void onTidalHeaderButtonClick());
+    deps.getElements().playlistTidalAddBtn?.addEventListener('click', () => void addSelectionToTidalPlaylist());
+    if (typeof root.addEventListener === 'function') {
+        root.addEventListener('fxroute:tidal-status', onTidalStatusChanged);
+        root.addEventListener('fxroute:tidal-library', scheduleTidalLibraryRender);
+        root.addEventListener('fxroute:tidal-favorites', scheduleTidalLibraryRender);
+        root.addEventListener('fxroute:tidal-selection', () => updatePlaylistSaveRowVisibility());
+    }
+    renderTidalHeaderButton();
+}
+
 // Library actions
 function setupLibraryActions() {
     deps.getElements().refreshLibraryBtn.addEventListener('click', refreshLibrary);
@@ -2527,6 +2988,7 @@ function setupLibraryActions() {
         uploadTrackFile();
     });
     deps.getElements().deleteSelectedTracksBtn.addEventListener('click', deleteSelectedTracks);
+    setupTidalLibrary();
 }
 
     return {
@@ -2555,6 +3017,7 @@ function setupLibraryActions() {
         detailFavoriteButtonHtml,
         detailTrackRowHtml,
         dockPlaylistSaveRow,
+        dockPlaylistSaveRowHome,
         downloadPlaylistById,
         downloadSelectedTracks,
         extractDroppedUrl,
@@ -2586,6 +3049,7 @@ function setupLibraryActions() {
         maybeStartDownloadFromInput,
         openAlbumDetail,
         openPlaylistDetail,
+        openSmartFavoriteTracks,
         openSmartTopTracks,
         playLibraryFolder,
         playTrackInAlbum,
@@ -2607,6 +3071,7 @@ function setupLibraryActions() {
         renderPlaylistDetailInfo,
         renderPlaylistDetailTracks,
         renderTrackFavoriteButton,
+        renderTidalHeaderButton,
         renderTracks,
         resetUploadAreaSelection,
         resolvePlaylistTracks,
@@ -2639,6 +3104,7 @@ function setupLibraryActions() {
         toggleTrackFavoriteById,
         toggleTrackSelected,
         toggleVisibleTrackSelection,
+        tidalLibraryFavorites,
         trackMatchesLibraryQuery,
         trackThumbHtml,
         updateAlbumFavoriteButton,

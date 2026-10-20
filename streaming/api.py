@@ -349,7 +349,10 @@ async def api_streaming_provider_search(provider_id: str, q: str = "", types: st
 async def api_streaming_provider_favorites(
     provider_id: str, limit: int = 50, type: str = "tracks"
 ):
-    """Favorites for one catalog category (tracks/albums/artists)."""
+    """Favorites for one catalog category (tracks/albums/artists).
+
+    ``limit=0`` returns the whole collection instead of the first page.
+    """
     category = (type or "tracks").strip().lower()
     method_name = {
         "tracks": "favorites",

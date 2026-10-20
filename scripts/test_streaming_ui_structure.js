@@ -291,7 +291,8 @@ assert.ok(/#tidal-fav-results[\s\S]*?#tidal-search-items[\s\S]*?margin-top:\s*0\
 // whole track list plus the chosen start id to /api/play.
 assert.ok(js.includes('function renderDetailTracks'),
     'the shared detail track-list renderer must stay');
-assert.ok(js.includes('playTidalTracks(ids, trackId)'),
+assert.ok(js.includes('playTidalTracks(queueIds, trackId)')
+    && extractFunction(js, 'renderDetailTracks').includes('queueIds: ids'),
     'a track click must start the whole queue at that track');
 assert.ok(!js.includes('playTidalTracks(ids, ids[0])'),
     'the Play playlist button must be gone (track click starts the queue)');
@@ -493,7 +494,8 @@ assert.ok(libraryJs.includes('function detailTrackRowHtml('),
 assert.ok(appJs.includes('trackRowHtml: LibraryUI.detailTrackRowHtml'),
     'app.js must pass the shared row builder to streaming.js');
 assert.ok(js.includes('trackRowHtml({'), 'streaming.js must render detail rows via the shared builder');
-assert.ok(js.includes("favoriteButtonHtml('tracks', item.id, 'track-fav')"),
+assert.ok(extractFunction(js, 'renderDetailTracks').includes("favoriteClass: 'track-fav'")
+    && extractFunction(js, 'buildTidalTrackRow').includes("favoriteButtonHtml('tracks', item.id, opts.favoriteClass)"),
     'Tidal detail rows must use the shared track-fav favorite class');
 // Library album detail rows: track number, round play button, artist-only sub
 // line in album context, shared favorite class.
