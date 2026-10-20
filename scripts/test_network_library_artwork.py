@@ -211,7 +211,10 @@ class CoverPublicationTests(unittest.TestCase):
             self.assertEqual(len(list((root / "covers").iterdir())), 1)
 
     def test_concurrent_thumbnails_publish_without_tempfile_collision(self):
-        from PIL import Image
+        try:
+            from PIL import Image
+        except ModuleNotFoundError:
+            self.skipTest("Pillow is optional and not installed")
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             image = root / "cover.jpg"
