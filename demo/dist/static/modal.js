@@ -152,6 +152,21 @@
             return stack.some(entry => entry.root === root);
         }
 
+        function topRoot() {
+            const entry = stack[stack.length - 1];
+            return entry ? entry.root : null;
+        }
+
+        // Remote/keyboard back: close the top entry through the same escape
+        // path its owner registered, so the module and the focus restore stay
+        // in charge. Returns false when no entry has a handler.
+        function closeTop() {
+            const entry = stack[stack.length - 1];
+            if (!entry || typeof entry.onEscape !== 'function') return false;
+            void entry.onEscape();
+            return true;
+        }
+
         document.addEventListener('keydown', event => {
             const entry = stack[stack.length - 1];
             if (!entry) return;
@@ -189,7 +204,7 @@
             }
         }, true);
 
-        return { open, close, isOpen };
+        return { open, close, isOpen, topRoot, closeTop };
     }
 
     function open(root, options) {
@@ -210,10 +225,24 @@
         return isOpen.shared.isOpen(root);
     }
 
+    function topRoot() {
+        if (typeof document === 'undefined') return null;
+        if (!topRoot.shared) topRoot.shared = createFxrouteModalManager();
+        return topRoot.shared.topRoot();
+    }
+
+    function closeTop() {
+        if (typeof document === 'undefined') return false;
+        if (!closeTop.shared) closeTop.shared = createFxrouteModalManager();
+        return closeTop.shared.closeTop();
+    }
+
     return {
         createFxrouteModalManager,
         open,
         close,
         isOpen,
+        topRoot,
+        closeTop,
     };
 });

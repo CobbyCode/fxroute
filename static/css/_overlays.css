@@ -518,3 +518,39 @@ label.effects-delete-item {
 @keyframes toastOut {
     to { opacity: 0; transform: translateX(30px); }
 }
+
+/* Audio input picker (ContextMenu key). The footer <select> remains the
+   single source of truth; this sheet only presents its options for remote
+   and keyboard use. */
+.source-picker-dialog {
+    width: min(420px, 100%);
+}
+.source-picker-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+    margin-top: 0.75rem;
+}
+.source-picker-option {
+    width: 100%;
+    min-height: 2.75rem;
+    padding: 0.6rem 0.8rem;
+    text-align: left;
+    font: inherit;
+    color: var(--text-primary);
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+}
+.source-picker-option:hover {
+    background: var(--bg-hover);
+}
+.source-picker-option[aria-selected="true"] {
+    color: var(--accent);
+    border-color: var(--accent);
+}
+.source-picker-option:disabled {
+    opacity: 0.45;
+    cursor: default;
+}

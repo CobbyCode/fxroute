@@ -65,6 +65,20 @@ The playback bar at the bottom is always visible:
 
 Source and app volumes (Spotify client, Qobuz app) stay separate from the FXRoute master volume. The compact source switcher next to the transport controls selects between app playback, an external input, Bluetooth input, and STDIN.
 
+### 3.1 Remote and keyboard control
+
+FXRoute works from a sofa without an air pointer. A TV remote that sends standard keyboard keys behaves like a keyboard:
+
+- **Arrow keys** move the focus ring to the nearest button, card, tab, menu entry or slider.
+- **Enter** activates the focused control. Focused text fields keep normal typing.
+- **Page Up / Page Down** switch to the previous/next tab of the active tab strip.
+- **Backspace** closes the top dialog or returns from a detail view.
+- **Browser Back** opens and closes Technical settings.
+- **Context menu key** opens and closes the audio input picker.
+- Sliders keep Left/Right for value changes; Up/Down leaves the slider.
+
+Power, volume, mute and play/pause keys keep their system behavior.
+
 [![Beta 14 main view: Radio with saved stations, Station Catalog, playback controls, and L/R/Sub output meters](media/screenshots/radio-overview.png)](media/screenshots/radio-overview.png)
 
 ## 4. Sources

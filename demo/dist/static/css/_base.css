@@ -434,3 +434,13 @@ select.url-input {
     clip-path: inset(50%);
     white-space: nowrap;
 }
+
+/* Remote/keyboard navigation ring (tv_nav.js). The class is applied only
+   when focus moved by a navigation key, so pointer users see no change.
+   Three classes + the focused state make the ring win over the per-widget
+   :focus-visible rules (tabs, cards, buttons) without !important. */
+.tv-nav-focus.tv-nav-focus:focus {
+    outline: 3px solid var(--accent);
+    outline-offset: 2px;
+    box-shadow: 0 0 0 6px rgba(110, 231, 183, 0.22);
+}
