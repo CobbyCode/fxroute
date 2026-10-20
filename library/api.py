@@ -5,6 +5,7 @@
 import asyncio
 import hashlib
 import logging
+import os
 import shutil
 import tempfile
 import zipfile
@@ -21,6 +22,7 @@ import library.playlist_io as playlist_io
 import zip_album
 from library.core import cleanup_track_parent_folder, path_within_root
 from library.metadata import TrackNotFoundError
+from library.network_artwork import ArtworkBusy, artwork_workers
 from uploads import (
     LIBRARY_UPLOAD_MAX_BYTES,
     TEXT_UPLOAD_MAX_BYTES,
@@ -92,6 +94,13 @@ async def _run_blocking(func: Callable[..., Any], *args: Any, **kwargs: Any) -> 
     return await runner(func, *args, **kwargs)
 
 
+async def _run_artwork_blocking(func: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+    try:
+        return await artwork_workers.run(func, *args, **kwargs)
+    except ArtworkBusy as exc:
+        raise HTTPException(status_code=503, detail=str(exc), headers={"Retry-After": "1"}) from exc
+
+
 def _cover_media_type(path: Path) -> str:
     suffix = path.suffix.lower()
     if suffix in {".jpg", ".jpeg"}:
@@ -150,9 +159,14 @@ def _serve_cover_image(image_path: Path, size: int = 256) -> FileResponse:
         # Keep the image suffix last so Pillow can infer the encoder for the
         # atomic temporary write (e.g. ``cover.tmp.jpg`` rather than
         # ``cover.jpg.tmp``).
-        tmp = cached.with_name(f"{cached.stem}.tmp{cached.suffix}")
-        img.save(str(tmp), **save_kwargs)
-        tmp.replace(cached)
+        fd, name = tempfile.mkstemp(prefix=f".{cache_key}-", suffix=suffix, dir=ALBUM_COVER_CACHE_DIR)
+        os.close(fd)
+        tmp = Path(name)
+        try:
+            img.save(str(tmp), **save_kwargs)
+            tmp.replace(cached)
+        finally:
+            tmp.unlink(missing_ok=True)
     return FileResponse(str(cached), media_type=_cover_media_type(cached))
 
 
@@ -236,9 +250,14 @@ def _cached_embedded_cover(track_id: str, track_path: Path) -> tuple[Optional[Pa
     suffix = ".png" if mime == "image/png" else ".webp" if mime == "image/webp" else ".jpg"
     COVER_CACHE_DIR.mkdir(parents=True, exist_ok=True)
     cached = COVER_CACHE_DIR / f"{cache_key}{suffix}"
-    tmp = cached.with_suffix(cached.suffix + ".tmp")
-    tmp.write_bytes(data)
-    tmp.replace(cached)
+    fd, name = tempfile.mkstemp(prefix=f".{cache_key}-", suffix=suffix, dir=COVER_CACHE_DIR)
+    tmp = Path(name)
+    try:
+        with os.fdopen(fd, "wb") as output:
+            output.write(data)
+        tmp.replace(cached)
+    finally:
+        tmp.unlink(missing_ok=True)
     return cached, mime or _cover_media_type(cached)
 
 
@@ -306,7 +325,11 @@ async def list_tracks():
 @router.get("/api/tracks/file/{track_id:path}")
 async def download_track_file(track_id: str):
     library_scanner, settings = _library_runtime()
-    tracks_by_id = {track.id: track for track in await _run_blocking(library_scanner.get_tracks, authoritative=True)}
+    return await _run_artwork_blocking(_track_file_response, track_id, library_scanner, settings)
+
+
+def _track_file_response(track_id: str, library_scanner, settings):
+    tracks_by_id = {track.id: track for track in library_scanner.get_tracks(authoritative=True)}
     track = tracks_by_id.get(track_id)
     if not track or not track.path:
         raise HTTPException(status_code=404, detail="Track not found")
@@ -321,7 +344,11 @@ async def download_track_file(track_id: str):
 @router.get("/api/tracks/cover/{track_id:path}")
 async def get_track_cover(track_id: str):
     library_scanner, settings = _library_runtime()
-    tracks_by_id = {track.id: track for track in await _run_blocking(library_scanner.get_tracks, authoritative=True)}
+    return await _run_artwork_blocking(_track_cover_response, track_id, library_scanner, settings)
+
+
+def _track_cover_response(track_id: str, library_scanner, settings):
+    tracks_by_id = {track.id: track for track in library_scanner.get_tracks(authoritative=True)}
     track = tracks_by_id.get(track_id)
     if not track or not track.path:
         raise HTTPException(status_code=404, detail="Track not found")
@@ -348,7 +375,11 @@ async def get_track_cover(track_id: str):
 @router.get("/api/tracks/cover-info/{track_id:path}")
 async def get_track_cover_info(track_id: str):
     library_scanner, _settings = _library_runtime()
-    tracks = await _run_blocking(library_scanner.get_tracks, authoritative=True)
+    return await _run_artwork_blocking(_track_cover_info, track_id, library_scanner)
+
+
+def _track_cover_info(track_id: str, library_scanner):
+    tracks = library_scanner.get_tracks(authoritative=True)
     return {"available": _track_cover_available(track_id, tracks=tracks)}
 
 
@@ -494,10 +525,13 @@ async def get_album_cover(album_id: str, size: int = 256):
     library_scanner, _settings = _library_runtime()
     if not library_scanner:
         raise HTTPException(status_code=503, detail="Library not available")
-    tracks = await _run_blocking(library_scanner.get_album_tracks, album_id, authoritative=True)
+    return await _run_artwork_blocking(_album_cover_response, album_id, size, library_scanner)
+
+
+def _album_cover_response(album_id: str, size: int, library_scanner):
+    tracks = library_scanner.get_album_tracks(album_id, authoritative=True)
     if not tracks:
         raise HTTPException(status_code=404, detail="Album not found")
-
     # Try folder cover first (from any track in the album)
     for track in tracks:
         if not track.path:

@@ -689,6 +689,7 @@ from library.api import (
     router as library_api_router,
 )
 from library.metadata import LibraryMetadataStore
+from library.network_artwork import NetworkCoverCache
 
 
 @dataclass
@@ -698,11 +699,13 @@ class MusicLibraryRuntime:
     manager: Any = None
     scanner: Any = None
     switch_lock: Optional[asyncio.Lock] = None
+    network_cover_cache: NetworkCoverCache = field(default_factory=NetworkCoverCache)
 
     def reset(self) -> None:
         self.manager = None
         self.scanner = None
         self.switch_lock = None
+        self.network_cover_cache = NetworkCoverCache()
 
 
 @dataclass(frozen=True)
@@ -2620,7 +2623,16 @@ def _playback_track_with_artwork_fields(track_info: Optional[dict]) -> Optional[
         track["artwork_source"] = "none"
         return track
     try:
-        cover_available = bool(runtime.music_library.scanner and _track_cover_available(track_id))
+        library_manager = runtime.music_library.manager
+        if library_manager is not None and library_manager.active_type in {"smb", "nfs"}:
+            cover_available = runtime.music_library.network_cover_cache.get(
+                (library_manager.capture_context(), track_id),
+                lambda: _track_cover_available(track_id),
+                _create_lifecycle_background_task,
+                initial=bool(track.get("cover_available")),
+            )
+        else:
+            cover_available = bool(runtime.music_library.scanner and _track_cover_available(track_id))
     except Exception as exc:
         logger.debug("Failed to resolve playback cover availability for %s: %s", track_id, exc)
         cover_available = False
