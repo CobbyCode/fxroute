@@ -437,8 +437,13 @@
     }
 
     function findBackControl(doc) {
-        const control = doc.querySelector(BACK_CONTROL_SELECTOR);
-        return control && isVisible(control) ? control : null;
+        // Every detail view keeps its back button in the DOM; only the one of
+        // the visible view counts. The first match in document order is often
+        // a hidden button of another tab.
+        for (const control of doc.querySelectorAll(BACK_CONTROL_SELECTOR)) {
+            if (isVisible(control)) return control;
+        }
+        return null;
     }
 
     function goBack(doc) {

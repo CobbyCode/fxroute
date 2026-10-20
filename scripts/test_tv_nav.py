@@ -186,6 +186,25 @@ def _run():
             check("Enter activates a native button once",
                   page.evaluate("window.__nativeClicks") == 1)
 
+            # Backspace uses the visible back control of a detail view, not a
+            # hidden back button of another tab that comes first in the DOM.
+            page.evaluate("""() => {
+                const back = document.createElement('button');
+                back.id = 'tv-nav-test-back';
+                back.className = 'album-detail-back';
+                back.textContent = 'Back';
+                back.addEventListener('click', () => {
+                    window.__backClicks = (window.__backClicks || 0) + 1;
+                });
+                document.getElementById('tab-radio').appendChild(back);
+            }""")
+            page.focus("#tv-nav-native")
+            page.keyboard.press("Backspace")
+            page.wait_for_timeout(120)
+            check("Backspace activates the visible back control",
+                  page.evaluate("window.__backClicks") == 1)
+            page.evaluate("document.getElementById('tv-nav-test-back').remove()")
+
             # Text entry keeps every native key, including Backspace.
             page.focus("#station-search")
             page.keyboard.type("ab")
