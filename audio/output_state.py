@@ -312,13 +312,15 @@ def routing_for_device(state: dict, mode: str, output_key: str, channels: int | 
     A non-HDMI device with exactly two hardware outputs plays Out 1 = Main L
     and Out 2 = Main R. HDMI retains its configured receiver-channel mapping.
     Passing the effective channel count returns that fixed mapping so every
-    caller renders the same topology instead of slicing a stale stored list.
+    caller renders the same topology. It also bounds a migrated routing list to
+    the device's real outputs; wider stored ways stay for a wider device state.
 
     Crossover-path assignments outside the mode's current domain are dormant
     and read as Off here, so with the crossover off the stored ways never
     reach the plan, the meters or the routing grid.
     """
     roles_for_mode(mode)
+    count = None
     if channels is not None:
         try:
             count = int(channels)
@@ -330,6 +332,8 @@ def routing_for_device(state: dict, mode: str, output_key: str, channels: int | 
     fallback = [] if config["crossover_enabled"] else list(MAIN_ROLES)
     saved = hdmi.stored_routing(config["routing"], _device_identity(output_key))
     stored = list(saved if saved is not None else fallback)
+    if count is not None and count > 0:
+        stored = stored[:count]
     dormant = set(dormant_roles(mode, crossover_enabled=config["crossover_enabled"]))
     return ["off" if role in dormant else role for role in stored]
 
@@ -400,11 +404,13 @@ def set_mode_routing(state: dict, mode: str, output_key: str, assignments: objec
     return validate_output_state(result)
 
 
-def seed_device_routing(state: dict, output_key: str, assignments_by_mode: dict) -> dict:
+def seed_device_routing(state: dict, output_key: str, assignments_by_mode: dict, *,
+                        capacity: int | None = None) -> dict:
     """Store default routing for the modes that have none for this device yet.
 
     A stored routing, edited or not, is never replaced, and a mode with the
-    crossover on keeps the existing no-default behavior.
+    crossover on keeps the existing no-default behavior. A migrated legacy
+    routing is limited to ``capacity``, the device's real output count.
     """
     result = validate_output_state(state)
     key = hdmi.routing_key(_device_identity(output_key))
@@ -414,7 +420,7 @@ def seed_device_routing(state: dict, output_key: str, assignments_by_mode: dict)
         if key in config["routing"]:
             continue
         if saved is not None:
-            config["routing"][key] = list(saved)
+            config["routing"][key] = list(saved[:capacity] if capacity is not None and capacity > 0 else saved)
         elif assignments and not config["crossover_enabled"]:
             result = set_mode_routing(result, mode, output_key, assignments)
     return result

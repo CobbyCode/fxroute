@@ -689,15 +689,13 @@ def _annotate_hdmi_outputs(outputs: list[dict[str, Any]], sink_details: dict[str
     except (RuntimeError, ValueError) as exc:
         notes.append(f"HDMI card profiles unavailable: {exc}")
         cards = []
-    desired = hdmi.load_desired()
     for item in entries:
         sink = hdmi.parse_sink_key(item["key"])
         details = sink_details.get(item["key"]) or {}
         card_number, device = str(details.get("alsa_card") or ""), str(details.get("alsa_device") or "")
         raw = (alsa_ctl.read_pcm_eld(int(card_number), int(device))
                if card_number.isdigit() and device.isdigit() else None)
-        info = hdmi.describe(item["key"], card=hdmi.find_card(cards, sink.card), eld=hdmi.parse_eld(raw),
-                             desired=desired.get(sink.identity))
+        info = hdmi.describe(item["key"], card=hdmi.find_card(cards, sink.card), eld=hdmi.parse_eld(raw))
         info["pcm_device"] = int(device) if device.isdigit() else None
         item["hdmi"] = info
         item["native_supported_rates"] = hdmi.limit_rates(item.get("native_supported_rates") or [], info)

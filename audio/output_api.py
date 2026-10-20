@@ -170,7 +170,7 @@ def output_channel_labels(overview: dict, output_key: str) -> list:
         return []
     mode = overview.get("output_mode") or {}
     ports = mode.get("hardware_playback_ports") or mode.get("hardware_playback_ports_from_channel_map") or []
-    return hdmi.channel_labels(hdmi.overview_routing_ports(overview, len(ports)))
+    return hdmi.channel_labels(hdmi.overview_routing_ports(overview, len(ports)), hdmi=True)
 
 
 def output_state_response(state: dict, overview: dict) -> dict:
@@ -179,7 +179,8 @@ def output_state_response(state: dict, overview: dict) -> dict:
     if capacity is not None:
         channels = capacity
         state = seed_device_routing(state, output_key, {
-            mode: hdmi.default_assignments(hdmi.overview_routing_ports(overview, capacity), mode) for mode in MODES})
+            mode: hdmi.default_assignments(hdmi.overview_routing_ports(overview, capacity), mode, hdmi=True)
+            for mode in MODES}, capacity=capacity)
     modes = {}
     for mode, config in state["modes"].items():
         topology = output_state_topology(state, mode, output_key, channels)
@@ -200,8 +201,8 @@ def output_state_response(state: dict, overview: dict) -> dict:
     return {
         "status": "ok", "revision": state["revision"], "active_mode": state["active_mode"],
         "device": {"key": output_key, "channels": channels, "hdmi": hdmi.is_hdmi_key(output_key),
-                   "channel_labels": (hdmi.channel_labels(hdmi.overview_routing_ports(overview, capacity)) if capacity is not None
-                                      else output_channel_labels(overview, output_key)),
+                   "channel_labels": (hdmi.channel_labels(hdmi.overview_routing_ports(overview, capacity), hdmi=True)
+                                      if capacity is not None else output_channel_labels(overview, output_key)),
                    "routing": {mode: routing_for_device(state, mode, output_key, channels) for mode in MODES}},
         "modes": modes,
         "capabilities": {

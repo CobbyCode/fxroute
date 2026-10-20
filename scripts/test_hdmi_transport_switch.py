@@ -19,10 +19,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import main
 from audio import hdmi
-from audio.output_state import routing_for_device, switch_mode
+from audio.output_state import routing_for_device, set_mode_routing, switch_mode
 from scripts.test_output_state_api import make_manager, make_service
 from audio.samplerate import _load_audio_output_selection, _save_audio_output_selection
-from test_hdmi_transport import CARD, MARANTZ_ELD, PORTS_51, PORTS_71, STEREO, SURROUND, SURROUND71, card, tv_eld
+from test_hdmi_transport import (CARD, MARANTZ_ELD, PORTS_51, PORTS_71, STEREO, SURROUND, SURROUND71, card,
+                                 surround_eld, tv_eld)
 
 
 class HdmiTransportSwitchTests(unittest.IsolatedAsyncioTestCase):
@@ -263,8 +264,8 @@ class HdmiTransportSwitchTests(unittest.IsolatedAsyncioTestCase):
         self.selections.append(key)
         if seed_routing:
             await asyncio.to_thread(main._seed_hdmi_routing, key, self.overview())
-        # The overview the selection returns already names the chosen layout.
-        self.desired_during_selection = hdmi.load_desired().get(f"{CARD}#hdmi0")
+        # The connector record is stored before the selection returns.
+        self.connector_during_selection = hdmi.load_connectors().get(f"{CARD}#hdmi0")
         if key in self.fail_selection:
             raise RuntimeError("graph apply failed")
         channels = hdmi.transport(hdmi.parse_sink_key(key).transport)["channels"]
@@ -287,14 +288,14 @@ class HdmiTransportSwitchTests(unittest.IsolatedAsyncioTestCase):
     def profile_changes(self):
         return [command[3] for command in self.commands if command[:2] == ["pactl", "set-card-profile"]]
 
-    async def test_layout_change_keeps_the_analog_input_and_remembers_the_choice(self):
+    async def test_layout_change_keeps_the_analog_input_of_the_connector(self):
         result = await self.change()
         self.assertEqual(result["selected_output"]["key"], SURROUND71)
         self.assertEqual(self.profile_changes(), ["output:hdmi-surround71+input:analog-stereo"])
         self.assertEqual(self.selections, [SURROUND71])
-        self.assertEqual(hdmi.load_desired()[f"{CARD}#hdmi0"],
-                         {"transport": "7.1", "input": "analog-stereo", "pcm_device": 3})
-        self.assertEqual(self.desired_during_selection["transport"], "7.1")
+        self.assertEqual(hdmi.load_connectors()[f"{CARD}#hdmi0"],
+                         {"input": "analog-stereo", "pcm_device": 3})
+        self.assertEqual(self.connector_during_selection, {"input": "analog-stereo", "pcm_device": 3})
 
     async def test_failed_selection_restores_the_previous_profile_and_output(self):
         self.fail_selection.add(SURROUND71)
@@ -305,14 +306,15 @@ class HdmiTransportSwitchTests(unittest.IsolatedAsyncioTestCase):
                                                   "output:hdmi-stereo+input:analog-stereo"])
         self.assertEqual(self.selections, [SURROUND71, STEREO])
         self.assertEqual(_load_audio_output_selection()["selected_key"], STEREO)
-        self.assertEqual(hdmi.load_desired(), {})
+        self.assertEqual(hdmi.load_connectors(), {})
 
     async def test_failed_change_keeps_the_previous_choice(self):
         await self.change(transport="5.1")
         self.fail_selection.add(SURROUND71)
         with self.assertRaises(HTTPException):
             await self.change(key=hdmi.sink_key(CARD, 0, "5.1"))
-        self.assertEqual(hdmi.load_desired()[f"{CARD}#hdmi0"]["transport"], "5.1")
+        self.assertEqual(hdmi.load_connectors()[f"{CARD}#hdmi0"],
+                         {"input": "analog-stereo", "pcm_device": 3})
 
     async def test_receiver_without_the_layout_is_refused(self):
         self.eld = tv_eld()
@@ -385,15 +387,14 @@ class HdmiTransportSwitchTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(main.runtime.hdmi_transport_change_depth, 0)
         self.assertIsNone(main.runtime.hdmi_transport_change_owner)
 
-    async def test_mode_switch_prelude_waits_for_an_in_flight_transport_change(self):
+    async def test_transport_wait_is_bounded_and_reports_the_timeout(self):
+        self.addCleanup(self.clear_transport_change)
         main.runtime.hdmi_transport_change_depth = 1
-        waiter = asyncio.create_task(main._wait_for_hdmi_transport_change())
-        try:
-            await asyncio.sleep(0.2)
-            self.assertFalse(waiter.done(), "The prelude must wait out the transport change")
-        finally:
-            main.runtime.hdmi_transport_change_depth = 0
-        await asyncio.wait_for(waiter, 2)
+        with mock.patch.object(main, "HDMI_TRANSPORT_CHANGE_WAIT_SECONDS", 0.05):
+            self.assertFalse(await main._wait_for_hdmi_transport_change("test"),
+                             "A stuck change must report the timeout")
+        self.clear_transport_change()
+        self.assertTrue(await main._wait_for_hdmi_transport_change("test"))
 
     def switch_mode_request(self, mode="surround"):
         return SimpleNamespace(json=lambda: asyncio.sleep(0, result={
@@ -411,16 +412,38 @@ class HdmiTransportSwitchTests(unittest.IsolatedAsyncioTestCase):
         main.runtime.hdmi_transport_change_depth = 0
         main.runtime.hdmi_transport_change_owner = None
 
-    async def test_input_latency_read_waits_out_a_transport_change(self):
+    async def test_transition_latency_read_waits_out_a_transport_change(self):
+        self.addCleanup(self.clear_transport_change)
+        main.runtime.hdmi_transport_change_depth = 1
+        runtime_patch, reader_patch, helper_patch = self.latency_patches()
+
+        async def read():
+            with main._hdmi_transition_scope():
+                return await main._electronic_input_latency_ms()
+
+        with runtime_patch, reader_patch, helper_patch:
+            task = asyncio.create_task(read())
+            await asyncio.sleep(0.2)
+            self.assertFalse(task.done(), "A mode-switch SRC read must wait for the connector swap")
+            self.clear_transport_change()
+            self.assertEqual(await asyncio.wait_for(task, 5), 0.0)
+
+    async def test_independent_latency_read_never_waits_for_a_transport_change(self):
         self.addCleanup(self.clear_transport_change)
         main.runtime.hdmi_transport_change_depth = 1
         runtime_patch, reader_patch, helper_patch = self.latency_patches()
         with runtime_patch, reader_patch, helper_patch:
-            task = asyncio.create_task(main._electronic_input_latency_ms())
-            await asyncio.sleep(0.2)
-            self.assertFalse(task.done(), "The SRC read must wait for the connector swap")
-            self.clear_transport_change()
-            self.assertEqual(await asyncio.wait_for(task, 5), 0.0)
+            self.assertEqual(await asyncio.wait_for(main._electronic_input_latency_ms(), 1), 0.0)
+
+    async def test_scoped_latency_read_reports_a_stuck_transport_change(self):
+        self.addCleanup(self.clear_transport_change)
+        main.runtime.hdmi_transport_change_depth = 1
+        runtime_patch, reader_patch, helper_patch = self.latency_patches()
+        with runtime_patch, reader_patch, helper_patch, \
+                mock.patch.object(main, "HDMI_TRANSPORT_CHANGE_WAIT_SECONDS", 0.05), \
+                main._hdmi_transition_scope(), \
+                self.assertRaisesRegex(RuntimeError, "still in progress"):
+            await main._electronic_input_latency_ms()
 
     async def test_transport_change_reads_its_own_input_latency_without_waiting(self):
         self.addCleanup(self.clear_transport_change)
@@ -429,6 +452,38 @@ class HdmiTransportSwitchTests(unittest.IsolatedAsyncioTestCase):
         runtime_patch, reader_patch, helper_patch = self.latency_patches()
         with runtime_patch, reader_patch, helper_patch:
             self.assertEqual(await asyncio.wait_for(main._electronic_input_latency_ms(), 1), 0.0)
+
+    async def test_switch_mode_route_rejects_a_stuck_transport_change(self):
+        applied = asyncio.Event()
+
+        async def apply(body):
+            applied.set()
+            return {"status": "ok"}
+
+        self.addCleanup(self.clear_transport_change)
+        main.runtime.hdmi_transport_change_depth = 1
+        with mock.patch.object(main, "HDMI_TRANSPORT_CHANGE_WAIT_SECONDS", 0.05), \
+                mock.patch.object(main.output_application, "apply", side_effect=apply):
+            with self.assertRaises(HTTPException) as failure:
+                await main.apply_audio_output_state(self.switch_mode_request())
+        self.assertEqual(failure.exception.status_code, 503)
+        self.assertFalse(applied.is_set(), "A stuck change must stop the transition")
+
+    async def test_migrated_routing_cannot_request_a_wider_transport(self):
+        self.eld = surround_eld()
+        legacy = ["main_l", "main_r", "side_l", "side_r", "center", "sub1", "side_l", "side_r"]
+        state = set_mode_routing(switch_mode(self.service.load(), "surround"), "surround", "legacy-device", legacy)
+        state["modes"]["surround"]["routing"][SURROUND71] = \
+            state["modes"]["surround"]["routing"].pop("legacy-device")
+        self.service.commit_unowned(state, expected_revision=self.service.load()["revision"])
+        main._seed_hdmi_routing(self.sink, self.overview())
+        connector = f"{CARD}#hdmi0"
+        self.assertEqual(self.service.load()["modes"]["surround"]["routing"][connector], legacy[:6])
+        # The 5.1 receiver reaches the transport its bounded routing needs.
+        await main._reconcile_hdmi_transport()
+        await main._reconcile_hdmi_transport()
+        self.assertEqual(self.profile_changes(), ["output:hdmi-surround+input:analog-stereo"])
+        self.assertEqual(self.service.load()["modes"]["surround"]["routing"][connector], legacy[:6])
 
     async def test_switch_mode_route_waits_out_a_transport_change_before_applying(self):
         applied = asyncio.Event()

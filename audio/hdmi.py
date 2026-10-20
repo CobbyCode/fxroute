@@ -296,36 +296,47 @@ def _port_suffix(port: object) -> str:
     return str(port or "").rsplit(":", 1)[-1].removeprefix("playback_")
 
 
-def channel_labels(ports: Iterable[object]) -> list[str | None]:
-    """Receiver channel name per hardware port, e.g. ``Center`` or ``LFE``.
+def channel_labels(ports: Iterable[object], *, hdmi: bool = False) -> list[str | None]:
+    """Channel name per hardware port, e.g. ``Center`` or ``LFE``.
 
-    ACP's single RL/RR pair in 5.1 carries the CEA Side surrounds.
+    ``hdmi`` maps a six-port layout's single RL/RR pair to the CEA Side
+    surrounds. Other devices keep their own RL/RR positions and call such a
+    pair ``Surround L/R``.
     """
-    return [_POSITION_LABELS.get(suffix) for suffix in _receiver_positions(ports)]
+    if hdmi:
+        return [_POSITION_LABELS.get(suffix) for suffix in _receiver_positions(ports)]
+    suffixes = [_port_suffix(port) for port in ports]
+    surround_only = not {"SL", "SR"} & set(suffixes)
+    labels: list[str | None] = []
+    for suffix in suffixes:
+        labels.append(f"Surround {suffix[1]}" if surround_only and suffix in ("RL", "RR")
+                      else _POSITION_LABELS.get(suffix))
+    return labels
 
 
 def _receiver_positions(ports: Iterable[object]) -> list[str]:
+    """CEA receiver positions: a 5.1 layout's RL/RR pair is the Side surrounds."""
     suffixes = [_port_suffix(port) for port in ports]
     if len(suffixes) == 6 and not {"SL", "SR"} & set(suffixes):
         return [{"RL": "SL", "RR": "SR"}.get(suffix, suffix) for suffix in suffixes]
     return suffixes
 
 
-def default_assignments(ports: Iterable[object], mode: str) -> list[str] | None:
+def default_assignments(ports: Iterable[object], mode: str, *, hdmi: bool = False) -> list[str] | None:
     """Default role per hardware port for one output mode, or None.
 
     Front L/R play Main, LFE the single sub, and in Surround every other
     receiver channel its own speaker. Ports without a known position stay Off.
+    ``hdmi`` applies the CEA Side mapping of :func:`channel_labels`.
     """
-    suffixes = _receiver_positions(ports)
+    suffixes = _receiver_positions(ports) if hdmi else [_port_suffix(port) for port in ports]
     if mode not in _MODE_ROLES or "FL" not in suffixes or "FR" not in suffixes:
         return None
     allowed = _MODE_ROLES[mode]
     return [_DEFAULT_ROLES[suffix] if _DEFAULT_ROLES.get(suffix) in allowed else "off" for suffix in suffixes]
 
 
-def describe(key: str, *, card: Mapping[str, Any] | None, eld: Mapping | None,
-             desired: Mapping | None = None) -> dict | None:
+def describe(key: str, *, card: Mapping[str, Any] | None, eld: Mapping | None) -> dict | None:
     """Overview payload of one HDMI sink: connector, receiver and transports."""
     sink = parse_sink_key(key)
     if sink is None:
@@ -343,8 +354,7 @@ def describe(key: str, *, card: Mapping[str, Any] | None, eld: Mapping | None,
                     "lpcm_rates": [], "source": "pipewire"}
     return {"identity": sink.identity, "card": sink.card, "connector": sink.connector,
             "port": port_name, "transport": sink.transport, "transports": options,
-            "receiver": receiver, "active_profile": card.get("active_profile"),
-            "desired_transport": (desired or {}).get("transport")}
+            "receiver": receiver, "active_profile": card.get("active_profile")}
 
 
 def limit_rates(rates: Iterable[int], hdmi_info: Mapping | None) -> list[int]:
@@ -434,39 +444,49 @@ def probe_connector(sink: HdmiSink, *, cards: Iterable[Mapping], sinks: Iterable
 
 
 def _store_path() -> Path:
+    """Connector state file; the name predates the routing-derived transport."""
     config_root = Path(os.environ.get("XDG_CONFIG_HOME") or (Path.home() / ".config"))
     return config_root / "fxroute" / "hdmi-transport.json"
 
 
-def load_desired() -> dict[str, dict]:
-    """Transport chosen in FXRoute per connector identity."""
+def _connector_record(record: Mapping) -> dict:
+    pcm_device = record.get("pcm_device")
+    return {"input": record.get("input") if isinstance(record.get("input"), str) else None,
+            "pcm_device": pcm_device if type(pcm_device) is int else None}
+
+
+def load_connectors() -> dict[str, dict]:
+    """Stored input mapping and PCM device per connector identity.
+
+    Records written by earlier versions also carried the chosen transport; it is
+    ignored because the transport now follows the routing and the receiver's
+    capacity.
+    """
     try:
         payload = json.loads(_store_path().read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
-    connectors = payload.get("connectors") if isinstance(payload, dict) else None
-    if not isinstance(connectors, dict):
+    records = payload.get("connectors") if isinstance(payload, dict) else None
+    if not isinstance(records, dict):
         return {}
-    return {identity: dict(record) for identity, record in connectors.items()
-            if isinstance(record, dict) and record.get("transport") in _BY_ID}
+    return {str(identity): _connector_record(record) for identity, record in records.items()
+            if isinstance(record, dict)}
 
 
-def store_desired(identity: str, record: dict | None) -> None:
-    """Replace (or with None remove) the chosen transport of one connector."""
-    connectors = load_desired()
+def store_connector(identity: str, record: Mapping | None) -> None:
+    """Replace (or with None remove) the stored record of one connector."""
+    connectors = load_connectors()
     if record is None:
         connectors.pop(identity, None)
     else:
-        transport(record["transport"])
-        connectors[identity] = dict(record)
-    atomic_write_text(_store_path(), json.dumps({"version": 1, "connectors": connectors},
+        connectors[identity] = _connector_record(record)
+    atomic_write_text(_store_path(), json.dumps({"version": 2, "connectors": connectors},
                                                 indent=2, sort_keys=True) + "\n")
 
 
-def remember_desired(sink: HdmiSink, transport_id: str, *, input_mapping: str | None,
-                     pcm_device: int | None) -> None:
-    store_desired(sink.identity, {"transport": transport_id, "input": input_mapping,
-                                  "pcm_device": pcm_device})
+def remember_connector(sink: HdmiSink, *, input_mapping: str | None, pcm_device: int | None) -> None:
+    """Keep the connector's input mapping and PCM device for a later reconnect."""
+    store_connector(sink.identity, {"input": input_mapping, "pcm_device": pcm_device})
 
 
 class TransportWatch:

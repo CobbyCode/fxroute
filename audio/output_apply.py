@@ -207,7 +207,8 @@ class OutputApplication:
                                 channels=capacity or channels)
         try:
             base = (seed_device_routing(state, output_key, {
-                mode: hdmi.default_assignments(hdmi.overview_routing_ports(overview, capacity), mode) for mode in MODES})
+                mode: hdmi.default_assignments(hdmi.overview_routing_ports(overview, capacity), mode, hdmi=True)
+                for mode in MODES}, capacity=capacity)
                 if capacity is not None and capacity > 2 else state)
             candidate = await asyncio.to_thread(mutate, base)
             if (body.get("mutation") or {}).get("kind") == "switch_mode":
