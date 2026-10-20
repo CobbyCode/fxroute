@@ -176,8 +176,8 @@ assert.ok(resolveByName.includes('resolveTidalArtistMatch(name)'),
     'similar-artist navigation must reuse the shared artist lookup');
 assert.ok(resolveByName.includes('openTidalSimilarArtistDetail(match.id, match.name || name, match.art_url'),
     'a single unique match must open the matching TIDAL artist through the similar-artist detail');
-assert.ok(resolveByName.includes('showTidalSearchResultsFor(name)'),
-    'an ambiguous fallback must reuse the existing search-result flow');
+assert.ok(resolveByName.includes('searchArtistInLibrary(name)'),
+    'an ambiguous fallback must run the name through the Library search');
 assert.ok(resolveByName.includes('detailRequestId !== state.tidal.detailRequestId') && resolveByName.includes('isTidalDetailView()'),
     'late similar-artist navigation must be ignored after leaving the detail');
 
@@ -187,11 +187,9 @@ assert.ok(resolveMatch.includes('artistLookupCache') && resolveMatch.includes('a
 assert.ok(resolveMatch.includes("'/api/streaming/tidal/search?q='"),
     'similar-art lookup must use the normal TIDAL artist search endpoint');
 
-const searchFallback = extractFunction(js, 'showTidalSearchResultsFor');
-assert.ok(searchFallback.includes('searchQuery = name') && searchFallback.includes("searchResultType = 'artists'"),
-    'the fallback must seed the permanent search bar with the artist name');
-assert.ok(searchFallback.includes("executeTidalSearch('artists')"),
-    'the fallback must render results through the existing executed-search flow');
+const libraryFallback = extractFunction(js, 'searchArtistInLibrary');
+assert.ok(libraryFallback.includes('closeTidalLibraryDetail()') && libraryFallback.includes("libraryHost.search(name, 'artists')"),
+    'the fallback must leave the detail and search the artist name in the Library results');
 
 // --- no live per-keystroke similar search -----------------------------------
 assert.ok(!js.includes("openTidalSimilarArtist((input.value || '').trim())"),

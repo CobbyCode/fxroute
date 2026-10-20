@@ -818,6 +818,17 @@ function coverQueuePlayTarget(playback, index) {
     if (index === queue.index) return null;
     const track = tracks[index];
     if (!track || !track.id) return null;
+    // A queue with TIDAL entries (alone or mixed with local ones) is replayed
+    // by reference, so every entry keeps its own source.
+    if (tracks.some(item => item && item.source === 'tidal')) {
+        return {
+            source: track.source === 'tidal' ? 'tidal' : 'local',
+            track_id: track.id,
+            queue_refs: tracks.map(item => (item.source === 'tidal' ? 'tidal:' : '') + item.id),
+            shuffle: !!queue.shuffle,
+            loop: !!queue.loop,
+        };
+    }
     return {
         source: 'local',
         track_id: track.id,
@@ -1601,7 +1612,7 @@ function updateFooterForStreamingOwner(data) {
 function renderFooterFavoriteFromTidalChange() {
     // The footer heart mirrors the current TIDAL track favorite. Called on
     // every canonical favorites change so the footer never drifts from the
-    // state the TIDAL tab/detail rows use.
+    // state the Library TIDAL rows and details use.
     deps.renderTrackFavoriteButton(deps.getState().playback.current_track);
 }
 

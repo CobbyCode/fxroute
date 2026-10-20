@@ -51,6 +51,9 @@ class PlayRequest(BaseModel):
     track_id: str
     url: Optional[str] = None
     queue_track_ids: Optional[list[str]] = None
+    # Ordered queue that may mix local ids and ``tidal:<id>`` references.
+    # When set it replaces ``queue_track_ids``.
+    queue_refs: Optional[list[str]] = None
     shuffle: bool = False
     loop: bool = False
 
@@ -58,6 +61,8 @@ class PlayRequest(BaseModel):
 class PlaylistSaveRequest(BaseModel):
     name: str
     track_ids: list[str]
+    # Display metadata for ``tidal:<id>`` entries, keyed by reference.
+    track_meta: Optional[dict[str, dict]] = None
 
 
 class DeleteTracksRequest(BaseModel):

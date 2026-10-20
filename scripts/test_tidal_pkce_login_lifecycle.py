@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: AGPL-3.0-only
-"""Device approval must not outlive its caller or a newer auth intent."""
+"""A PKCE login exchange must not outlive its caller or a newer auth intent."""
 
 import asyncio
 import sys
@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from streaming.tidal import auth  # noqa: E402
 
 
-class DeviceLoginLifecycleTests(unittest.IsolatedAsyncioTestCase):
+class PkceLoginLifecycleTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
@@ -27,37 +27,34 @@ class DeviceLoginLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.session = SimpleNamespace(
             config=SimpleNamespace(quality=None), token_type="Bearer",
             access_token="approved", refresh_token="refresh", expiry_time=None,
-            is_pkce=False, country_code="US", user=SimpleNamespace(id=3, email="u@example.com"),
+            is_pkce=True, country_code="US", user=SimpleNamespace(id=3, email="u@example.com"),
             check_login=lambda: True,
         )
-        self.session.get_link_login = lambda: SimpleNamespace(
-            verification_uri="https://link.tidal.com", verification_uri_complete="https://link.tidal.com/1",
-            user_code="1234", expires_in=600,
-        )
+        self.session.pkce_login_url = lambda: "https://login.tidal.com/pkce"
 
-        def approve(link, until_expiry=False):
+        def exchange(session, redirect_url):
             self.entered.set()
             if not self.release.wait(5):
-                raise RuntimeError("approval test timed out")
+                raise RuntimeError("exchange test timed out")
+            return auth._session_payload(session)
 
-        self.session.process_link_login = approve
+        exchange_patch = mock.patch.object(auth.TidalSession, "_exchange_pkce_login", staticmethod(exchange))
         session_patch = mock.patch.object(auth, "_new_session", return_value=self.session)
         tidal_patch = mock.patch.object(auth, "tidalapi", object())
-        session_patch.start()
-        tidal_patch.start()
-        self.addCleanup(session_patch.stop)
-        self.addCleanup(tidal_patch.stop)
+        for patcher in (exchange_patch, session_patch, tidal_patch):
+            patcher.start()
+            self.addCleanup(patcher.stop)
 
     async def asyncTearDown(self):
         self.release.set()
 
     async def _start_waiting(self):
-        await self.manager.start_device_login_async()
-        task = asyncio.create_task(self.manager.finish_device_login_async())
+        await self.manager.pkce_login_url_async()
+        task = asyncio.create_task(self.manager.finish_pkce_login_async("https://oops?code=1"))
         await asyncio.wait_for(asyncio.to_thread(self.entered.wait, 2), 3)
         return task
 
-    async def test_cancelled_approval_cannot_commit_after_worker_returns(self):
+    async def test_cancelled_exchange_cannot_commit_after_worker_returns(self):
         task = await self._start_waiting()
         task.cancel()
         with self.assertRaises(asyncio.CancelledError):
@@ -67,7 +64,7 @@ class DeviceLoginLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(self.manager._session)
         self.assertFalse(auth.SESSION_FILE.exists())
 
-    async def test_logout_does_not_wait_for_approval_and_invalidates_result(self):
+    async def test_logout_does_not_wait_for_the_exchange_and_invalidates_its_result(self):
         task = await self._start_waiting()
         await asyncio.wait_for(self.manager.clear(), 1)
         self.release.set()
@@ -76,9 +73,9 @@ class DeviceLoginLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(self.manager._session)
         self.assertFalse(auth.SESSION_FILE.exists())
 
-    async def test_newer_login_invalidates_old_approval(self):
+    async def test_newer_login_invalidates_the_old_exchange(self):
         task = await self._start_waiting()
-        await asyncio.wait_for(self.manager.start_device_login_async(), 1)
+        await asyncio.wait_for(self.manager.pkce_login_url_async(), 1)
         self.release.set()
         with self.assertRaises(auth.TidalAuthError):
             await asyncio.wait_for(task, 2)
@@ -88,16 +85,16 @@ class DeviceLoginLifecycleTests(unittest.IsolatedAsyncioTestCase):
     async def test_cancelled_start_cannot_restore_pending_after_logout(self):
         creating = threading.Event()
         release_create = threading.Event()
-        real_create = self.manager._create_device_login
+        real_create = self.manager._create_pkce_login
 
-        def delayed_create(quality):
+        def delayed_create():
             creating.set()
             if not release_create.wait(5):
                 raise RuntimeError("start test timed out")
-            return real_create(quality)
+            return real_create()
 
-        with mock.patch.object(self.manager, "_create_device_login", side_effect=delayed_create):
-            task = asyncio.create_task(self.manager.start_device_login_async())
+        with mock.patch.object(self.manager, "_create_pkce_login", side_effect=delayed_create):
+            task = asyncio.create_task(self.manager.pkce_login_url_async())
             await asyncio.wait_for(asyncio.to_thread(creating.wait, 2), 3)
             task.cancel()
             with self.assertRaises(asyncio.CancelledError):
@@ -105,7 +102,6 @@ class DeviceLoginLifecycleTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.wait_for(self.manager.clear(), 1)
             release_create.set()
             await asyncio.sleep(0.05)
-        self.assertIsNone(self.manager._pending)
         self.assertIsNone(self.manager._pending_session)
 
 

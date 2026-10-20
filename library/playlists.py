@@ -5,10 +5,10 @@ import logging
 import os
 import re
 import threading
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from common.atomic_write import atomic_write_text
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -22,11 +22,35 @@ class PlaylistStoreCorruptedError(ValueError):
     """
 
 
+# A playlist entry is either a local library track id or a TIDAL reference
+# ``tidal:<id>``.  References carry no stream data: the audio is resolved at
+# play time, and ``track_meta`` only keeps what is needed to list the entry
+# while TIDAL is not connected.
+TIDAL_REF_PREFIX = "tidal:"
+_TIDAL_REF_ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+_TRACK_META_TEXT_LIMIT = 300
+_TRACK_META_URL_LIMIT = 600
+_TRACK_META_TEXT_FIELDS = ("title", "artist", "album")
+
+
+def is_tidal_ref(track_id: str) -> bool:
+    return str(track_id or "").startswith(TIDAL_REF_PREFIX)
+
+
+def tidal_ref_id(track_id: str) -> str:
+    return str(track_id)[len(TIDAL_REF_PREFIX):]
+
+
+def _valid_tidal_ref(track_id: str) -> bool:
+    return is_tidal_ref(track_id) and bool(_TIDAL_REF_ID.match(tidal_ref_id(track_id)))
+
+
 @dataclass
 class Playlist:
     id: str
     name: str
     track_ids: List[str]
+    track_meta: Dict[str, dict] = field(default_factory=dict)
 
 
 _cached_playlists: Optional[List[Playlist]] = None
@@ -131,6 +155,53 @@ def _unique_name_for(raw: List[dict], name: str) -> str:
     return f"{name} ({index})"
 
 
+def _clean_track_ids(track_ids: List[str]) -> List[str]:
+    """Trim ids and reject malformed TIDAL references."""
+    cleaned = [str(track_id).strip() for track_id in track_ids if str(track_id).strip()]
+    for track_id in cleaned:
+        if is_tidal_ref(track_id) and not _valid_tidal_ref(track_id):
+            raise ValueError(f"Invalid TIDAL track reference: {track_id[:80]}")
+    return cleaned
+
+
+def clean_track_meta(track_ids: List[str], track_meta: Optional[dict]) -> Dict[str, dict]:
+    """Whitelist and cap the display metadata of TIDAL references.
+
+    Only references that are part of ``track_ids`` keep an entry, so removed
+    tracks never leave orphaned metadata behind.  Anything but short text and a
+    non-negative duration is dropped.
+    """
+    if not isinstance(track_meta, dict):
+        return {}
+    refs = {track_id for track_id in track_ids if _valid_tidal_ref(track_id)}
+    cleaned: Dict[str, dict] = {}
+    for ref, meta in track_meta.items():
+        if ref not in refs or not isinstance(meta, dict):
+            continue
+        entry: dict = {}
+        for key in _TRACK_META_TEXT_FIELDS:
+            value = meta.get(key)
+            if isinstance(value, str) and value.strip():
+                entry[key] = value.strip()[:_TRACK_META_TEXT_LIMIT]
+        art_url = meta.get("art_url")
+        if isinstance(art_url, str) and art_url.strip():
+            entry["art_url"] = art_url.strip()[:_TRACK_META_URL_LIMIT]
+        duration = meta.get("duration")
+        if isinstance(duration, (int, float)) and not isinstance(duration, bool) and 0 <= duration < 86400 * 7:
+            entry["duration"] = float(duration)
+        if entry:
+            cleaned[ref] = entry
+    return cleaned
+
+
+def _playlist_document(playlist: Playlist) -> dict:
+    """Persisted form; ``track_meta`` is only written when a playlist has TIDAL entries."""
+    document = {"id": playlist.id, "name": playlist.name, "track_ids": list(playlist.track_ids)}
+    if playlist.track_meta:
+        document["track_meta"] = {ref: dict(meta) for ref, meta in playlist.track_meta.items()}
+    return document
+
+
 def get_playlists() -> List[Playlist]:
     """Load saved playlists, cache-publication-safe.
 
@@ -162,7 +233,8 @@ def get_playlists() -> List[Playlist]:
             track_ids = item.get("track_ids") or []
             if not playlist_id or not name or not isinstance(track_ids, list):
                 continue
-            playlists.append(Playlist(id=playlist_id, name=name, track_ids=[str(track_id) for track_id in track_ids if str(track_id).strip()]))
+            ids = [str(track_id) for track_id in track_ids if str(track_id).strip()]
+            playlists.append(Playlist(id=playlist_id, name=name, track_ids=ids, track_meta=clean_track_meta(ids, item.get("track_meta"))))
 
         playlists.sort(key=lambda playlist: playlist.name.lower())
 
@@ -175,14 +247,15 @@ def get_playlists() -> List[Playlist]:
             return current
 
 
-def save_playlist(name: str, track_ids: List[str]) -> Playlist:
+def save_playlist(name: str, track_ids: List[str], track_meta: Optional[dict] = None) -> Playlist:
     cleaned_name = (name or "").strip()
     if not cleaned_name:
         raise ValueError("Playlist name is required")
 
-    cleaned_track_ids = [str(track_id).strip() for track_id in track_ids if str(track_id).strip()]
+    cleaned_track_ids = _clean_track_ids(track_ids)
     if not cleaned_track_ids:
         raise ValueError("Playlist must contain at least one track")
+    cleaned_meta = clean_track_meta(cleaned_track_ids, track_meta)
 
     with _mutation_lock:
         raw = _load_raw_playlists()
@@ -192,20 +265,25 @@ def save_playlist(name: str, track_ids: List[str]) -> Playlist:
             if str(item.get("name") or "").strip().lower() == cleaned_name.lower():
                 item["name"] = cleaned_name
                 item["track_ids"] = cleaned_track_ids
+                if cleaned_meta:
+                    item["track_meta"] = cleaned_meta
+                else:
+                    item.pop("track_meta", None)
                 _save_raw_playlists(raw)
-                return Playlist(id=str(item["id"]), name=cleaned_name, track_ids=cleaned_track_ids)
+                return Playlist(id=str(item["id"]), name=cleaned_name, track_ids=cleaned_track_ids, track_meta=cleaned_meta)
 
         playlist = Playlist(
             id=_make_unique_id(cleaned_name, existing_ids),
             name=cleaned_name,
             track_ids=cleaned_track_ids,
+            track_meta=cleaned_meta,
         )
-        raw.append(asdict(playlist))
+        raw.append(_playlist_document(playlist))
         _save_raw_playlists(raw)
         return playlist
 
 
-def save_new_playlist(name: str, track_ids: List[str]) -> Playlist:
+def save_new_playlist(name: str, track_ids: List[str], track_meta: Optional[dict] = None) -> Playlist:
     """Create a playlist without ever replacing an existing one.
 
     ``save_playlist`` deliberately overwrites a same-named playlist, which is
@@ -219,9 +297,10 @@ def save_new_playlist(name: str, track_ids: List[str]) -> Playlist:
     if not cleaned_name:
         raise ValueError("Playlist name is required")
 
-    cleaned_track_ids = [str(track_id).strip() for track_id in track_ids if str(track_id).strip()]
+    cleaned_track_ids = _clean_track_ids(track_ids)
     if not cleaned_track_ids:
         raise ValueError("Playlist must contain at least one track")
+    cleaned_meta = clean_track_meta(cleaned_track_ids, track_meta)
 
     with _mutation_lock:
         raw = _load_raw_playlists()
@@ -231,8 +310,9 @@ def save_new_playlist(name: str, track_ids: List[str]) -> Playlist:
             id=_make_unique_id(unique_name, existing_ids),
             name=unique_name,
             track_ids=cleaned_track_ids,
+            track_meta=cleaned_meta,
         )
-        raw.append(asdict(playlist))
+        raw.append(_playlist_document(playlist))
         _save_raw_playlists(raw)
         return playlist
 

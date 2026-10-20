@@ -29,6 +29,7 @@
         isPageHidden: () => false,
         mergePlaybackState: () => {},
         playLocal: async () => {},
+        playRefs: async () => {},
         renderFooterModeButtons: () => {},
         syncLibraryStateFromPlaybackContext: () => {},
         updatePlaybackUI: () => {},
@@ -141,6 +142,52 @@ function bindTidalCards(container) {
 // TIDAL track rows inside a Library list: built by the TIDAL adapter (its
 // heart, + selection and playback), marked with the TIDAL glyph. A click
 // plays the TIDAL rows of the same list as one queue.
+// A saved playlist entry is a local track id or a TIDAL reference "tidal:<id>".
+const TIDAL_REF_PREFIX = 'tidal:';
+
+function isTidalRef(ref) {
+    return String(ref || '').startsWith(TIDAL_REF_PREFIX);
+}
+
+function tidalRefId(ref) {
+    return String(ref).slice(TIDAL_REF_PREFIX.length);
+}
+
+function playlistHasTidal(playlist) {
+    return (playlist?.track_ids || []).some(isTidalRef);
+}
+
+// A saved playlist in its own order: local tracks the library still knows,
+// and TIDAL entries with the display data saved next to the reference (so they
+// list without TIDAL). Each id appears once; unknown local ids are dropped.
+function playlistEntries(playlist) {
+    const byId = new Map((deps.getState().library.tracks || []).map(track => [track.id, track]));
+    const meta = playlist?.track_meta || {};
+    const seen = new Set();
+    const entries = [];
+    for (const ref of (playlist?.track_ids || [])) {
+        if (seen.has(ref)) continue;
+        seen.add(ref);
+        if (isTidalRef(ref)) {
+            const saved = meta[ref] || {};
+            entries.push({
+                ref,
+                tidal: {
+                    id: tidalRefId(ref),
+                    title: saved.title || 'TIDAL track',
+                    artist: saved.artist || '',
+                    album: saved.album || '',
+                    duration: saved.duration || 0,
+                    art_url: saved.art_url || '',
+                },
+            });
+        } else if (byId.has(ref)) {
+            entries.push({ ref, track: byId.get(ref) });
+        }
+    }
+    return entries;
+}
+
 function appendTidalTrackRows(container, items, options = {}) {
     const tidal = tidalLibrary();
     if (!tidal || !container || !items.length) return;
@@ -157,6 +204,7 @@ function appendTidalTrackRows(container, items, options = {}) {
             queueIds,
             badge: deps.sourceGlyphHtml('tidal'),
             favoriteClass: options.favoriteClass,
+            onPlay: options.onPlay,
         }));
     });
 }
@@ -295,7 +343,7 @@ function renderTrackFavoriteButton(track = deps.getState().playback.current_trac
     const inFlight = trackFavoriteRequestInFlight || deps.isTidalFavoriteRequestInFlight();
     if (isTidal) {
         // The footer heart favorites the current TIDAL track through the same
-        // canonical state/API as the TIDAL tab. While the ids are still
+        // canonical state/API as the Library TIDAL rows. While the ids are still
         // loading the button stays disabled so it never guesses the state;
         // the fxroute:tidal-favorites event re-renders it once they arrive.
         const ready = !!(window.FXRouteStreaming && window.FXRouteStreaming.tidalFavoritesReady()
@@ -731,7 +779,7 @@ function localPlaylistRowHtml(playlist) {
         <button class="track-play" data-playlist-id="${deps.escapeHtml(playlist.id)}" type="button" data-tooltip="Play ${deps.escapeHtml(playlist.name)}" aria-label="Play playlist ${deps.escapeHtml(playlist.name)}">▶</button>
         <div class="track-info">
             <div class="track-title">${deps.escapeHtml(playlist.name)}</div>
-            <div class="track-artist track-sub">${playlist.track_count} track${playlist.track_count === 1 ? '' : 's'}</div>
+            <div class="track-artist track-sub">${playlistHasTidal(playlist) ? deps.sourceGlyphHtml('tidal') : ''}${playlist.track_count} track${playlist.track_count === 1 ? '' : 's'}</div>
         </div>
         <button class="playlist-download-btn" data-playlist-download="${deps.escapeHtml(playlist.id)}" type="button" aria-label="Export playlist as M3U8" data-tooltip="Export playlist as M3U8">⬇</button>
         <button class="playlist-delete-btn" data-playlist-delete="${deps.escapeHtml(playlist.id)}" type="button" data-tooltip="Delete playlist" aria-label="Delete playlist"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M10 11v6"/><path d="M14 11v6"/></svg></button>
@@ -1067,7 +1115,7 @@ function renderAlbums() {
 function playlistCardsHtml(playlists, tidalPlaylists) {
     return playlists.map(playlist => `
         <div class="album-card playlist-card" data-playlist-id="${deps.escapeHtml(playlist.id)}" role="button" tabindex="0">
-            <div class="album-art-wrap">${playlistCoverHtml(playlist)}</div>
+            <div class="album-art-wrap">${playlistCoverHtml(playlist)}${playlistHasTidal(playlist) ? deps.sourceGlyphHtml('tidal', 'source-glyph--tile') : ''}</div>
             <button type="button" class="album-card-fav is-active" data-playlist-fav="${deps.escapeHtml(playlist.id)}" aria-label="Delete playlist" data-tooltip="Delete playlist">${deps.favoriteHeartSvg()}</button>
             <div class="album-name">${deps.escapeHtml(playlist.name)}</div>
             <div class="album-artist">${playlist.track_count} track${playlist.track_count === 1 ? '' : 's'}</div>
@@ -1667,8 +1715,8 @@ function setPlaylistDetailBackdrop(playlist) {
     if (!image || !backdrop) return;
     // Reuse the first distinct album cover of the collage as the blurred
     // backdrop, mirroring how the album detail blurs its own cover.
-    const albums = playlistDistinctAlbums(playlist).filter(a => a?.id);
-    const coverUrl = albums.length ? albumCoverUrl(albums[0]) : '';
+    const covers = playlistCovers(playlist);
+    const coverUrl = covers.length ? covers[0].url : '';
     if (!coverUrl) {
         image.removeAttribute('src');
         backdrop.hidden = true;
@@ -1687,12 +1735,12 @@ function setPlaylistDetailBackdrop(playlist) {
 // enriched MusicBrainz artist text (same source as the album About); a
 // multi-artist playlist gets a compact featuring line from the actual artists.
 // No artificial multi-artist biography is ever assembled.
-function renderPlaylistDetailInfo(playlist, tracks) {
+function renderPlaylistDetailInfo(playlist, tracks, tidalTracks = []) {
     const infoEl = deps.getElements().playlistDetailInfo;
     if (!infoEl) return;
     const names = [];
     const seen = new Set();
-    for (const t of (tracks || [])) {
+    for (const t of [...(tracks || []), ...(tidalTracks || [])]) {
         const name = String(t.artist || '').trim();
         const key = name.toLowerCase();
         if (name && !seen.has(key)) {
@@ -1774,18 +1822,35 @@ function playlistDistinctAlbums(playlist) {
     return albums;
 }
 
+// Up to four distinct covers: the local albums first, then the artwork saved
+// with the playlist TIDAL entries.
+function playlistCovers(playlist) {
+    const covers = playlistDistinctAlbums(playlist).filter(a => a?.id)
+        .map(album => ({ url: albumCoverUrl(album), name: album.name || '' }));
+    const meta = playlist?.track_meta || {};
+    const seen = new Set(covers.map(cover => cover.url));
+    for (const ref of (playlist?.track_ids || [])) {
+        if (covers.length >= 4) break;
+        const saved = isTidalRef(ref) ? meta[ref] : null;
+        if (!saved || !saved.art_url || seen.has(saved.art_url)) continue;
+        seen.add(saved.art_url);
+        covers.push({ url: saved.art_url, name: saved.album || saved.title || '' });
+    }
+    return covers;
+}
+
 function playlistCoverHtml(playlist) {
-    const albums = playlistDistinctAlbums(playlist).filter(a => a?.id);
-    if (albums.length === 0) {
+    const covers = playlistCovers(playlist);
+    if (covers.length === 0) {
         return `<div class="playlist-collage-fallback" aria-hidden="true">${playlistFallbackMarkSvg()}</div>`;
     }
-    const count = Math.min(albums.length, 4);
-    const cells = albums.slice(0, count).map(album => {
-        const coverUrl = albumCoverUrl(album);
+    const count = Math.min(covers.length, 4);
+    const cells = covers.slice(0, count).map(cover => {
+        const coverUrl = cover.url;
         const isFallback = !coverUrl;
         return `<img class="playlist-collage-cell${isFallback ? ' is-fallback' : ''}"
             src="${deps.escapeHtml(coverUrl || deps.artworkPlaceholderUrl())}"
-            alt="${deps.escapeHtml(album.name || '')}"
+            alt="${deps.escapeHtml(cover.name)}"
             loading="lazy"
             onerror="this.onerror=null;this.classList.add('is-fallback');this.src='${deps.escapeHtml(deps.artworkPlaceholderUrl())}';" />`;
     }).join('');
@@ -2026,6 +2091,10 @@ function renderAlbumDetailTracks() {
         deps.getElements().albumDetailTracks.innerHTML = '<div class="track-item track-item-empty">No matching tracks.</div>';
         return;
     }
+    // Favorite Tracks plays its local and TIDAL tracks as one mixed queue.
+    const mixedRefs = albumId === FAVORITE_TRACKS_ID && allTidalTracks.length
+        ? (detail.tracks || []).map(track => track.id).concat(allTidalTracks.map(item => TIDAL_REF_PREFIX + item.id))
+        : null;
     const selectedIds = new Set(deps.getState().library.selectedTrackIds);
     deps.getElements().albumDetailTracks.innerHTML = tracks.map((track, index) => {
         const isSelected = selectedIds.has(track.id);
@@ -2045,12 +2114,15 @@ function renderAlbumDetailTracks() {
         firstIndex: tracks.length + 1,
         albumContext: true,
         favoriteClass: 'track-fav',
+        onPlay: mixedRefs ? (id) => deps.playRefs(TIDAL_REF_PREFIX + id, mixedRefs) : undefined,
     });
     // Whole-row and round play-button clicks both start the track (matching
     // the Tidal detail rows); the selection Plus and favorite button stop
     // propagation themselves.
     deps.getElements().albumDetailTracks.querySelectorAll('.track-item[data-track-id]').forEach(row => {
-        const play = () => playTrackInAlbum(row.dataset.trackId, row.dataset.albumContext);
+        const play = () => (mixedRefs
+            ? deps.playRefs(row.dataset.trackId, mixedRefs)
+            : playTrackInAlbum(row.dataset.trackId, row.dataset.albumContext));
         row.querySelector('.track-play').addEventListener('click', (event) => {
             event.stopPropagation();
             play();
@@ -2301,8 +2373,9 @@ function resolvePlaylistTracks(playlist) {
 function openPlaylistDetail(playlistId) {
     const playlist = (deps.getState().playlists || []).find(p => p.id === playlistId);
     if (!playlist) return;
-    const tracks = resolvePlaylistTracks(playlist);
-    deps.getState().library.playlistDetail = { playlist, tracks };
+    const entries = playlistEntries(playlist);
+    const tracks = entries.filter(entry => entry.track).map(entry => entry.track);
+    deps.getState().library.playlistDetail = { playlist, tracks, entries };
     deps.getState().library.albumDetail = null;
     updateLibraryViewModeToggle();
 
@@ -2311,7 +2384,7 @@ function openPlaylistDetail(playlistId) {
     }
     if (deps.getElements().playlistDetailName) deps.getElements().playlistDetailName.textContent = playlist.name;
     setPlaylistDetailBackdrop(playlist);
-    renderPlaylistDetailInfo(playlist, tracks);
+    renderPlaylistDetailInfo(playlist, tracks, entries.filter(entry => entry.tidal).map(entry => entry.tidal));
     renderPlaylistDetailTracks();
 
     deps.getElements().albumsGrid.classList.add('hidden');
@@ -2321,25 +2394,50 @@ function openPlaylistDetail(playlistId) {
     scrollLibraryDetailToTop();
 }
 
+function tidalEntryMatchesQuery(item, query) {
+    return tidalItemSearchText('tracks', item).filter(Boolean).join(' ').toLowerCase().includes(query);
+}
+
+// A TIDAL entry of a saved playlist when the TIDAL module is not installed:
+// listed from its saved data, not playable.
+function unavailableTidalRowEl(entry, index) {
+    const item = entry.tidal;
+    const row = document.createElement('div');
+    row.className = 'track-item is-unavailable';
+    row.innerHTML = detailTrackRowHtml({
+        index,
+        title: deps.escapeHtml(item.title),
+        sub: deps.escapeHtml([item.artist, item.album].filter(Boolean).join(' · ')),
+        badge: deps.sourceGlyphHtml('tidal'),
+        favoriteButton: '',
+        duration: item.duration ? deps.formatTime(item.duration) : '',
+    });
+    return row;
+}
+
 function renderPlaylistDetailTracks() {
     const detail = deps.getState().library.playlistDetail;
-    if (!detail || !deps.getElements().playlistDetailTracks) return;
+    const host = deps.getElements().playlistDetailTracks;
+    if (!detail || !host) return;
     const query = (deps.getState().library.searchQuery || '').trim().toLowerCase();
-    const tracks = query
-        ? (detail.tracks || []).filter(track => trackMatchesLibraryQuery(track, query))
-        : (detail.tracks || []);
-    const total = (detail.tracks || []).length;
+    const entries = detail.entries || (detail.tracks || []).map(track => ({ ref: track.id, track }));
+    const shown = query
+        ? entries.filter(entry => (entry.track ? trackMatchesLibraryQuery(entry.track, query) : tidalEntryMatchesQuery(entry.tidal, query)))
+        : entries;
+    const total = entries.length;
     if (deps.getElements().playlistDetailCount) {
         deps.getElements().playlistDetailCount.textContent = query
-            ? `${tracks.length} of ${total} track${total === 1 ? '' : 's'}`
+            ? `${shown.length} of ${total} track${total === 1 ? '' : 's'}`
             : `${total} track${total === 1 ? '' : 's'}`;
     }
-    if (tracks.length === 0) {
-        deps.getElements().playlistDetailTracks.innerHTML = '<div class="track-item track-item-empty">No matching tracks.</div>';
+    if (shown.length === 0) {
+        host.innerHTML = '<div class="track-item track-item-empty">No matching tracks.</div>';
         return;
     }
     const selectedIds = new Set(deps.getState().library.selectedTrackIds);
-    deps.getElements().playlistDetailTracks.innerHTML = tracks.map((track, index) => {
+    host.innerHTML = shown.map((entry, index) => {
+        if (!entry.track) return '<div data-tidal-slot="' + deps.escapeHtml(entry.ref) + '"></div>';
+        const track = entry.track;
         const isSelected = selectedIds.has(track.id);
         const sub = deps.escapeHtml([(track.artist || '').trim(), (track.album || '').trim()].filter(Boolean).join(' · '));
         return '<div class="track-item' + (isSelected ? ' selected' : '') + '" data-track-id="' + deps.escapeHtml(track.id) + '">' +
@@ -2354,7 +2452,36 @@ function renderPlaylistDetailTracks() {
             }) +
         '</div>';
     }).join('');
-    deps.getElements().playlistDetailTracks.querySelectorAll('.track-item').forEach(row => {
+    // TIDAL entries are built by the TIDAL adapter (heart, + selection); a
+    // click plays the whole playlist as one mixed queue. Without a connection
+    // they stay listed but dimmed: the queue leaves them out.
+    const tidal = tidalLibrary();
+    const installed = !!(tidal && tidal.connection().installed);
+    const connected = !!(tidal && tidal.connection().authenticated);
+    const positions = new Map(shown.map((entry, index) => [entry.ref, index + 1]));
+    const entriesByRef = new Map(shown.map(entry => [entry.ref, entry]));
+    host.querySelectorAll('[data-tidal-slot]').forEach(slot => {
+        const entry = entriesByRef.get(slot.dataset.tidalSlot);
+        if (!entry) return;
+        const index = positions.get(entry.ref);
+        let row;
+        if (installed) {
+            row = tidal.buildTrackRow(entry.tidal, {
+                tag: 'div',
+                index,
+                sub: [entry.tidal.artist, entry.tidal.album].filter(Boolean).join(' · '),
+                queueIds: [],
+                badge: deps.sourceGlyphHtml('tidal'),
+                favoriteClass: 'track-fav',
+                onPlay: () => playTrackInPlaylist(entry.ref),
+            });
+            if (!connected) row.classList.add('is-offline');
+        } else {
+            row = unavailableTidalRowEl(entry, index);
+        }
+        slot.replaceWith(row);
+    });
+    host.querySelectorAll('.track-item[data-track-id]').forEach(row => {
         const play = () => playTrackInPlaylist(row.dataset.trackId);
         row.querySelector('.track-play').addEventListener('click', (event) => {
             event.stopPropagation();
@@ -2365,13 +2492,13 @@ function renderPlaylistDetailTracks() {
             play();
         });
     });
-    deps.getElements().playlistDetailTracks.querySelectorAll('.track-add[data-track-add]').forEach(btn => {
+    host.querySelectorAll('.track-add[data-track-add]').forEach(btn => {
         btn.addEventListener('click', (event) => {
             event.stopPropagation();
             toggleTrackSelected(btn.dataset.trackAdd);
         });
     });
-    bindTrackFavoriteRowButtons(deps.getElements().playlistDetailTracks);
+    bindTrackFavoriteRowButtons(host);
 }
 
 function closePlaylistDetail() {
@@ -2382,6 +2509,12 @@ function closePlaylistDetail() {
 async function playTrackInPlaylist(trackId) {
     const detail = deps.getState().library.playlistDetail;
     if (!detail) return;
+    // A playlist with TIDAL entries plays as one mixed queue.
+    const refs = (detail.entries || []).map(entry => entry.ref);
+    if (refs.some(isTidalRef)) {
+        await deps.playRefs(trackId, refs);
+        return;
+    }
     const trackIds = (detail.tracks || []).map(t => t.id);
     // Make sure playlist tracks are known to the library state
     const knownIds = new Set(deps.getState().library.tracks.map(t => t.id));
@@ -2481,14 +2614,15 @@ function tidalSelectedTrackIds() {
 }
 
 // Save row variant per selection: local tracks save a local playlist, TIDAL
-// tracks save to TIDAL (new or existing playlist), a mix cannot be saved yet.
+// tracks save to TIDAL (new or existing playlist), a mix saves a local playlist
+// that keeps the TIDAL tracks as references.
 const PLAYLIST_SAVE_MODES = {
     local: { placeholder: 'Save as playlist…', save: 'Save', hint: '' },
     tidal: { placeholder: 'New TIDAL playlist…', save: 'Save as new', hint: '' },
     mixed: {
         placeholder: 'Save as playlist…',
         save: 'Save',
-        hint: 'Local and TIDAL tracks cannot be saved in one playlist yet. Clear one of the selections to save.',
+        hint: 'Saved as one FXRoute playlist: local tracks first, then the TIDAL tracks.',
     },
 };
 
@@ -2499,7 +2633,7 @@ function applyPlaylistSaveMode(mode) {
     if (els.playlistName) els.playlistName.placeholder = config.placeholder;
     if (els.savePlaylistBtn) {
         els.savePlaylistBtn.textContent = config.save;
-        els.savePlaylistBtn.disabled = mode === 'mixed';
+        els.savePlaylistBtn.disabled = false;
     }
     const tidalMode = mode === 'tidal';
     if (els.playlistTidalTarget) {
@@ -3197,11 +3331,11 @@ async function savePlaylist() {
         await saveTidalPlaylistFromSelection();
         return;
     }
-    if (mode === 'mixed') {
-        deps.showToast(PLAYLIST_SAVE_MODES.mixed.hint, 'error');
-        return;
-    }
-    const trackIds = getSelectedPlayableTrackIds();
+    // A mix keeps the TIDAL tracks as references (with the display data TIDAL
+    // gave us), after the local ones.
+    const tidal = mode === 'mixed' ? tidalLibrary() : null;
+    const tidalIds = tidal ? tidalSelectedTrackIds() : [];
+    const trackIds = getSelectedPlayableTrackIds().concat(tidalIds.map(id => TIDAL_REF_PREFIX + id));
     const name = (deps.getElements().playlistName?.value || '').trim();
     if (!name) {
         deps.showToast('Please enter a playlist name', 'error');
@@ -3210,12 +3344,19 @@ async function savePlaylist() {
     if (trackIds.length < 1) {
         deps.showToast('Select at least 1 track', 'error');
         return;
-    }        deps.getElements().savePlaylistBtn.disabled = true;
+    }
+    const body = { name, track_ids: trackIds };
+    if (tidalIds.length) {
+        const meta = tidal.trackMeta(tidalIds);
+        body.track_meta = {};
+        Object.keys(meta).forEach(id => { body.track_meta[TIDAL_REF_PREFIX + id] = meta[id]; });
+    }
+    deps.getElements().savePlaylistBtn.disabled = true;
     try {
         const resp = await fetch('/api/playlists', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ name, track_ids: trackIds }),
+            body: JSON.stringify(body),
         });
         const data = await resp.json().catch(() => ({}));
         if (!resp.ok) throw new Error(data.detail || 'Failed to save playlist');
@@ -3223,6 +3364,7 @@ async function savePlaylist() {
         // (selectedTrackIds + rendered +/check marks), and the save row.
         if (deps.getElements().playlistName) deps.getElements().playlistName.value = '';
         clearTrackSelection();
+        if (tidalIds.length) tidal.clearSelection();
         await fetchPlaylists();
         deps.showToast(`Saved: ${data.playlist?.name || name}`, 'success');
     } catch (e) {
@@ -3240,21 +3382,24 @@ async function loadPlaylistById(playlistId, options = {}) {
         deps.showToast('Playlist not found', 'error');
         return;
     }
-    const validTrackIds = getTrackIdsInLibraryOrder(playlist.track_ids);
-    if (validTrackIds.length === 0) {
+    // Local ids the library still has, in playlist order, plus every TIDAL
+    // reference: the server leaves out what cannot play right now.
+    const refs = playlistEntries(playlist).map(entry => entry.ref);
+    if (refs.length === 0) {
         deps.showToast(`Playlist "${playlist.name}" has no playable tracks`, 'error');
         return;
     }
-    const missingCount = playlist.track_ids.length - validTrackIds.length;
+    const missingCount = playlist.track_ids.length - refs.length;
     if (autoplay) {
         if (missingCount > 0) {
-            deps.showToast(`Starting ${validTrackIds.length}/${playlist.track_ids.length} tracks from ${playlist.name}`, 'info');
+            deps.showToast(`Starting ${refs.length}/${playlist.track_ids.length} tracks from ${playlist.name}`, 'info');
         }
-        await deps.playLocal(validTrackIds[0], validTrackIds);
+        if (refs.some(isTidalRef)) await deps.playRefs(refs[0], refs);
+        else await deps.playLocal(refs[0], refs);
         return;
     }
     deps.showToast(missingCount > 0
-        ? `Loaded ${validTrackIds.length}/${playlist.track_ids.length} tracks from ${playlist.name}`
+        ? `Loaded ${refs.length}/${playlist.track_ids.length} tracks from ${playlist.name}`
         : `Loaded: ${playlist.name}`, 'info');
 }
 
@@ -3275,7 +3420,11 @@ async function downloadPlaylistById(playlistId) {
         const blob = await resp.blob();
         const filename = deps.getDownloadFilenameFromResponse(resp, `${playlist.name || 'playlist'}.m3u8`);
         deps.triggerBlobDownload(blob, filename);
-        deps.showToast(`Downloading ${filename}`, 'success');
+        // TIDAL titles cannot be exported; the file names them in comments.
+        const skippedTidal = Number(resp.headers.get('X-FXRoute-Skipped-Tidal')) || 0;
+        deps.showToast(skippedTidal
+            ? `Downloading ${filename} — ${skippedTidal} TIDAL track${skippedTidal === 1 ? '' : 's'} not included`
+            : `Downloading ${filename}`, skippedTidal ? 'info' : 'success');
     } catch (e) {
         deps.showToast(e.message || 'Playlist export failed', 'error');
     }
@@ -3992,6 +4141,8 @@ function setupLibraryActions() {
         renderTracks,
         resetUploadAreaSelection,
         resolvePlaylistTracks,
+        playlistEntries,
+        isTidalRef,
         savePlaylist,
         scrollLibraryDetailToTop,
         selectAllVisibleTracks,

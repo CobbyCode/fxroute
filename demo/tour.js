@@ -66,7 +66,7 @@
             tab: null,
             target: '.tabs',
             title: 'Streaming providers',
-            text: 'Spotify, Qobuz and TIDAL each bring their own catalog and cover artwork — open any tab to browse albums, tracks and playlists, then play directly. The footer shows the active source.',
+            text: 'Spotify and Qobuz each get a tab with their now-playing card. TIDAL joins your Library instead: its favorites, search results and playlists sit next to your local music, and playlists can mix both. The footer shows the active source.',
             action: 'cycle-providers',
         },
         {
@@ -447,9 +447,9 @@
                 closeMeasurementPanel();
                 var spBtn = document.getElementById('tab-btn-spotify');
                 var qbBtn = document.getElementById('tab-btn-qobuz');
-                var tdBtn = document.getElementById('tab-btn-tidal');
+                var libBtn = document.getElementById('tab-btn-library');
                 // Make hidden provider tabs reachable in the demo even before discovery.
-                [spBtn, qbBtn, tdBtn].forEach(function (btn) {
+                [spBtn, qbBtn].forEach(function (btn) {
                     if (btn) { btn.hidden = false; btn.style.display = ''; }
                 });
                 post('/api/spotify/demo_start', {});
@@ -459,12 +459,8 @@
                     if (qbBtn && typeof qbBtn.click === 'function') qbBtn.click();
                 }, 1000);
                 setTimeout(function () {
-                    if (tdBtn && typeof tdBtn.click === 'function') tdBtn.click();
+                    if (libBtn && typeof libBtn.click === 'function') libBtn.click();
                 }, 1800);
-                setTimeout(function () {
-                    post('/api/streaming/qobuz/demo_start', {});
-                    if (qbBtn && typeof qbBtn.click === 'function') qbBtn.click();
-                }, 2400);
             } else if (action === 'open-settings') {
                 var panel = document.querySelector('#settings-panel');
                 if (panel && panel.classList.contains('hidden')) {

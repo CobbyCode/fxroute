@@ -645,32 +645,30 @@ async def download_tracks(req: DownloadTracksRequest):
     )
 
 
+def _playlist_payload(playlist) -> dict:
+    payload = {
+        "id": playlist.id,
+        "name": playlist.name,
+        "track_ids": playlist.track_ids,
+        "track_count": len(playlist.track_ids),
+    }
+    # Only playlists with TIDAL entries carry display metadata.
+    track_meta = getattr(playlist, "track_meta", None)
+    if track_meta:
+        payload["track_meta"] = track_meta
+    return payload
+
+
 @router.get("/api/playlists")
 async def list_playlists():
-    return [
-        {
-            "id": playlist.id,
-            "name": playlist.name,
-            "track_ids": playlist.track_ids,
-            "track_count": len(playlist.track_ids),
-        }
-        for playlist in get_playlists()
-    ]
+    return [_playlist_payload(playlist) for playlist in get_playlists()]
 
 
 @router.post("/api/playlists")
 async def create_or_update_playlist(req: PlaylistSaveRequest):
     try:
-        playlist = save_playlist(req.name, req.track_ids)
-        return {
-            "status": "ok",
-            "playlist": {
-                "id": playlist.id,
-                "name": playlist.name,
-                "track_ids": playlist.track_ids,
-                "track_count": len(playlist.track_ids),
-            },
-        }
+        playlist = save_playlist(req.name, req.track_ids, req.track_meta)
+        return {"status": "ok", "playlist": _playlist_payload(playlist)}
     except PlaylistStoreCorruptedError as e:
         raise HTTPException(status_code=500, detail=str(e))
     except ValueError as e:
@@ -691,6 +689,15 @@ async def export_playlist(playlist_id: str):
             await _run_blocking(library_scanner.get_tracks, authoritative=True),
             _active_music_root(library_scanner, settings),
         )
+    except playlist_io.PlaylistHasNoLocalTracksError as e:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "playlist_has_no_local_tracks",
+                "message": str(e),
+                "tidal_track_count": e.tidal_count,
+            },
+        )
     except playlist_io.PlaylistTrackUnavailableError as e:
         # Never hand out a shortened M3U as a success: the playlist still
         # references tracks the library no longer resolves.
@@ -704,10 +711,15 @@ async def export_playlist(playlist_id: str):
             },
         )
     filename = playlist_io.playlist_download_filename(playlist.name)
+    headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
+    skipped_tidal = playlist_io.count_tidal_refs(playlist)
+    if skipped_tidal:
+        # The browser shows a toast with this count; the file itself names them.
+        headers["X-FXRoute-Skipped-Tidal"] = str(skipped_tidal)
     return Response(
         content=content,
         media_type="audio/x-mpegurl; charset=utf-8",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        headers=headers,
     )
 
 

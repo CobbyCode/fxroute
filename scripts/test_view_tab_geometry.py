@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """Playwright geometry contract for the shared compact view tabs.
 
-Library ``Albums / Tracks / Artists / Folders / Favorites`` and the TIDAL browse navigation
-``Albums / Tracks / Artists / Playlists`` (one shared row) plus the search
-result types must render through one shared ``.view-tab`` component: equal
-visible height, equal horizontal padding and one identical mint active
-state.  The old ``Favorites`` over-tab and its inner category chips are
-gone — no second navigation level may remain.  Nothing may overflow or
-shrink the touch targets at any checked width.
+Library ``Albums / Tracks / Artists / Folders / Favorites`` and the search
+result types ``Albums / Tracks / Artists / Playlists`` (which replace them
+while a search is active) must render through one shared ``.view-tab``
+component: equal visible height, equal horizontal padding and one identical
+mint active state.  There is no second navigation level and no TIDAL tab with
+tabs of its own.  Nothing may overflow or shrink the touch targets at any
+checked width.
 
 Runs the real rendered page (static server + stubbed streaming API) in
 headless Chromium.  Skips cleanly when playwright or a browser is not
@@ -140,52 +140,20 @@ def _run():
                       page.locator("#tab-library .library-view-toggle").is_visible()
                       and page.locator("#library-search-types").is_hidden())
 
-                # TIDAL browse navigation: one shared row of four view tabs.
-                activate("tidal")
-                browse_heights = heights(".tidal-subbar .view-tab[data-browse]")
-                check(f"[{width}px] TIDAL browse renders four view tabs", len(browse_heights) == 4)
-                check(f"[{width}px] TIDAL browse tabs share one height",
-                      max(browse_heights) - min(browse_heights) <= 0.5)
-                check(f"[{width}px] TIDAL browse tabs keep a touchable height (>=36px)",
-                      min(browse_heights) >= 36)
-                browse_pads = pads(".tidal-subbar .view-tab[data-browse]")
-                check(f"[{width}px] TIDAL browse tabs share horizontal padding",
-                      len({tuple(p) for p in browse_pads}) == 1)
-
-                # The browse tabs render in one navigation row: the old
-                # Favorites level and its inner category chips are gone.
-                check(f"[{width}px] no second navigation row (#tidal-fav-types gone)",
-                      page.locator("#tidal-fav-types").count() == 0)
-                check(f"[{width}px] subbar carries exactly one view-tab group",
-                      page.locator(".tidal-subbar .view-tabs").count() == 1)
-
-                # Library and TIDAL browse tabs are the same component.
-                check(f"[{width}px] library and TIDAL browse tabs are equally tall",
-                      abs(min(lib_heights) - min(browse_heights)) <= 0.5)
-                check(f"[{width}px] library and TIDAL browse tabs are equally padded",
-                      tuple(lib_pads[0]) == tuple(browse_pads[0]))
-
-                # Identical mint active state (default browse category Albums).
-                lib_active = bg("#library-view-albums")
-                browse_active = bg(".tidal-subbar .view-tab[data-browse].is-active")
-                check(f"[{width}px] library and TIDAL active states match ({lib_active})",
-                      lib_active == browse_active)
-
-                # Search result type tabs use the same component.
-                page.fill("#tidal-search-input", "daft punk")
-                page.keyboard.press("Enter")
-                page.wait_for_timeout(400)
-                search_heights = heights("#tidal-search-result-types .view-tab")
-                check(f"[{width}px] search result types render as view tabs", len(search_heights) == 4)
-                check(f"[{width}px] search type tabs match the shared height",
-                      abs(min(search_heights) - min(browse_heights)) <= 0.5)
+                # Identical mint active state for the view tab and the result type tab.
+                page.fill("#library-search", "a")
+                page.wait_for_timeout(200)
+                lib_active = bg("#library-search-types .view-tab.active")
+                page.fill("#library-search", "")
+                page.wait_for_timeout(200)
+                view_active = bg("#library-view-albums")
+                check(f"[{width}px] view tab and result type tab share one active state ({view_active})",
+                      lib_active == view_active)
+                check(f"[{width}px] there is no TIDAL tab in the navigation",
+                      page.locator(".tab-btn[data-tab=tidal]").count() == 0)
 
                 check(f"[{width}px] no horizontal overflow",
                       page.evaluate("document.documentElement.scrollWidth <= window.innerWidth + 1"))
-                # Clear the executed search so the next width starts on Albums.
-                page.fill("#tidal-search-input", "")
-                page.wait_for_timeout(200)
-
             # Mobile: everything wraps/scrolls cleanly, no overflow, targets intact.
             page.set_viewport_size({"width": 390, "height": 844})
             page.wait_for_timeout(200)
@@ -194,12 +162,14 @@ def _run():
             check("[390px] library view tabs stay touchable on mobile", min(lib_heights) >= 36)
             check("[390px] library no horizontal overflow",
                   page.evaluate("document.documentElement.scrollWidth <= window.innerWidth + 1"))
-            activate("tidal")
-            browse_heights = heights(".tidal-subbar .view-tab[data-browse]")
-            check("[390px] TIDAL browse tabs stay touchable on mobile", min(browse_heights) >= 36)
-            check("[390px] TIDAL browse navigation has no second level",
-                  page.locator("#tidal-fav-types").count() == 0)
-            check("[390px] TIDAL no horizontal overflow",
+            # A narrow phone: the result type tabs wrap instead of overflowing.
+            page.set_viewport_size({"width": 320, "height": 700})
+            page.wait_for_timeout(200)
+            page.fill("#library-search", "a")
+            page.wait_for_timeout(200)
+            check("[320px] result type tabs stay touchable",
+                  min(heights("#library-search-types .view-tab")) >= 36)
+            check("[320px] search results have no horizontal overflow",
                   page.evaluate("document.documentElement.scrollWidth <= window.innerWidth + 1"))
 
             browser.close()

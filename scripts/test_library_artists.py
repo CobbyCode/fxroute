@@ -317,7 +317,7 @@ def _run():
             check("Search on TIDAL searches the Library for the name, artists first",
                   page.locator("#library-search").input_value() == "Foxtrot"
                   and page.locator("#library-search-type-artists.active").count() == 1
-                  and page.locator("#tab-tidal").is_hidden())
+                  and page.locator("#tab-tidal").count() == 0)
             check("both TIDAL artists of that name are offered next to the local one",
                   page.locator('[data-search-section="tidal"] .album-card[data-tidal-kind="artist"]').count() == 2
                   and page.locator('.library-search-section .artist-card[data-artist-key="foxtrot"]').count() == 1)

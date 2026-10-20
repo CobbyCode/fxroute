@@ -138,9 +138,11 @@ class StreamingHiddenCssTests(unittest.TestCase):
         self.assertIsNotNone(player, "missing .streaming-provider-player rule")
         self.assertIn("justify-content: flex-start", player.group(1))
         self.assertIn("padding-bottom: var(--playback-footer-space)", CSS)
-        self.assertIn(".streaming-content", CSS)
+        # The TIDAL catalog surface left the provider tabs: no catalog stage remains.
+        self.assertNotIn(".streaming-content", CSS)
+        self.assertNotIn(".streaming-provider-catalog", CSS)
         streaming_js = (ROOT / "static" / "streaming.js").read_text(encoding="utf-8")
-        self.assertIn("catalogProvider", streaming_js)
+        self.assertNotIn("catalogProvider", streaming_js)
 
 
 if __name__ == "__main__":

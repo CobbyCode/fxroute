@@ -233,8 +233,7 @@ body {
 .is-active>.fav-heart{fill:currentColor}
 /* Search-clear chip shared by the Library, Radio and TIDAL search fields. */
 .library-search-clear,
-.station-search-clear,
-.streaming-search-clear {
+.station-search-clear {
     position: absolute;
     right: 0.32rem;
     top: 50%;
@@ -255,24 +254,20 @@ body {
     -webkit-tap-highlight-color: transparent;
 }
 .library-search-clear:not(:disabled),
-.station-search-clear:not(:disabled),
-.streaming-search-clear:not(:disabled) {
+.station-search-clear:not(:disabled) {
     opacity: 1;
 }
 .library-search-clear:not(:disabled):hover,
-.station-search-clear:not(:disabled):hover,
-.streaming-search-clear:not(:disabled):hover {
+.station-search-clear:not(:disabled):hover {
     background: var(--border-strong);
     color: var(--text-primary);
 }
 .library-search-clear:disabled,
-.station-search-clear:disabled,
-.streaming-search-clear:disabled {
+.station-search-clear:disabled {
     cursor: default;
 }
 .library-search-clear:focus-visible,
-.station-search-clear:focus-visible,
-.streaming-search-clear:focus-visible {
+.station-search-clear:focus-visible {
     outline: 2px solid var(--accent);
     outline-offset: 2px;
 }

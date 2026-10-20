@@ -1,13 +1,14 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 
-"""TIDAL OAuth/device-flow session management.
+"""TIDAL OAuth session management.
 
 Owns the ``tidalapi`` session lifecycle: creating a session, running the
-headless device-authorization flow (or the browser PKCE flow), persisting the
-OAuth session to the FXRoute config directory and reloading/refreshing it.
+browser PKCE login, persisting the OAuth session to the FXRoute config
+directory and reloading/refreshing it.
 
-FXRoute never sees the TIDAL password: both flows hand the user a URL (and, for
-the device flow, a short code) and only the resulting OAuth tokens are stored.
+FXRoute never sees the TIDAL password: the login hands the user a URL and only
+the resulting OAuth tokens are stored. A session file written by the removed
+device login still loads and refreshes like any other.
 The session file lives in ``~/.config/fxroute/tidal-session.json`` (the same
 config dir used by stations.json / playlists.json), never in ``.env``.
 
@@ -21,7 +22,6 @@ import asyncio
 import json
 import logging
 import os
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -62,20 +62,8 @@ SESSION_FILE = _config_dir() / "tidal-session.json"
 
 # Default requested stream quality. TIDAL downgrades gracefully: HI_RES_LOSSLESS
 # yields 24-bit FLAC where available and 16-bit FLAC otherwise (both require the
-# PKCE login). The link/device-authorization flow is capped at HIGH (320k AAC)
-# by TIDAL regardless of the requested quality.
+# PKCE login).
 DEFAULT_QUALITY = "HI_RES_LOSSLESS"
-DEVICE_LOGIN_QUALITY = "HIGH"
-
-
-@dataclass
-class DeviceLogin:
-    """A started device-authorization flow, pending user approval."""
-
-    verification_uri: str
-    verification_uri_complete: str
-    user_code: str
-    expires_in: int
 
 
 def _new_session(quality: str | None = None) -> "tidalapi.Session":
@@ -91,17 +79,15 @@ class TidalSession:
 
     A single instance is shared by the provider; the application is
     single-user, so one session (and one pending login at a time) is
-    enough. Auth mutations run under an asyncio lock so a device-login start
-    and finish never race. Device and PKCE flows share one pending slot
-    guarded by an auth generation plus a flow tag: starting either flow
-    invalidates the other, and a superseded attempt never commits.
+    enough. Auth mutations run under an asyncio lock so a login start and
+    finish never race. The pending login is guarded by an auth generation:
+    starting a new login or logging out invalidates it, and a superseded
+    attempt never commits.
     """
 
     def __init__(self) -> None:
         self._session: Any | None = None
-        self._pending: Any | None = None  # LinkLogin for the device flow
-        self._pending_session: Any | None = None
-        self._pending_flow: str | None = None  # "device" | "pkce" | None
+        self._pending_session: Any | None = None  # session of the PKCE login in progress
         self._auth_generation = 0
         # Last successfully verified user payload; kept across transient TIDAL
         # outages so the UI never flips to login just because a check failed.
@@ -248,9 +234,7 @@ class TidalSession:
         async with self._lock:
             self._auth_generation += 1
             self._session = None
-            self._pending = None
             self._pending_session = None
-            self._pending_flow = None
             self._last_user = None
             try:
                 if SESSION_FILE.exists():
@@ -265,106 +249,6 @@ class TidalSession:
             except Exception as exc:  # noqa: BLE001 - cache must not break logout
                 logger.warning("Failed to clear TIDAL library cache for %s: %s", user_id, exc)
 
-    # -- device login -------------------------------------------------------
-
-    def start_device_login(self, quality: str | None = None) -> DeviceLogin:
-        """Start the headless device-authorization flow.
-
-        Returns the URL + user code the user must enter at ``link.tidal.com``;
-        call :meth:`finish_device_login` after the user confirms.  The device
-        flow is TIDAL-capped at HIGH (320k AAC); use the PKCE flow for
-        lossless/Hi-Res.
-        """
-        session, link, device = self._create_device_login(quality)
-        self._auth_generation += 1
-        self._pending = link
-        self._pending_session = session
-        self._pending_flow = "device"
-        return device
-
-    @staticmethod
-    def _create_device_login(quality: str | None) -> tuple[Any, Any, DeviceLogin]:
-        if tidalapi is None:
-            raise TidalAuthError("tidalapi is not installed")
-        session = _new_session(quality or DEVICE_LOGIN_QUALITY)
-        link = session.get_link_login()
-        return session, link, DeviceLogin(
-            verification_uri=link.verification_uri,
-            verification_uri_complete=link.verification_uri_complete,
-            user_code=link.user_code,
-            expires_in=int(link.expires_in),
-        )
-
-    def finish_device_login(self) -> dict:
-        """Wait for the user to approve the device login (blocking).
-
-        ``process_link_login(until_expiry=True)`` blocks on a worker thread
-        until approval or expiry, so callers must run it via
-        ``asyncio.to_thread``.  Returns a normalized
-        ``{authenticated, user_id, email, country_code, is_pkce}``.
-        """
-        if (
-            self._pending is None
-            or self._pending_session is None
-            or self._pending_flow != "device"
-        ):
-            raise TidalAuthError("no device login is in progress")
-        link, session = self._pending, self._pending_session
-        generation = self._auth_generation
-        self._pending = None
-        self._pending_session = None
-        self._pending_flow = None
-        payload = self._wait_for_device_login(session, link)
-        if generation != self._auth_generation:
-            raise TidalAuthError("device login was superseded")
-        self._session = session
-        self._last_user = payload
-        self._save_session(session)
-        return payload
-
-    @staticmethod
-    def _wait_for_device_login(session: Any, link: Any) -> dict:
-        try:
-            session.process_link_login(link, until_expiry=True)
-        except Exception as exc:  # noqa: BLE001 - tidalapi raises broad types
-            raise TidalAuthError(f"device login failed: {exc}") from exc
-        if not session.check_login():
-            raise TidalAuthError("device login expired before authorization")
-        return _session_payload(session)
-
-    async def start_device_login_async(self, quality: str | None = None) -> DeviceLogin:
-        async with self._lock:
-            session, link, device = await asyncio.to_thread(self._create_device_login, quality)
-            self._auth_generation += 1
-            self._pending = link
-            self._pending_session = session
-            self._pending_flow = "device"
-            return device
-
-    async def finish_device_login_async(self) -> dict:
-        async with self._lock:
-            if (
-                self._pending is None
-                or self._pending_session is None
-                or self._pending_flow != "device"
-            ):
-                raise TidalAuthError("no device login is in progress")
-            link, session = self._pending, self._pending_session
-            generation = self._auth_generation
-            self._pending = None
-            self._pending_session = None
-            self._pending_flow = None
-        # The worker owns only its private session; it never changes shared
-        # state or persists credentials after its caller has been cancelled.
-        payload = await asyncio.to_thread(self._wait_for_device_login, session, link)
-        async with self._lock:
-            if generation != self._auth_generation:
-                raise TidalAuthError("device login was superseded")
-            self._session = session
-            self._last_user = payload
-            self._save_session(session)
-            return payload
-
     # -- PKCE login (browser; required for Hi-Res 24-bit FLAC) --------------
 
     @staticmethod
@@ -378,16 +262,14 @@ class TidalSession:
         """Return the browser login URL for the PKCE flow.
 
         The user opens it, signs in, and is redirected to an "Oops" page whose
-        full URL must be pasted back via :meth:`finish_pkce_login`. Starting
-        PKCE invalidates any pending device login (and vice versa).
+        full URL must be pasted back via :meth:`finish_pkce_login`. Starting a
+        new login invalidates the pending one.
         """
         if tidalapi is None:
             raise TidalAuthError("tidalapi is not installed")
         session = _new_session(DEFAULT_QUALITY)
         self._auth_generation += 1
-        self._pending = None
         self._pending_session = session
-        self._pending_flow = "pkce"
         return session.pkce_login_url()
 
     @staticmethod
@@ -410,13 +292,11 @@ class TidalSession:
         A superseded attempt (newer login or logout started meanwhile) never
         commits.
         """
-        if self._pending_session is None or self._pending_flow != "pkce":
+        if self._pending_session is None:
             raise TidalAuthError("no PKCE login is in progress")
         session = self._pending_session
         generation = self._auth_generation
-        self._pending = None
         self._pending_session = None
-        self._pending_flow = None
         payload = self._exchange_pkce_login(session, redirect_url)
         if generation != self._auth_generation:
             raise TidalAuthError("PKCE login was superseded")
@@ -429,20 +309,16 @@ class TidalSession:
         async with self._lock:
             session, url = await asyncio.to_thread(self._create_pkce_login)
             self._auth_generation += 1
-            self._pending = None
             self._pending_session = session
-            self._pending_flow = "pkce"
             return url
 
     async def finish_pkce_login_async(self, redirect_url: str) -> dict:
         async with self._lock:
-            if self._pending_session is None or self._pending_flow != "pkce":
+            if self._pending_session is None:
                 raise TidalAuthError("no PKCE login is in progress")
             session = self._pending_session
             generation = self._auth_generation
-            self._pending = None
             self._pending_session = None
-            self._pending_flow = None
         payload = await asyncio.to_thread(self._exchange_pkce_login, session, redirect_url)
         async with self._lock:
             if generation != self._auth_generation:

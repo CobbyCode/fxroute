@@ -55,7 +55,6 @@ class IosZoomGuardTests(unittest.TestCase):
         for selector in (
             ".station-search-input",
             ".library-search-input",
-            ".streaming-search-input",
             ".url-input",
             "select.url-input",
         ):

@@ -171,6 +171,7 @@ window.FXRouteLibraryUI?.init({
     isPageHidden: () => PlaybackCore.isPageHidden(),
     mergePlaybackState: (...args) => PlaybackCore.mergePlaybackState(...args),
     playLocal: (...args) => PlaybackCore.playLocal(...args),
+    playRefs: (...args) => PlaybackCore.playLibraryRefs(...args),
     renderFooterModeButtons: () => PlaybackUI.renderFooterModeButtons(),
     syncLibraryStateFromPlaybackContext: (...args) => PlaybackCore.syncLibraryStateFromPlaybackContext(...args),
     updatePlaybackUI: (...args) => PlaybackUI.updatePlaybackUI(...args),
@@ -3203,7 +3204,7 @@ function renderSourceModeFooter() {
 
 function applySourceModeUiState() {
     const nonAppSourceActive = nonAppSourceModeActive();
-    ['radio', 'spotify', 'qobuz', 'tidal', 'library'].forEach((tabId) => {
+    ['radio', 'spotify', 'qobuz', 'library'].forEach((tabId) => {
         const tabButton = document.querySelector(`.tab-btn[data-tab="${tabId}"]`);
         const tabPanel = document.getElementById(`tab-${tabId}`);
         if (tabButton) tabButton.classList.toggle('hidden', nonAppSourceActive);
@@ -3213,7 +3214,7 @@ function applySourceModeUiState() {
         elements.playbackBar.classList.remove('hidden');
     }
     renderSourceModeFooter();
-    if (nonAppSourceActive && ['radio', 'spotify', 'qobuz', 'tidal', 'library'].includes(window.__visibleTab)) {
+    if (nonAppSourceActive && ['radio', 'spotify', 'qobuz', 'library'].includes(window.__visibleTab)) {
         switchTab('effects');
     }
 }

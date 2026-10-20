@@ -1913,7 +1913,17 @@
     // Tracks resolve cross-catalog, like the cover endpoints.
     function demoPlaylistM3u(playlist) {
         const lines = ['#EXTM3U'];
+        const tidalRefs = (playlist.track_ids || []).filter(ref => String(ref).startsWith('tidal:'));
+        if (tidalRefs.length) {
+            lines.push(`# FXRoute: ${tidalRefs.length} TIDAL track(s) not exported (streaming only)`);
+            tidalRefs.forEach(ref => {
+                const meta = (playlist.track_meta || {})[ref] || {};
+                const label = [meta.artist, meta.title || ref].filter(Boolean).join(' - ');
+                lines.push(`# not exported (TIDAL): ${label.replace(/\s+/g, ' ')}`);
+            });
+        }
         for (const trackId of (playlist.track_ids || [])) {
+            if (String(trackId).startsWith('tidal:')) continue;
             const track = findTrack(trackId)?.track;
             if (!track) continue;
             const duration = Number(track.duration) > 0 ? Math.round(Number(track.duration)) : -1;
@@ -2806,6 +2816,13 @@
 
         // ── playback / status ───────────────────────────────────────────
         if (p === '/api/status') return j(S.getPlayback());
+        if (p === '/api/play' && post && Array.isArray(body.queue_refs) && body.queue_refs.length) {
+            // Mixed queue of local ids and tidal:<id> references.
+            const connected = !!demoProviderAccount().tidal;
+            const result = S.playRefs(body.queue_refs, String(body.source || 'local'), String(body.track_id || ''), connected);
+            if (!result.track) return err(result.unauthorized ? 'TIDAL is not authenticated' : 'Track not found', result.unauthorized ? 401 : 404);
+            return j({ status: 'playing', url: result.track.url || '', track: result.track, playback: S.getPlayback(), queue_summary: result.summary });
+        }
         if (p === '/api/play' && post) {
             const src = String(body.source || 'local');
             if (src === 'radio') {
@@ -2959,8 +2976,14 @@
                 const trackIds = Array.isArray(body.track_ids) ? body.track_ids : [];
                 if (!name) return err('Playlist name required', 400);
                 const id = 'playlist_' + Date.now();
-                catalogPlaylists.push({ id, name, track_ids: trackIds, track_count: trackIds.length });
-                return j({ status: 'ok', playlist: { id, name, track_ids: trackIds, track_count: trackIds.length } });
+                // Display data of TIDAL entries (tidal:<id>) travels with the playlist.
+                const refSet = new Set(trackIds.filter(ref => String(ref).startsWith('tidal:')));
+                const trackMeta = {};
+                Object.keys(body.track_meta || {}).forEach(ref => { if (refSet.has(ref)) trackMeta[ref] = body.track_meta[ref]; });
+                const saved = { id, name, track_ids: trackIds, track_count: trackIds.length };
+                if (Object.keys(trackMeta).length) saved.track_meta = trackMeta;
+                catalogPlaylists.push(saved);
+                return j({ status: 'ok', playlist: { ...saved } });
             }
             return j(catalogPlaylists);
         }
@@ -2974,10 +2997,16 @@
             const playlist = catalogPlaylists.find(pl => pl.id === id);
             if (!playlist) return err('Playlist not found', 404);
             const safeName = String(playlist.name || 'playlist').replace(/["\r\n]/g, '');
-            return j(demoPlaylistM3u(playlist), 200, {
+            const skippedTidal = (playlist.track_ids || []).filter(ref => String(ref).startsWith('tidal:')).length;
+            if (skippedTidal && skippedTidal === (playlist.track_ids || []).length) {
+                return err({ error: 'playlist_has_no_local_tracks', message: `Playlist export failed: all ${skippedTidal} track(s) are on TIDAL and cannot be exported`, tidal_track_count: skippedTidal }, 409);
+            }
+            const headers = {
                 'Content-Type': 'audio/x-mpegurl; charset=utf-8',
                 'Content-Disposition': `attachment; filename="${safeName}.m3u8"`,
-            });
+            };
+            if (skippedTidal) headers['X-FXRoute-Skipped-Tidal'] = String(skippedTidal);
+            return j(demoPlaylistM3u(playlist), 200, headers);
         }
         const playlistCrud = p.match(/^\/api\/playlists\/([^/]+)$/);
         if (playlistCrud) {
@@ -3415,11 +3444,6 @@
             if (body.favorite) tidalFavs[type].add(id);
             else tidalFavs[type].delete(id);
             return j({ favorite: !!body.favorite });
-        }
-        if (p === '/api/streaming/tidal/auth/device' && post) return j({ device_code: 'DEMO42', user_code: 'DEMO-AUTH', verification_uri: 'https://link.tidal.com', verification_uri_complete: 'https://link.tidal.com/demo-auth' });
-        if (p === '/api/streaming/tidal/auth/device/finish' && post) {
-            demoProviderAccount().tidal = true;
-            return j({ success: true });
         }
         if (p === '/api/streaming/tidal/auth/pkce' && post) return j({ url: 'https://link.tidal.com/demo-auth' });
         if (p === '/api/streaming/tidal/auth/pkce/finish' && post) {

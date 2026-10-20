@@ -14,7 +14,7 @@ metadata: callers store the TIDAL track id and call
 :func:`resolve_stream_for_track` only at play time.
 
 * A direct FLAC/AAC URL is preferred when the session grants one (the
-  link/device-login flow, capped at HIGH/320k AAC by TIDAL).
+  former device login, capped at HIGH/320k AAC by TIDAL).
 * PKCE sessions (lossless/Hi-Res) only expose a DASH manifest.  MPV's ffmpeg
   DASH demuxer cannot fetch the HTTPS segments under this mpv build (no
   protocol-whitelist escape is possible upstream), so the manifest is
@@ -384,7 +384,7 @@ def resolve_stream_for_track(track: Any, *, directory: Path | None = None) -> di
         lossless = bool(getattr(track, "is_lossless", False) or getattr(track, "is_hi_res_lossless", False))
         audio_format = "flac" if lossless else "aac"
 
-    # Prefer the direct URL (non-PKCE / device-login sessions).
+    # Prefer the direct URL (non-PKCE sessions of the former device login).
     try:
         url = track.get_url()
         if url:

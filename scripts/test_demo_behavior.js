@@ -1519,10 +1519,8 @@ const radio = state.getPlayback();
         await demoFetch('/api/streaming/tidal/auth/pkce/finish', { method: 'POST' });
         assert.equal((await adminOf('tidal')).authenticated, true,
             'the PKCE login must reconnect the TIDAL account');
-        await demoFetch('/api/streaming/tidal/auth/logout', { method: 'POST' });
-        await demoFetch('/api/streaming/tidal/auth/device/finish', { method: 'POST' });
-        assert.equal((await adminOf('tidal')).authenticated, true,
-            'the device-code login must reconnect the TIDAL account');
+        assert.ok(!fs.readFileSync(path.join(__dirname, '..', 'demo', 'routes.js'), 'utf8').includes('/auth/device'),
+            'the device login no longer exists in the demo');
 
         assert.equal((await adminOf('spotify')).authenticated, null,
             'Spotify has no account login in the demo');

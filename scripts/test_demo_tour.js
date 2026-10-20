@@ -120,7 +120,7 @@ function selectorExistsIn(selector, html) {
     assert.ok(/spl/i.test(measurementCopy), 'measurement step must mention SPL calibration');
     assert.ok(/advanced/i.test(measurementCopy), 'measurement step must mention advanced measurements');
 
-    // Providers step: cycle through Spotify/Qobuz/TIDAL so the multi-provider
+    // Providers step: cycle through Spotify/Qobuz and the Library (TIDAL) so the multi-provider
     // claim is visible in the tabs/footer instead of only stated.
     const providerStep = tour.steps.find((s) => s.id === 'qobuz');
     assert.equal(providerStep.action, 'cycle-providers', 'providers step must cycle through the provider tabs');

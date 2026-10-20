@@ -116,8 +116,8 @@ function loadFormatter(code, warnings) {
     // `new Error(object)` is what produced "[object Object]".
     assert.ok(!/new Error\(\s*(d\?\.\s*detail|data\.detail)\s*\|\|/.test(streamingSource),
         'streaming.js still coerces detail objects via new Error(detail || ...)');
-    assert.ok(streamingSource.includes("formatTransitionErrorDetail(d?.detail, 'Login failed')"),
-        'login error paths must use the shared formatter');
+    // The login runs in the provider dialog (provider_settings.js), not here.
+    assert.ok(!streamingSource.includes("'Login failed'"), 'streaming.js no longer renders a login surface');
     assert.ok(streamingSource.includes("formatTransitionErrorDetail(data.detail, 'Failed to save TIDAL playlist')"),
         'playlist-create error path must use the shared formatter');
     assert.ok(streamingSource.includes("formatTransitionErrorDetail(data.detail, 'Failed to add tracks to TIDAL playlist')"),

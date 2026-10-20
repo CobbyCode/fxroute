@@ -291,18 +291,6 @@ class TidalProvider(StreamingProvider):
     async def resolve_stream(self, track_id: str) -> dict:
         return await _to_thread(playback.resolve_stream_for_id, track_id)
 
-    async def start_device_login(self) -> dict:
-        link = await auth.manager.start_device_login_async()
-        return {
-            "verification_uri": link.verification_uri,
-            "verification_uri_complete": link.verification_uri_complete,
-            "user_code": link.user_code,
-            "expires_in": link.expires_in,
-        }
-
-    async def finish_device_login(self) -> dict:
-        return await auth.manager.finish_device_login_async()
-
     async def pkce_login_url(self) -> str:
         return await auth.manager.pkce_login_url_async()
 

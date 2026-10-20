@@ -695,14 +695,6 @@
     --control-gap: 12px;
     padding-top: 0.55rem;
 }
-/* TIDAL shares the library panel top rhythm (0.55rem) so both views start
-   at the same height; the provider shell keeps only its bottom spacing. */
-#tab-tidal {
-    padding-top: 0.55rem;
-}
-#tab-tidal .streaming-shell {
-    padding-top: 0;
-}
 .library-header {
     display: flex;
     justify-content: space-between;
@@ -765,6 +757,15 @@
     display: flex;
     flex-direction: column;
     gap: 0.3rem;
+}
+/* Playlist entries that cannot play right now: TIDAL tracks of a saved
+   playlist while TIDAL is not connected, or not installed at all. */
+.streaming-result.is-offline,
+.track-item.is-unavailable {
+    opacity: 0.55;
+}
+.track-item.is-unavailable .track-play {
+    pointer-events: none;
 }
 .library-search-empty {
     margin: 0.2rem 0 0.6rem;
@@ -831,12 +832,10 @@
    pinned while unfocused: during :focus the accent border must win, or the
    ID specificity would suppress it. */
 #station-search,
-#tidal-search-input,
 .library-search-field .library-search-input {
     background: var(--bg-input);
 }
 #station-search:not(:focus),
-#tidal-search-input:not(:focus),
 .library-search-field .library-search-input:not(:focus) {
     border-color: var(--border);
 }
@@ -891,16 +890,12 @@
     margin-top: calc(0.9rem - var(--detail-hero-gap));
     margin-bottom: calc(0.9rem - var(--detail-hero-gap) - 0.2rem);
 }
-/* Same logic for the TIDAL hosts. Browse keeps its own gap and the row
-   adds the small difference to reach the reference standoff on both
-   sides. The detail pulls against the very token that sets its container
-   gap (--tidal-detail-gap, declared in .streaming-detail), so the gap and
-   both flanking margins express one value and stay drift-proof: the row
-   adds the difference above, the results margin below, and together with
-   the gap each side lands on the reference exactly. */
-.streaming-browse > .playlist-save-row {
-    margin: 0.15rem 0;
-}
+/* Same logic for the TIDAL detail host. The detail pulls against the very
+   token that sets its container gap (--tidal-detail-gap, declared in
+   .streaming-detail), so the gap and both flanking margins express one value
+   and stay drift-proof: the row adds the difference above, the results
+   margin below, and together with the gap each side lands on the reference
+   exactly. */
 .streaming-detail > .playlist-save-row {
     margin-top: calc(0.9rem - var(--tidal-detail-gap));
     margin-bottom: 0;
@@ -949,63 +944,6 @@
     margin: 0;
     color: var(--text-muted);
     font-size: 0.84rem;
-}
-/* TIDAL save row: the library save concept extended with the "add to
-   existing playlist" target, so the row wraps instead of clipping. */
-.tidal-playlist-save-row {
-    flex-wrap: wrap;
-    overflow: visible;
-    gap: var(--action-gap);
-}
-/* Compact and left-aligned like the library save row: the controls sit at
-   the row start with a uniform 12px gap (--action-gap). Single line on
-   roomy viewports; the responsive rules switch to wrapping when the tab
-   runs out of width. --control-gap is scoped to the library tab, so the
-   TIDAL row pins its own spacing instead of silently collapsing. */
-.tidal-playlist-save-row .playlist-save-controls {
-    flex: 0 1 auto;
-    flex-wrap: nowrap;
-    justify-content: flex-start;
-    gap: var(--action-gap);
-}
-.tidal-playlist-save-row .url-input[type="text"] {
-    flex: 0 1 160px;
-}
-.tidal-playlist-save-row select.url-input {
-    flex: 0 1 200px;
-}
-/* Album detail: the playlist action row uses the full content width. The two
-   text/select fields absorb the extra space (existing target slightly wider);
-   Save as new, Add and Cancel keep their compact natural button widths. */
-.playlist-save-row.tidal-playlist-save-row--album {
-    width: 100%;
-    max-width: none;
-    flex: 1 1 auto;
-}
-.tidal-playlist-save-row--album .playlist-save-controls {
-    flex: 1 1 auto;
-    width: 100%;
-    max-width: none;
-    flex-wrap: nowrap;
-    align-items: center;
-}
-.tidal-playlist-save-row--album #tidal-playlist-name {
-    flex: 1 1 0;
-    min-width: 140px;
-}
-.tidal-playlist-save-row--album #tidal-playlist-target {
-    flex: 1.25 1 0;
-    min-width: 170px;
-}
-.tidal-playlist-save-row--album .btn-secondary {
-    flex: 0 0 auto;
-    white-space: nowrap;
-}
-.tidal-playlist-save-error {
-    flex: 0 0 100%;
-    color: var(--danger);
-    font-size: 0.84rem;
-    margin-top: 0.15rem;
 }
 .playlist-item {
     position: relative;

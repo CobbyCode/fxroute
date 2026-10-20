@@ -139,6 +139,7 @@ function makeSandbox({ tracksOk = true } = {}) {
         loadAlbumDiscover() {},
         showToast() {},
         resolvePlaylistTracks: () => [],
+        playlistEntries: () => [],
         playlistCoverHtml: () => '',
         setPlaylistDetailBackdrop() {},
         renderPlaylistDetailInfo() {},

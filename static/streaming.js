@@ -2,14 +2,15 @@
 /**
  * FXRoute streaming provider UI (Spotify, Qobuz, TIDAL).
  *
- * This module owns the provider tabs and renders one capability-driven
- * "now playing" card per provider. It never branches on provider identity to
- * decide which controls to show — it reads the provider's `capabilities` and
- * omits anything unsupported. Transport dispatch is a thin per-provider
- * backend adapter (Spotify -> app.js playerctl handler, Qobuz -> generic
- * /api/streaming/qobuz/..., TIDAL -> native /api/playback/...); catalog and
- * auth are TIDAL-only and live behind the provider's own content area.
+ * Spotify and Qobuz own provider tabs with one capability-driven "now playing"
+ * card each. The module never branches on provider identity to decide which
+ * controls to show: it reads the provider's `capabilities` and omits anything
+ * unsupported. Transport dispatch is a thin per-provider backend adapter
+ * (Spotify -> app.js playerctl handler, Qobuz -> generic
+ * /api/streaming/qobuz/...).
  *
+ * TIDAL has no tab of its own: its status, favorites, search, details and
+ * playlist writes are exposed to the Library through `FXRouteStreaming.tidal`.
  * Native TIDAL playback remains owned by app.js (MPV -> fxroute_dsp_sink).
  */
 (function () {
@@ -93,7 +94,6 @@
     const TRANSPORT = {
         spotify: { kind: 'app', action: { toggle: 'toggle', next: 'next', previous: 'previous', shuffle: 'shuffle', loop: 'loop' } },
         qobuz: { kind: 'remote', base: '/api/streaming/qobuz', action: { toggle: 'toggle', next: 'next', previous: 'previous', shuffle: 'shuffle', loop: 'repeat' } },
-        tidal: { kind: 'native', action: { toggle: 'toggle', next: 'next', previous: 'previous', shuffle: 'shuffle', loop: 'loop' } },
     };
 
     // Provider-specific *content* facts (display name, whether FXRoute offers an
@@ -102,12 +102,10 @@
     const PROVIDER_META = {
         spotify: { name: 'Spotify', canConnect: false },
         qobuz: { name: 'Qobuz', canConnect: true },
-        tidal: { name: 'Tidal', canConnect: true, catalog: true },
+        tidal: { name: 'Tidal', canConnect: true },
     };
 
     const POLL_INTERVAL_MS = 2000;
-    const TIDAL_POLL_INTERVAL_MS = 2500;
-    const TIDAL_SEARCH_DEBOUNCE_MS = 300;
 
     const state = {
         providers: {},          // id -> { descriptor, root, els, tabBtn, tabPanel }
@@ -119,15 +117,8 @@
         lastPlaybackSource: null,
         lastPlaybackAt: 0,
         tidal: {
-            view: null,         // 'login' | 'browse' | 'album' | 'playlist' | 'artist'
+            view: null,         // 'album' | 'playlist' | 'artist' | null (Library detail chain)
             viewStack: [],      // previous detail views so Back returns through nested details
-            searchQuery: '',
-            searchExecuted: false,
-            searchResultType: 'albums',
-            searchResults: null,
-            searchRequestId: 0,
-            searchDebounceTimer: null,
-            searchInFlight: false,
             // Persistent playlist-build selection: tracks consciously added
             // via the row + button. Survives navigation between search
             // results, favorites and detail views; play and favorite actions
@@ -138,8 +129,6 @@
             detailId: null,
             detailTitle: '',
             detailArt: '',
-            contentKey: null,   // availability/auth mode last rendered into .streaming-content
-            browseCategory: 'albums',   // 'albums' | 'tracks' | 'artists' | 'playlists'; search results are a separate temporary overlay
             favoriteIds: { tracks: new Set(), albums: new Set(), artists: new Set(), playlists: new Set() },
             favoriteIdsPromise: null,
             favoritesLoaded: false,   // true after at least one successful favorites/ids load
@@ -156,18 +145,6 @@
             // one request.
             artistLookupCache: new Map(),
             artistLookupPromises: new Map(),
-            // Grid/list layout per browse surface; persisted in localStorage
-            // (fx-view-mode-<surface>, same mechanism as the library toggle).
-            albumLayouts: {
-                albums: readStoredViewMode('tidal-albums'),
-                artists: readStoredViewMode('tidal-artists'),
-                playlists: readStoredViewMode('tidal-playlists'),
-            },
-            // Surface that renders TIDAL details: the TIDAL tab or the
-            // Library. Only one is live; the other keeps its detail chain
-            // parked until it becomes visible again.
-            host: 'tab',
-            parked: { tab: null, library: null },
             // Library-side collection loads (favorite albums/tracks/playlists).
             libraryPromise: null,
             libraryLoadedAt: 0,
@@ -220,7 +197,6 @@
         applyTabVisibility(providerId, entry, data);
         renderStatusLine(providerId, entry, data);
         renderNowPlaying(providerId, entry, data);
-        if (providerId === 'tidal') renderTidalContent(entry, data);
     }
 
     // Native playback changed (WebSocket `playback` message). Nudge the TIDAL
@@ -232,7 +208,7 @@
         const now = Date.now();
         // The global footer shows the TIDAL track favorite; the canonical
         // favorites ids must be loaded even when playback starts without the
-        // TIDAL tab ever being opened. The load dispatches fxroute:tidal-favorites
+        // Library ever being opened. The load dispatches fxroute:tidal-favorites
         // so the footer re-derives its state from the server truth.
         if (state.lastPlaybackSource === 'tidal' && !state.tidal.favoritesLoaded) {
             void ensureTidalFavoritesLoaded();
@@ -248,23 +224,9 @@
         stopAllPolls();
         if (tabId === 'qobuz') startPoll('qobuz', POLL_INTERVAL_MS);
         else if (tabId === 'library') {
-            activateTidalHost('library');
             // One status read on entry (no poll): the Library shows TIDAL
             // favorites next to local music and needs the login state.
             if (tidalEnabledAndInstalled()) void refreshTidalStatus();
-        } else if (tabId === 'tidal') {
-            activateTidalHost('tab');
-            // Kick the local snapshot read early (it is faster than the
-            // TIDAL-backed status poll) so the browse renders from cache.
-            void loadTidalSnapshot();
-            startPoll('tidal', TIDAL_POLL_INTERVAL_MS);
-            // Re-opening the tab re-syncs the active browse section in the
-            // background: the last-known state stays visible and fresh TIDAL
-            // data replaces it in place when it arrives. Live search results
-            // and open detail views are left untouched.
-            if (state.tidal.contentKey === 'browse' && !state.tidal.searchExecuted && !isTidalDetailView()) {
-                renderTidalBrowseSection(state.tidal.browseCategory);
-            }
         }
     }
 
@@ -316,15 +278,11 @@
                             '<span class="streaming-time streaming-time-total">0:00</span>' +
                         '</div>' +
                     '</div>' +
-                    '<div class="streaming-content" hidden></div>' +
                 '</div>';
 
-            // Player pages (Spotify/Qobuz) get a centered stage; catalog
-            // providers (TIDAL) keep a full-width browser surface.
+            // Player pages (Spotify/Qobuz) get a centered stage.
             const providerEl = root.querySelector('.streaming-provider');
-            const isCatalog = PROVIDER_META[providerId]?.catalog === true;
-            providerEl.classList.toggle('streaming-provider-player', !isCatalog);
-            providerEl.classList.toggle('streaming-provider-catalog', isCatalog);
+            providerEl.classList.add('streaming-provider-player');
 
             const els = {
                 statusLine: root.querySelector('.streaming-status'),
@@ -354,7 +312,6 @@
                 progress: root.querySelector('.streaming-progress'),
                 timeCurrent: root.querySelector('.streaming-time-current'),
                 timeTotal: root.querySelector('.streaming-time-total'),
-                content: root.querySelector('.streaming-content'),
             };
 
             const entry = {
@@ -464,9 +421,6 @@
         if (providerId === 'qobuz') {
             return (data.connected || data.authenticated === true) ? ['Connected'] : [];
         }
-        if (providerId === 'tidal') {
-            return data.authenticated === true ? ['Connected'] : [];
-        }
         return [];
     }
 
@@ -476,35 +430,15 @@
             if (data.backend === 'spotifyd') return 'spotifyd';
             return 'Spotify';
         }
-        if (providerId === 'qobuz') return 'Qobuz Connect';
-        return PROVIDER_META.tidal.name;
+        return 'Qobuz Connect';
     }
 
-    // The permanent Connected status belongs on the main catalog surface only;
-    // detail views keep a clean header. Real problems stay visible: while not
-    // authenticated the pill (and the login surface) still render.
+    // True while the Library shows a TIDAL album, playlist or artist detail.
     function isTidalDetailView() {
         return state.tidal.view === 'album' || state.tidal.view === 'playlist' || state.tidal.view === 'artist';
     }
 
-    // Catalog providers keep the pill in the browse toolbar; the in-tab player
-    // card is not rendered for them (the footer is the player). Shared by the
-    // status render path and by browse/detail navigation, so the pill reflects
-    // the current view immediately instead of waiting for the next poll.
-    function applyCatalogStatusLine(entry, providerId, data) {
-        const connected = buildStatusBits(providerId, data).length > 0;
-        entry.els.statusLine.textContent = 'Connected';
-        entry.els.statusLine.title = buildStatusDetail(providerId, data);
-        const healthyDetail = providerId === 'tidal' && isTidalDetailView() && data.authenticated === true;
-        entry.els.statusLine.hidden = !connected || healthyDetail;
-    }
-
     function renderStatusLine(providerId, entry, data) {
-        const catalogProvider = PROVIDER_META[providerId]?.catalog === true;
-        if (catalogProvider) {
-            applyCatalogStatusLine(entry, providerId, data);
-            return;
-        }
         // Player providers integrate the status into the card as a small
         // top-right pill; the provider/backend detail stays available via the
         // pill tooltip. The dot-led label is one shared rendering.
@@ -522,16 +456,6 @@
         const els = entry.els;
         const caps = data.capabilities || {};
         const meta = PROVIDER_META[providerId] || { name: entry.providerLabel() || providerId, canConnect: false };
-        const catalogProvider = meta.catalog === true;
-
-        // Catalog providers (TIDAL) have no in-tab player: the global footer
-        // is the player, so keep no now-playing card and no empty-player
-        // surface — browse/search stays the focus of the tab.
-        if (catalogProvider) {
-            els.empty.hidden = true;
-            els.nowPlaying.hidden = true;
-            return;
-        }
 
         // Not installed / not available.
         if (data.installed !== true) {
@@ -646,21 +570,13 @@
         els.emptyActions.innerHTML = '';
         if (action === 'connect') {
             // Disconnected account providers share one primary login action.
-            // The label/handler follows the card's own provider so Qobuz and
-            // TIDAL read as the same component with the same button style.
-            const providerId = entry.providerId || entry.root?.getAttribute?.('data-provider');
             const btn = document.createElement('button');
             btn.type = 'button';
             btn.className = 'btn-primary';
-            if (providerId === 'qobuz') {
-                btn.textContent = 'Start Qobuz Login';
-                btn.addEventListener('click', () => {
-                    if (typeof api.openQobuzLogin === 'function') api.openQobuzLogin();
-                });
-            } else {
-                btn.textContent = 'Start TIDAL Login';
-                btn.addEventListener('click', () => openTidalLogin());
-            }
+            btn.textContent = 'Start Qobuz Login';
+            btn.addEventListener('click', () => {
+                if (typeof api.openQobuzLogin === 'function') api.openQobuzLogin();
+            });
             els.emptyActions.appendChild(btn);
         }
     }
@@ -668,7 +584,6 @@
     function providerUnavailableMessage(providerId) {
         if (providerId === 'spotify') return 'playerctl is not installed. Install it to control Spotify.';
         if (providerId === 'qobuz') return 'qbzd is not running. Start it to control Qobuz.';
-        if (providerId === 'tidal') return 'The TIDAL backend is not available on this system.';
         return 'This provider is not available.';
     }
 
@@ -702,7 +617,6 @@
         // "not running" wording and add the same start guidance qbzd offers.
         if (providerId === 'spotify') return { title: 'Spotify is not running.', message: 'Start it to use Spotify Connect.' };
         if (providerId === 'qobuz') return { title: 'Nothing is playing. Start a track from the Qobuz app.', message: '' };
-        if (providerId === 'tidal') return { title: 'Nothing is playing.', message: '' };
         return { title: 'Nothing is playing.', message: '' };
     }
 
@@ -768,10 +682,6 @@
                 }
                 return;
             }
-            if (adapter.kind === 'native') {
-                await nativeTransportCommand(action, extra);
-                return;
-            }
             await remoteTransportCommand(adapter, action, extra);
         } catch (err) {
             showToast(friendlyError(err?.message || err), 'error');
@@ -811,30 +721,6 @@
         }
         // Remote state settles asynchronously; refresh once and shortly after.
         void refreshProvider('qobuz');
-    }
-
-    async function nativeTransportCommand(action, extra) {
-        let resp;
-        if (action === 'seek') {
-            resp = await fetch('/api/playback/seek', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ position: extra?.position || 0 }),
-            });
-        } else if (action === 'shuffle' || action === 'loop') {
-            const data = state.lastData.tidal || {};
-            const current = action === 'shuffle' ? !!data.shuffle : (data.loop && data.loop !== 'none');
-            resp = await fetch('/api/playback/' + action, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ enabled: !current }),
-            });
-        } else {
-            const mapped = TRANSPORT.tidal.action[action] || action;
-            resp = await fetch('/api/playback/' + mapped, { method: 'POST' });
-        }
-        if (!resp.ok) throw new Error(await errorDetail(resp));
-        void refreshTidalStatus();
     }
 
     // -----------------------------------------------------------------------
@@ -952,513 +838,15 @@
         return text || 'Something went wrong.';
     }
 
-    // -----------------------------------------------------------------------
-    // TIDAL content (auth + catalog). Qobuz/Spotify have no catalog here yet.
-    // -----------------------------------------------------------------------
-    function renderTidalContent(entry, data) {
-        // Provider content must not be rebuilt on every status refresh: a
-        // poll/transport/playback nudge calls renderProvider frequently, and
-        // rebuilding here would wipe the user's search/favorites/playlists
-        // view and any in-progress login input. Rebuild only when the content
-        // mode actually changes (first render, availability, or login state);
-        // navigation between browse sections renders directly via
-        // renderTidalBrowse() / renderTidalLogin().
-        const els = entry.els;
-        const unavailable = data.available === false || data.installed !== true;
-        const key = unavailable ? 'unavailable' : (data.authenticated === true ? 'browse' : 'login');
-        if (key === 'unavailable') {
-            els.content.hidden = true;
-            state.tidal.contentKey = key;
+    // The browser login runs in the shared provider login dialog (same flow
+    // as Qobuz); app.js injects it as openTidalLogin.
+    function openTidalLogin() {
+        if ((state.lastData.tidal || {}).authenticated === true) {
+            // Already connected (a stale list may offer Connect): just re-read.
+            void refreshTidalStatus();
             return;
         }
-        els.content.hidden = false;
-        if (state.tidal.contentKey === key) return;
-        state.tidal.contentKey = key;
-        if (data.authenticated === true) {
-            renderTidalBrowse(entry);
-        } else {
-            renderTidalLogin(entry);
-        }
-    }
-
-    // -- login -----------------------------------------------------------------
-    function renderTidalLogin(entry) {
-        const content = entry.els.content;
-        content.hidden = false;
-        if (state.tidal.view === 'pkce') { renderTidalPkce(content); return; }
-        if (state.tidal.view === 'device') { renderTidalDevice(content); return; }
-        // Disconnected card shares the .streaming-empty geometry (same width,
-        // padding, centering, heading/text sizes, primary button). The browser
-        // login is the single primary action; device login stays available as
-        // a subordinate second option underneath with its quality note.
-        content.innerHTML =
-            '<div class="streaming-auth streaming-auth--disconnected">' +
-                '<h2 class="streaming-auth-title">Connect TIDAL</h2>' +
-                '<p class="streaming-auth-hint">Sign in for lossless and Hi-Res playback.</p>' +
-                '<div class="streaming-auth-actions streaming-auth-actions--primary">' +
-                    '<button type="button" class="btn-primary" id="tidal-auth-pkce">Start TIDAL Login</button>' +
-                '</div>' +
-                '<div class="streaming-auth-alternative">' +
-                    '<button type="button" class="streaming-auth-secondary" id="tidal-auth-device">Use device login instead</button>' +
-                    '<p class="streaming-auth-note">Device login (limited to AAC 320 kbps).</p>' +
-                '</div>' +
-            '</div>';
-        content.querySelector('#tidal-auth-pkce').addEventListener('click', () => {
-            // Primary browser login lives in the shared provider login dialog
-            // (same flow as Qobuz); the embedded form below stays as the
-            // fallback when the dialog bridge is unavailable.
-            if (typeof api.openTidalLogin === 'function') { api.openTidalLogin(); return; }
-            state.tidal.view = 'pkce'; renderTidalPkce(content);
-        });
-        content.querySelector('#tidal-auth-device').addEventListener('click', () => { state.tidal.view = 'device'; renderTidalDevice(content); });
-    }
-
-    function renderTidalPkce(content) {
-        content.innerHTML =
-            '<div class="streaming-auth">' +
-                '<h3 class="streaming-auth-title">TIDAL browser login</h3>' +
-                '<ol class="streaming-auth-steps">' +
-                    '<li>Open this link on any device and sign in to TIDAL.</li>' +
-                '</ol>' +
-                '<div class="streaming-auth-url-row">' +
-                    '<code class="streaming-auth-url" id="tidal-pkce-url">Generating link…</code>' +
-                    '<button type="button" class="btn-secondary" id="tidal-pkce-copy">Copy</button>' +
-                '</div>' +
-                '<ol class="streaming-auth-steps" start="2">' +
-                    '<li>After login, your browser may show an unreachable page.</li>' +
-                    '<li>Copy the complete URL from the address bar and paste it here.</li>' +
-                '</ol>' +
-                '<input type="text" class="url-input streaming-auth-input" id="tidal-pkce-input" placeholder="https://tidal.com/android/login/auth?code=…" autocomplete="off" />' +
-                '<div class="streaming-auth-actions">' +
-                    '<button type="button" class="btn-primary" id="tidal-pkce-complete">Complete Login</button>' +
-                    '<button type="button" class="btn-ghost" id="tidal-pkce-back">Back</button>' +
-                '</div>' +
-                '<p class="streaming-auth-error" id="tidal-pkce-error" hidden></p>' +
-            '</div>';
-
-        const urlEl = content.querySelector('#tidal-pkce-url');
-        const inputEl = content.querySelector('#tidal-pkce-input');
-        const errorEl = content.querySelector('#tidal-pkce-error');
-
-        void fetch('/api/streaming/tidal/auth/pkce', { method: 'POST' })
-            .then((r) => r.json())
-            .then((d) => { urlEl.textContent = d.url || 'Could not generate a login link.'; })
-            .catch(() => { urlEl.textContent = 'Could not generate a login link.'; });
-
-        content.querySelector('#tidal-pkce-copy').addEventListener('click', async () => {
-            const text = urlEl.textContent || '';
-            if (!text || text === 'Generating link…' || text === 'Could not generate a login link.') return;
-            try {
-                await navigator.clipboard.writeText(text);
-                showToast('Login link copied', 'success');
-            } catch (_clipboardError) {
-                try {
-                    const area = document.createElement('textarea');
-                    area.value = text;
-                    area.setAttribute('readonly', '');
-                    area.style.position = 'fixed';
-                    area.style.opacity = '0';
-                    document.body.appendChild(area);
-                    area.select();
-                    const ok = document.execCommand ? document.execCommand('copy') : false;
-                    document.body.removeChild(area);
-                    showToast(ok ? 'Login link copied' : 'Copy the login link manually', ok ? 'success' : 'info');
-                } catch (_fallbackError) {
-                    showToast('Copy the login link manually', 'info');
-                }
-            }
-        });
-        content.querySelector('#tidal-pkce-back').addEventListener('click', () => { state.tidal.view = null; renderTidalLogin(entryFor('tidal')); });
-        content.querySelector('#tidal-pkce-complete').addEventListener('click', async () => {
-            const url = (inputEl.value || '').trim();
-            if (!url) { errorEl.textContent = 'Paste the redirect URL first.'; errorEl.hidden = false; return; }
-            errorEl.hidden = true;
-            try {
-                const resp = await fetch('/api/streaming/tidal/auth/pkce/finish', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ redirect_url: url }),
-                });
-                const d = await resp.json().catch(() => null);
-                if (!resp.ok) throw new Error(formatTransitionErrorDetail(d?.detail, 'Login failed'));
-                showToast('TIDAL connected', 'success');
-                state.tidal.view = null;
-                await refreshTidalStatus();
-            } catch (err) {
-                errorEl.textContent = friendlyError(err?.message || err);
-                errorEl.hidden = false;
-            }
-        });
-    }
-
-    function renderTidalDevice(content) {
-        content.innerHTML =
-            '<div class="streaming-auth">' +
-                '<h3 class="streaming-auth-title">TIDAL device login</h3>' +
-                '<p class="streaming-auth-hint">Limited to AAC 320 kbps. For Lossless/Hi-Res use the browser login instead.</p>' +
-                '<div class="streaming-auth-device-code" id="tidal-device-code">—</div>' +
-                '<p class="streaming-auth-hint">Open <strong id="tidal-device-uri">link.tidal.com</strong> and enter the code above.</p>' +
-                '<div class="streaming-auth-actions">' +
-                    '<button type="button" class="btn-primary" id="tidal-device-finish">I\'ve entered the code</button>' +
-                    '<button type="button" class="btn-ghost" id="tidal-device-back">Back</button>' +
-                '</div>' +
-                '<p class="streaming-auth-error" id="tidal-device-error" hidden></p>' +
-            '</div>';
-
-        void fetch('/api/streaming/tidal/auth/device', { method: 'POST' })
-            .then((r) => r.json())
-            .then((d) => {
-                content.querySelector('#tidal-device-code').textContent = d.user_code || '—';
-                content.querySelector('#tidal-device-uri').textContent = d.verification_uri_complete || 'link.tidal.com';
-            })
-            .catch(() => { content.querySelector('#tidal-device-code').textContent = 'Could not start device login.'; });
-
-        content.querySelector('#tidal-device-back').addEventListener('click', () => { state.tidal.view = null; renderTidalLogin(entryFor('tidal')); });
-        content.querySelector('#tidal-device-finish').addEventListener('click', async () => {
-            const errorEl = content.querySelector('#tidal-device-error');
-            errorEl.hidden = true;
-            try {
-                const resp = await fetch('/api/streaming/tidal/auth/device/finish', { method: 'POST' });
-                const d = await resp.json().catch(() => null);
-                if (!resp.ok) throw new Error(formatTransitionErrorDetail(d?.detail, 'Login failed'));
-                showToast('TIDAL connected', 'success');
-                state.tidal.view = null;
-                await refreshTidalStatus();
-            } catch (err) {
-                errorEl.textContent = friendlyError(err?.message || err);
-                errorEl.hidden = false;
-            }
-        });
-    }
-
-    function openTidalLogin(installed = false) {
-        const entry = entryFor('tidal');
-        const last = state.lastData.tidal || {};
-        if (installed && entry) {
-            applyTabVisibility('tidal', entry, {
-                ...entry.descriptor,
-                ...last,
-                installed: true,
-                available: last.available !== false,
-            });
-        }
-        if (last.authenticated === true) {
-            // Already connected: never clobber the browse view with a login
-            // surface (Settings list may be stale). Let the status path render.
-            if (state.tidal.contentKey !== 'browse') void refreshTidalStatus();
-            return;
-        }
-        // Same dialog flow as Qobuz; the embedded tab form stays as the
-        // fallback when the dialog bridge is unavailable.
-        if (typeof api.openTidalLogin === 'function') { api.openTidalLogin(); return; }
-        state.tidal.view = null;
-        if (entry) renderTidalLogin(entry);
-    }
-
-    function entryFor(providerId) {
-        return state.providers[providerId] || null;
-    }
-
-    // -- browse (categories + search) ---------------------------------------
-    // The four browse categories (Tracks / Albums / Artists / Playlists) live
-    // in one shared navigation row rendered with the compact view-tab
-    // component. Search results only ever replace the browse body; the bar
-    // itself survives every status refresh (contentKey guard in
-    // renderTidalContent), so a poll never resets an in-progress query.
-    const TIDAL_BROWSE_CATEGORIES = ['albums', 'tracks', 'artists', 'playlists'];
-    const TIDAL_BROWSE_LABELS = { tracks: 'Tracks', albums: 'Albums', artists: 'Artists', playlists: 'Playlists' };
-    // Surfaces that offer the grid/list toggle; tracks stay row-only.
-    const TIDAL_LAYOUT_SURFACES = { albums: 'tidal-albums', artists: 'tidal-artists', playlists: 'tidal-playlists' };
-
-    // -- shared grid/list toggle ------------------------------------------------
-    // Same component and persistence mechanism as the library albums toggle:
-    // fx-view-mode-<surface> in localStorage, grid is the default. The toggle
-    // only flips a container class, so grid and list render the same objects
-    // with the same actions.
-    function readStoredViewMode(surface) {
-        try {
-            return localStorage.getItem('fx-view-mode-' + surface) === 'list' ? 'list' : 'grid';
-        } catch (e) {
-            return 'grid';
-        }
-    }
-
-    function storeViewMode(surface, mode) {
-        try {
-            localStorage.setItem('fx-view-mode-' + surface, mode);
-        } catch (e) { /* keep working without persistence */ }
-    }
-
-    function viewModeButtonsHtml(storageSurface) {
-        const key = Object.keys(TIDAL_LAYOUT_SURFACES).find((k) => TIDAL_LAYOUT_SURFACES[k] === storageSurface);
-        const layout = (key && state.tidal.albumLayouts[key]) || 'grid';
-        return '<button type="button" class="view-mode-btn' + (layout === 'grid' ? ' active' : '') + '" data-layout-toggle="grid" data-layout-surface="' + storageSurface + '" aria-pressed="' + (layout === 'grid' ? 'true' : 'false') + '" data-tooltip="Grid view" aria-label="Grid view">▦</button>' +
-            '<button type="button" class="view-mode-btn' + (layout === 'list' ? ' active' : '') + '" data-layout-toggle="list" data-layout-surface="' + storageSurface + '" aria-pressed="' + (layout === 'list' ? 'true' : 'false') + '" data-tooltip="List view" aria-label="List view">☰</button>';
-    }
-
-    function bindViewModeToggle(root) {
-        root.querySelectorAll('.view-mode-btn[data-layout-toggle]').forEach((btn) => {
-            btn.addEventListener('click', () => setTidalLayout(btn.dataset.layoutSurface, btn.dataset.layoutToggle));
-        });
-    }
-
-    // The toggle controls whichever tile surface is currently displayed:
-    // the active browse category, or — during an executed search — the
-    // matching search result type. Tracks never get a toggle.
-    function tidalActiveStorageSurface() {
-        if (state.tidal.searchExecuted) return TIDAL_LAYOUT_SURFACES[state.tidal.searchResultType] || '';
-        return TIDAL_LAYOUT_SURFACES[state.tidal.browseCategory] || '';
-    }
-
-    function syncTidalViewModeToggle() {
-        const toggle = document.getElementById('tidal-view-mode-toggle');
-        if (!toggle) return;
-        const storageSurface = tidalActiveStorageSurface();
-        toggle.hidden = !storageSurface;
-        const key = Object.keys(TIDAL_LAYOUT_SURFACES).find((k) => TIDAL_LAYOUT_SURFACES[k] === storageSurface);
-        const layout = (key && state.tidal.albumLayouts[key]) || 'grid';
-        toggle.querySelectorAll('.view-mode-btn').forEach((btn) => {
-            const active = btn.dataset.layoutToggle === layout;
-            btn.classList.toggle('active', active);
-            btn.setAttribute('aria-pressed', active ? 'true' : 'false');
-            btn.dataset.layoutSurface = storageSurface;
-        });
-    }
-
-    // External callers (shared toggle logic in app.js) address surfaces by
-    // their storage key; internally the browse category is used.
-    function setTidalLayout(storageSurface, mode) {
-        const surface = Object.keys(TIDAL_LAYOUT_SURFACES).find((key) => TIDAL_LAYOUT_SURFACES[key] === storageSurface);
-        if (!surface) return;
-        const layout = mode === 'list' ? 'list' : 'grid';
-        if (state.tidal.albumLayouts[surface] === layout) return;
-        state.tidal.albumLayouts[surface] = layout;
-        storeViewMode(storageSurface, layout);
-        applyTidalLayout(surface);
-    }
-
-    // Re-render the active browse surface (or running search results) so the
-    // new layout applies without touching search state or favorites.
-    function applyTidalLayout(surface) {
-        if (state.tidal.browseCategory !== surface) return;
-        const body = document.getElementById('tidal-browse-body');
-        if (!body) return;
-        if (state.tidal.searchExecuted && state.tidal.searchResults && state.tidal.searchResultType === surface) {
-            renderTidalSearchResults(body, state.tidal.searchResults);
-        } else {
-            renderTidalBrowseSection(surface);
-        }
-    }
-
-    function tidalLayoutClass(surface) {
-        return (state.tidal.albumLayouts[surface] || 'grid') === 'list' ? 'tidal-tiles is-list' : 'tidal-tiles';
-    }
-
-    function renderTidalBrowse(entry) {
-        const content = entry.els.content;
-        // Keep the status line consistent while navigating between the main
-        // surface and detail views (the poll refreshes it as well).
-        applyCatalogStatusLine(entry, 'tidal', state.lastData.tidal || {});
-        if (state.tidal.view === 'album') { renderTidalAlbum(content); return; }
-        if (state.tidal.view === 'playlist') { renderTidalPlaylist(content); return; }
-        if (state.tidal.view === 'artist') { renderTidalArtist(content); return; }
-        // The browse surface follows the library header logic: row 1 is the
-        // page title with the connected pill + refresh on the right, row 2 is
-        // the single Tracks/Albums/Artists/Playlists navigation with the
-        // search group on the right. Search results only ever replace the
-        // browse body; the bar itself survives every status refresh
-        // (contentKey guard in renderTidalContent), so a poll never resets an
-        // in-progress query.
-        content.innerHTML =
-            '<div class="streaming-browse">' +
-                '<div class="tidal-toolbar">' +
-                    '<h2 class="section-title tidal-toolbar-title">Tidal</h2>' +
-                    '<div class="tidal-toolbar-actions">' +
-                        '<button type="button" class="btn-secondary btn-icon" id="tidal-refresh-btn" data-tooltip="Refresh TIDAL" aria-label="Refresh TIDAL">⟳</button>' +
-                        '<div class="view-mode-toggle" id="tidal-view-mode-toggle" role="group" aria-label="View mode">' +
-                            viewModeButtonsHtml(tidalActiveStorageSurface()) +
-                        '</div>' +
-                    '</div>' +
-                '</div>' +
-                '<div class="tidal-subbar">' +
-                    '<div class="view-tabs" role="tablist" aria-label="TIDAL browse">' +
-                        TIDAL_BROWSE_CATEGORIES.map((cat) =>
-                            '<button type="button" class="view-tab' + (state.tidal.browseCategory === cat ? ' is-active' : '') + '" data-browse="' + cat + '">' + TIDAL_BROWSE_LABELS[cat] + '</button>'
-                        ).join('') +
-                    '</div>' +
-                    '<div class="streaming-search">' +
-                        '<div class="streaming-search-row">' +
-                            '<div class="streaming-search-field">' +
-                                '<input type="search" class="streaming-search-input" id="tidal-search-input" placeholder="Search albums, tracks, artists, playlists…" data-placeholder-full="Search albums, tracks, artists, playlists…" data-placeholder-compact="Search…" autocomplete="off" />' +
-                                '<button type="button" class="streaming-search-clear" id="tidal-search-clear" aria-label="Clear TIDAL search" disabled>×</button>' +
-                            '</div>' +
-                        '</div>' +
-                    '</div>' +
-                '</div>' +
-                tidalPlaylistSaveRowHtml('album') +
-                '<div class="streaming-browse-body" id="tidal-browse-body"></div>' +
-            '</div>';
-        const actions = content.querySelector('.tidal-toolbar-actions');
-        if (actions && entry.els.statusLine) actions.prepend(entry.els.statusLine);
-        bindTidalSearchBar(content);
-        bindTidalRefresh(content);
-        bindViewModeToggle(content);
-        bindTidalPlaylistSaveRow(content);
-        syncTidalViewModeToggle();
-        updateTidalPlaylistSaveRow();
-        const input = content.querySelector('#tidal-search-input');
-        if (input && state.tidal.searchExecuted) input.value = state.tidal.searchQuery;
-        setTidalSearchClearDisabled(input, content.querySelector('#tidal-search-clear'));
-        const tabs = content.querySelectorAll('.tidal-subbar .view-tab[data-browse]');
-        tabs.forEach((tab) => tab.addEventListener('click', () => {
-            tabs.forEach((t) => t.classList.toggle('is-active', t === tab));
-            resetTidalSearch();
-            renderTidalBrowseSection(tab.dataset.browse);
-        }));
-        // Preload the last-known library state so the first section render is
-        // instant; the section load itself refreshes in the background.
-        void loadTidalSnapshot();
-        if (state.tidal.searchExecuted && state.tidal.searchResults) {
-            renderTidalSearchResults(document.getElementById('tidal-browse-body'), state.tidal.searchResults);
-        } else if (state.tidal.searchExecuted && state.tidal.searchQuery) {
-            const body = document.getElementById('tidal-browse-body');
-            if (body) {
-                body.innerHTML = contentState('loading', 'Searching…');
-                if (state.tidal.searchDebounceTimer === null && !state.tidal.searchInFlight) {
-                    void executeTidalSearch(state.tidal.searchResultType);
-                }
-            }
-        } else {
-            renderTidalBrowseSection(state.tidal.browseCategory);
-        }
-    }
-
-    function renderTidalBrowseSection(section) {
-        const body = document.getElementById('tidal-browse-body');
-        if (!body) return;
-        state.tidal.browseCategory = section;
-        syncTidalViewModeToggle();
-        if (section === 'playlists') renderTidalPlaylists(body);
-        else renderTidalFavorites(body, section);
-    }
-
-    // -- search (permanent bar sharing the second header row) ----------------
-    // Executing a search replaces the browse body with results; clearing it
-    // returns to the current browse category (Albums by default). The bar
-    // lives in the browse surface, so the contentKey guard keeps a running
-    // search (and its results) intact across status refreshes.
-    function cancelTidalSearchDebounce() {
-        if (state.tidal.searchDebounceTimer !== null) {
-            clearTimeout(state.tidal.searchDebounceTimer);
-            state.tidal.searchDebounceTimer = null;
-        }
-    }
-
-    function bindTidalSearchBar(root) {
-        const input = root.querySelector('#tidal-search-input');
-        const clear = root.querySelector('#tidal-search-clear');
-        const syncClear = () => setTidalSearchClearDisabled(input, clear);
-        const updatePlaceholder = () => {
-            const compact = window.matchMedia && window.matchMedia('(max-width: 600px)').matches;
-            input.placeholder = compact
-                ? (input.dataset.placeholderCompact || 'Search…')
-                : (input.dataset.placeholderFull || 'Search albums, tracks, artists, playlists…');
-        };
-        updatePlaceholder();
-        if (window.matchMedia) {
-            const placeholderQuery = window.matchMedia('(max-width: 600px)');
-            if (placeholderQuery.addEventListener) {
-                placeholderQuery.addEventListener('change', updatePlaceholder);
-            } else if (placeholderQuery.addListener) {
-                placeholderQuery.addListener(updatePlaceholder);
-            }
-        }
-        const startSearch = (immediate) => {
-            const query = (input.value || '').trim();
-            cancelTidalSearchDebounce();
-            if (!query) {
-                clearTidalSearch();
-                return;
-            }
-            // Invalidate the previous generation before waiting, not only when
-            // the next request starts. A late response must not render during
-            // the debounce window for a newer query.
-            state.tidal.searchRequestId += 1;
-            state.tidal.searchQuery = query;
-            state.tidal.searchExecuted = true;
-            state.tidal.searchResultType = 'albums';
-            state.tidal.searchResults = null;
-            state.tidal.searchInFlight = false;
-            const body = root.querySelector('#tidal-browse-body');
-            if (body) body.innerHTML = contentState('loading', immediate ? 'Searching…' : 'Waiting to search…');
-            if (immediate) {
-                void executeTidalSearch('albums');
-                return;
-            }
-            state.tidal.searchDebounceTimer = setTimeout(() => {
-                state.tidal.searchDebounceTimer = null;
-                void executeTidalSearch('albums');
-            }, TIDAL_SEARCH_DEBOUNCE_MS);
-        };
-        input.addEventListener('input', () => { syncClear(); startSearch(false); });
-        input.addEventListener('keydown', (e) => {
-            if (e.key === 'Enter') {
-                e.preventDefault();
-                startSearch(true);
-            } else if (e.key === 'Escape') {
-                e.preventDefault();
-                clearTidalSearch();
-            }
-        });
-        if (clear) clear.addEventListener('click', () => {
-            input.value = '';
-            syncClear();
-            clearTidalSearch();
-            input.focus();
-        });
-        syncClear();
-    }
-
-    // Clear affordance mirrors the local library search field: the X is
-    // always rendered and only dimmed while the field is empty, instead of
-    // appearing on first input like the native search cancel button
-    // (which stays hidden so there is exactly one clear control).
-    function setTidalSearchClearDisabled(input, clear) {
-        if (clear) clear.disabled = !((input && input.value || '').trim());
-    }
-
-    function resetTidalSearch() {
-        // Invalidate a response that is still resolving after clear/navigation.
-        cancelTidalSearchDebounce();
-        state.tidal.searchRequestId += 1;
-        state.tidal.searchQuery = '';
-        state.tidal.searchExecuted = false;
-        state.tidal.searchResults = null;
-        state.tidal.searchInFlight = false;
-        const input = document.getElementById('tidal-search-input');
-        if (input) input.value = '';
-        setTidalSearchClearDisabled(input, document.getElementById('tidal-search-clear'));
-    }
-
-    function clearTidalSearch() {
-        resetTidalSearch();
-        renderTidalBrowseSection(state.tidal.browseCategory);
-    }
-
-    // -- refresh (manual cache invalidation + re-render) ---------------------
-    // The refresh button reuses the existing TIDAL provider logic: it forces
-    // a fresh authoritative favorite-ids load (the source of heart/browse
-    // state), reloads the provider status, then re-renders whatever view is
-    // active. It never logs out, resets the session, touches playback or the
-    // queue, or clears any unrelated FXRoute cache.
-    function bindTidalRefresh(root) {
-        const btn = root.querySelector('#tidal-refresh-btn');
-        if (!btn) return;
-        btn.addEventListener('click', () => {
-            if (btn.disabled) return;
-            btn.disabled = true;
-            void refreshTidalCatalog().finally(() => { btn.disabled = false; });
-        });
+        if (typeof api.openTidalLogin === 'function') api.openTidalLogin();
     }
 
     async function refreshTidalCatalog() {
@@ -1473,102 +861,10 @@
     }
 
     function refreshActiveTidalView() {
-        if (state.tidal.host === 'library') {
-            if (isTidalDetailView()) renderTidalSurface();
-            return;
-        }
-        if (state.tidal.contentKey !== 'browse') return;
-        if (isTidalDetailView()) {
-            renderTidalSurface();
-            return;
-        }
-        if (state.tidal.searchExecuted && state.tidal.searchQuery) {
-            void executeTidalSearch(state.tidal.searchResultType);
-            return;
-        }
-        renderTidalBrowseSection(state.tidal.browseCategory);
+        if (isTidalDetailView()) renderTidalSurface();
     }
 
     const TIDAL_SEARCH_TYPES = ['albums', 'tracks', 'artists', 'playlists'];
-    const TIDAL_SEARCH_TYPE_LABELS = { artists: 'Artists', tracks: 'Tracks', albums: 'Albums', playlists: 'Playlists' };
-
-    async function executeTidalSearch(type) {
-        cancelTidalSearchDebounce();
-        if (!state.tidal.searchExecuted || !state.tidal.searchQuery) return;
-        const body = document.getElementById('tidal-browse-body');
-        if (!body) return;
-        const query = state.tidal.searchQuery;
-        const requestId = ++state.tidal.searchRequestId;
-        state.tidal.searchResultType = type;
-        state.tidal.searchInFlight = true;
-        body.innerHTML = contentState('loading', 'Searching…');
-        try {
-            const resp = await fetch('/api/streaming/tidal/search?q=' + encodeURIComponent(query) + '&types=' + encodeURIComponent(type) + '&limit=25');
-            if (!resp.ok) throw new Error(await errorDetail(resp));
-            const data = await resp.json();
-            if (requestId !== state.tidal.searchRequestId) return;
-            state.tidal.searchResults = data;
-            state.tidal.searchInFlight = false;
-            try { await loadTidalFavoriteIds(); } catch (e) { /* hearts render unfilled until state loads */ }
-            if (requestId === state.tidal.searchRequestId) {
-                const currentBody = document.getElementById('tidal-browse-body');
-                if (currentBody) renderTidalSearchResults(currentBody, data);
-            }
-        } catch (err) {
-            if (requestId !== state.tidal.searchRequestId) return;
-            state.tidal.searchInFlight = false;
-            const currentBody = document.getElementById('tidal-browse-body');
-            if (currentBody) currentBody.innerHTML = contentState('error', friendlyError(err?.message || err));
-        }
-    }
-
-    function runTidalSearch(type) {
-        if (!state.tidal.searchExecuted || !state.tidal.searchQuery) return;
-        void executeTidalSearch(type);
-    }
-
-    function renderTidalSearchResults(container, data) {
-        const type = state.tidal.searchResultType;
-        const items = data[type] || [];
-        state.tidal.searchResults = data;
-        container.innerHTML = '';
-        syncTidalViewModeToggle();
-        const typeButtons = TIDAL_SEARCH_TYPES.map((value) =>
-            '<button type="button" class="view-tab' + (value === type ? ' is-active' : '') + '" id="tidal-search-type-' + value + '" data-search-type="' + value + '">' + TIDAL_SEARCH_TYPE_LABELS[value] + '</button>'
-        ).join('');
-        container.innerHTML =
-            '<div class="tidal-search-results-header">' +
-                '<h3 class="streaming-results-title">Search results for &quot;' + escapeHtml(state.tidal.searchQuery) + '&quot;</h3>' +
-                '<div class="view-tabs" id="tidal-search-result-types" aria-label="Search result type">' + typeButtons + '</div>' +
-            '</div>' +
-            '<div class="streaming-results" id="tidal-search-items"></div>';
-        const itemsContainer = container.querySelector('#tidal-search-items');
-        bindTidalSearchResultControls(container);
-        if (!items.length) {
-            itemsContainer.innerHTML = contentState('empty', 'No results.');
-            return;
-        }
-        const queueIds = type === 'tracks' ? items.map((item) => String(item.id)).filter(Boolean) : [];
-        const list = document.createElement('ul');
-        list.className = type === 'tracks' ? 'streaming-results-list' : tidalLayoutClass(type);
-        items.forEach((item) => list.appendChild(renderSearchItem(type, item, queueIds)));
-        itemsContainer.appendChild(list);
-    }
-
-    function bindTidalSearchResultControls(container) {
-        container.querySelectorAll('#tidal-search-result-types .view-tab').forEach((chipEl) => {
-            chipEl.addEventListener('click', () => runTidalSearch(chipEl.dataset.searchType));
-        });
-    }
-
-    function renderTidalFavoriteResults(container, type, items) {
-        container.innerHTML = '';
-        const list = document.createElement('ul');
-        list.className = type === 'tracks' ? 'streaming-results-list' : tidalLayoutClass(type);
-        const queueIds = type === 'tracks' ? items.map((item) => String(item.id)).filter(Boolean) : [];
-        items.forEach((item) => list.appendChild(renderSearchItem(type, item, queueIds)));
-        container.appendChild(list);
-    }
 
     function renderSearchItem(type, item, queueIds) {
         const li = document.createElement('li');
@@ -1644,105 +940,15 @@
         document.querySelectorAll('.streaming-result[data-track-id]').forEach((row) => {
             row.classList.toggle('is-selected', state.tidal.selectedTrackIds.has(row.dataset.trackId));
         });
-        updateTidalPlaylistSaveRow();
         dispatchTidalEvent('fxroute:tidal-selection', { count: state.tidal.selectedTrackIds.size });
     }
 
     function clearTidalPlaylistSelection() {
         state.tidal.selectedTrackIds.clear();
-        const nameInput = document.getElementById('tidal-playlist-name');
-        if (nameInput) nameInput.value = '';
-        clearTidalPlaylistSaveError();
         syncTidalTrackSelection();
     }
 
-    function tidalPlaylistSaveRowHtml(variant) {
-        // The Library renders its own shared save row next to TIDAL details.
-        if (state.tidal.host === 'library') return '';
-        const modifier = variant === 'album' ? ' tidal-playlist-save-row--album' : '';
-        return '<div class="playlist-save-row tidal-playlist-save-row' + modifier + ' hidden" id="tidal-playlist-save-row">' +
-            '<div class="playlist-save-controls">' +
-                '<input type="text" id="tidal-playlist-name" class="url-input" placeholder="New playlist name…" aria-label="New TIDAL playlist name" autocomplete="off" />' +
-                '<button id="tidal-save-playlist" class="btn-secondary" type="button">Save as new</button>' +
-                '<select id="tidal-playlist-target" class="url-input" aria-label="Add to existing TIDAL playlist">' +
-                    '<option value="">Add to existing playlist…</option>' +
-                '</select>' +
-                '<button id="tidal-add-to-playlist" class="btn-secondary" type="button">Add</button>' +
-                '<button id="tidal-cancel-playlist-selection" class="btn-secondary" type="button">Cancel</button>' +
-            '</div>' +
-            '<div class="tidal-playlist-save-error" id="tidal-playlist-save-error" hidden></div>' +
-        '</div>';
-    }
-
-    function setTidalPlaylistSaveError(message) {
-        const el = document.getElementById('tidal-playlist-save-error');
-        if (!el) return;
-        el.textContent = message || '';
-        el.hidden = !message;
-    }
-
-    function clearTidalPlaylistSaveError() {
-        setTidalPlaylistSaveError('');
-    }
-
-    function updateTidalPlaylistSaveRow() {
-        const row = document.getElementById('tidal-playlist-save-row');
-        if (!row) return;
-        const hasSelection = state.tidal.selectedTrackIds.size > 0;
-        row.classList.toggle('hidden', !hasSelection);
-        if (!hasSelection) clearTidalPlaylistSaveError();
-        if (hasSelection) void ensureTidalPlaylistTargetOptions();
-    }
-
-    function populateTidalPlaylistTarget(items) {
-        const select = document.getElementById('tidal-playlist-target');
-        if (!select) return;
-        const current = select.value;
-        const lists = Array.isArray(items) ? items : [];
-        select.innerHTML = '<option value="">Add to existing playlist…</option>' +
-            lists.map((item) => '<option value="' + escapeHtml(item.id) + '">' + escapeHtml(item.name || 'Playlist') + '</option>').join('');
-        if (current) select.value = current;
-    }
-
-    let tidalPlaylistTargetPromise = null;
-    async function ensureTidalPlaylistTargetOptions() {
-        if (tidalPlaylistTargetPromise) return tidalPlaylistTargetPromise;
-        const select = document.getElementById('tidal-playlist-target');
-        if (!select || (select.options && select.options.length > 1)) return;
-        tidalPlaylistTargetPromise = (async () => {
-            try {
-                const resp = await fetch('/api/streaming/tidal/playlists');
-                if (!resp.ok) return;
-                const items = await resp.json();
-                if (Array.isArray(items)) populateTidalPlaylistTarget(items);
-            } catch (e) { /* options stay minimal; new-playlist save still works */ }
-            finally { tidalPlaylistTargetPromise = null; }
-        })();
-        return tidalPlaylistTargetPromise;
-    }
-
-    function bindTidalPlaylistSaveRow(root) {
-        const row = root.querySelector('#tidal-playlist-save-row');
-        if (!row) return;
-        const nameInput = row.querySelector('#tidal-playlist-name');
-        const saveNew = row.querySelector('#tidal-save-playlist');
-        const target = row.querySelector('#tidal-playlist-target');
-        const addBtn = row.querySelector('#tidal-add-to-playlist');
-        const cancel = row.querySelector('#tidal-cancel-playlist-selection');
-        if (saveNew) saveNew.addEventListener('click', () => void saveNewTidalPlaylist(nameInput, saveNew));
-        if (addBtn) addBtn.addEventListener('click', () => void addTidalPlaylistTracks(target, addBtn));
-        if (cancel) cancel.addEventListener('click', () => { clearTidalPlaylistSelection(); showToast('TIDAL selection cleared', 'info'); });
-        if (nameInput) {
-            nameInput.addEventListener('keydown', (e) => {
-                if (e.key === 'Enter') {
-                    e.preventDefault();
-                    if (saveNew) saveNew.click();
-                }
-            });
-        }
-    }
-
-    // Create a TIDAL playlist from the + selection (tab row and Library row).
+    // Create a TIDAL playlist from the + selection (Library save row).
     async function createTidalPlaylist(name, trackIds) {
         const resp = await fetch('/api/streaming/tidal/playlists/create', {
             method: 'POST',
@@ -1753,7 +959,7 @@
         if (!resp.ok) throw new Error(formatTransitionErrorDetail(data.detail, 'Failed to save TIDAL playlist'));
         clearTidalPlaylistSelection();
         // Refresh favorite ids so the new playlist heart renders active
-        // immediately; reloadPlaylists re-renders the browse view.
+        // immediately; the playlists reload tells the Library.
         void loadTidalFavoriteIds(true).then(() => reloadTidalPlaylists());
         return data;
     }
@@ -1772,50 +978,13 @@
         return data;
     }
 
-    async function saveNewTidalPlaylist(nameInput, btn) {
-        const name = (nameInput?.value || '').trim();
-        const trackIds = Array.from(state.tidal.selectedTrackIds);
-        if (!name) { setTidalPlaylistSaveError('Enter a playlist name'); return; }
-        if (!trackIds.length) { setTidalPlaylistSaveError('Select at least one track with +'); return; }
-        btn.disabled = true;
-        try {
-            const data = await createTidalPlaylist(name, trackIds);
-            showToast('Saved: ' + (data.name || name), 'success');
-        } catch (err) {
-            setTidalPlaylistSaveError(friendlyError(err?.message || err));
-        } finally {
-            btn.disabled = false;
-        }
-    }
-
-    async function addTidalPlaylistTracks(target, btn) {
-        const playlistId = target?.value || '';
-        const trackIds = Array.from(state.tidal.selectedTrackIds);
-        if (!playlistId) { setTidalPlaylistSaveError('Choose a TIDAL playlist'); return; }
-        if (!trackIds.length) { setTidalPlaylistSaveError('Select at least one track with +'); return; }
-        btn.disabled = true;
-        try {
-            await addTracksToTidalPlaylist(playlistId, trackIds);
-            const label = target.options?.[target.selectedIndex]?.textContent || 'playlist';
-            showToast('Added ' + trackIds.length + ' track' + (trackIds.length === 1 ? '' : 's') + ' to ' + label, 'success');
-        } catch (err) {
-            setTidalPlaylistSaveError(friendlyError(err?.message || err));
-        } finally {
-            btn.disabled = false;
-        }
-    }
-
     async function reloadTidalPlaylists() {
         try {
             const resp = await fetch('/api/streaming/tidal/playlists');
             if (!resp.ok) return;
             const items = await resp.json();
             state.tidal.lastItems.playlists = Array.isArray(items) ? items : [];
-            populateTidalPlaylistTarget(state.tidal.lastItems.playlists);
             notifyTidalLibrary('playlists');
-            if (!state.tidal.searchExecuted && state.tidal.browseCategory === 'playlists' && !isTidalDetailView()) {
-                renderTidalBrowseSection('playlists');
-            }
         } catch (e) { /* keep the already-visible playlists */ }
     }
 
@@ -2075,12 +1244,6 @@
             syncFavoriteDetailButtons(type, idStr);
             notifyFavoritesChanged();
             showToast(data.favorite ? 'Added to favorites' : 'Removed from favorites', 'success');
-            // The favorites list must stay authoritative: refresh it so an
-            // unfavorited item leaves and a newly favorited item appears.
-            if (state.tidal.host === 'tab' && state.tidal.view !== 'album' && state.tidal.view !== 'playlist' && state.tidal.view !== 'artist' && !state.tidal.searchExecuted) {
-                if (state.tidal.browseCategory === 'playlists') renderTidalBrowseSection('playlists');
-                else loadTidalFavorites();
-            }
             // A newly favorited item joins the Library grids; a removed one
             // already left through the favorites event above.
             if (data.favorite && state.tidal.libraryLoadedAt && TIDAL_LIBRARY_KINDS.includes(type)) {
@@ -2089,144 +1252,6 @@
         } catch (err) {
             showToast(friendlyError(err?.message || err), 'error');
         }
-    }
-
-    // -- favorites ------------------------------------------------------------
-    // Tracks / Albums / Artists render the favorite lists of the selected
-    // category (the category itself is the top navigation row); Playlists has
-    // its own dedicated section.
-    function renderTidalFavorites(body, type) {
-        state.tidal.browseCategory = type;
-        body.innerHTML = '<div class="streaming-results" id="tidal-fav-results"></div>';
-        loadTidalFavorites();
-    }
-
-    function renderTidalFavoritesContent(results, type, items) {
-        if (!Array.isArray(items) || !items.length) {
-            results.innerHTML = contentState('empty', 'No favorites yet.');
-            return;
-        }
-        renderTidalFavoriteResults(results, type, items);
-    }
-
-    async function loadTidalFavorites() {
-        const results = document.getElementById('tidal-fav-results');
-        if (!results) return;
-        const type = state.tidal.browseCategory;
-        ensureTidalAccountState();
-        // Render the last-known payload instantly; the live refresh below
-        // replaces it in place when fresh data arrives.
-        const cached = state.tidal.lastItems[type];
-        let rendered = false;
-        if (cached !== undefined) {
-            renderTidalFavoritesContent(results, type, cached);
-            rendered = true;
-        } else {
-            results.innerHTML = contentState('loading', 'Loading…');
-        }
-        try {
-            // Adopt last-known ids (hearts) before the authoritative load.
-            if (state.tidal.favoritesLoaded !== true) await loadTidalSnapshot();
-            if (state.tidal.searchExecuted || state.tidal.browseCategory !== type) return;
-            // The snapshot may have arrived while we waited: render it now so
-            // the last-known library appears before the live refresh returns.
-            if (!rendered) {
-                const late = state.tidal.lastItems[type];
-                if (late !== undefined) {
-                    renderTidalFavoritesContent(results, type, late);
-                    rendered = true;
-                }
-            }
-            // Re-read the real TIDAL favorite state so external app changes
-            // appear on refresh (no shadow state).
-            await loadTidalFavoriteIds(true);
-            if (state.tidal.searchExecuted || state.tidal.browseCategory !== type) return;
-            const stillCurrent = () => !state.tidal.searchExecuted && state.tidal.browseCategory === type;
-            const items = await fetchTidalCollection(type, (page) => {
-                if (!stillCurrent()) return;
-                state.tidal.lastItems[type] = page;
-                renderTidalFavoritesContent(results, type, page);
-                rendered = true;
-            });
-            if (!stillCurrent()) return;
-            state.tidal.lastItems[type] = items;
-            renderTidalFavoritesContent(results, type, state.tidal.lastItems[type]);
-        } catch (err) {
-            // A failed refresh must never empty the visible library: keep the
-            // content that is already rendered (cache or earlier load).
-            if (!rendered) {
-                results.innerHTML = contentState('error', friendlyError(err?.message || err));
-            }
-        }
-    }
-
-    // -- playlists ------------------------------------------------------------
-    async function renderTidalPlaylists(body) {
-        body.innerHTML = '<div class="streaming-results" id="tidal-playlists-results"></div>';
-        const results = body.querySelector('#tidal-playlists-results');
-        ensureTidalAccountState();
-        const cached = state.tidal.lastItems.playlists;
-        let rendered = false;
-        if (cached !== undefined) {
-            renderTidalPlaylistsContent(results, cached);
-            rendered = true;
-        } else {
-            results.innerHTML = contentState('loading', 'Loading…');
-        }
-        try {
-            if (state.tidal.favoritesLoaded !== true) await loadTidalSnapshot();
-            if (state.tidal.searchExecuted || state.tidal.browseCategory !== 'playlists') return;
-            if (!rendered) {
-                const late = state.tidal.lastItems.playlists;
-                if (late !== undefined) {
-                    renderTidalPlaylistsContent(results, late);
-                    rendered = true;
-                }
-            }
-            const resp = await fetch('/api/streaming/tidal/playlists');
-            if (!resp.ok) throw new Error(await errorDetail(resp));
-            const items = await resp.json();
-            if (state.tidal.searchExecuted || state.tidal.browseCategory !== 'playlists') return;
-            state.tidal.lastItems.playlists = Array.isArray(items) ? items : [];
-            renderTidalPlaylistsContent(results, state.tidal.lastItems.playlists);
-        } catch (err) {
-            // Keep the already-rendered playlists on a failed refresh.
-            if (!rendered) {
-                results.innerHTML = contentState('error', friendlyError(err?.message || err));
-            }
-        }
-    }
-
-    function renderTidalPlaylistsContent(results, items) {
-        if (!Array.isArray(items) || !items.length) {
-            results.innerHTML = contentState('empty', 'No playlists yet.');
-            return;
-        }
-        populateTidalPlaylistTarget(items);
-        const list = document.createElement('ul');
-        list.className = tidalLayoutClass('playlists');
-        for (const item of items) {
-            const li = document.createElement('li');
-            li.className = 'album-card';
-            li.setAttribute('role', 'button');
-            li.setAttribute('tabindex', '0');
-            const sub = item.track_count ? item.track_count + ' tracks' : 'Playlist';
-            li.innerHTML =
-                '<div class="album-art-wrap">' + tidalCardArt(item.art_url, item.name || 'Playlist') + '</div>' +
-                favoriteButtonHtml('playlists', item.id) +
-                '<div class="album-name">' + escapeHtml(item.name) + '</div>' +
-                '<div class="album-artist">' + escapeHtml(sub) + '</div>';
-            const open = () => openTidalPlaylist(item.id, item.name, item.art_url);
-            li.addEventListener('click', open);
-            li.addEventListener('keydown', (event) => {
-                if (event.target !== event.currentTarget) return;
-                if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); open(); }
-            });
-            bindTidalFavoriteButtons(li);
-            list.appendChild(li);
-        }
-        results.innerHTML = '';
-        results.appendChild(list);
     }
 
     // -- album / playlist detail ----------------------------------------------
@@ -2280,18 +1305,12 @@
         renderTidalSurface();
     }
 
-    // -- detail hosts (TIDAL tab or Library) ------------------------------------
-    // Album/playlist/artist details render into whichever surface is live.
-    // The tab host renders through the browse shell; the Library host gets
-    // the bare detail in its own container and is told when the detail chain
-    // opens or closes, so it can swap its grids for the detail and back.
+    // -- Library detail host ------------------------------------------------------
+    // Album/playlist/artist details render into the Library host container and
+    // the host is told when the detail chain opens or closes, so it can swap
+    // its grids for the detail and back.
     function renderTidalSurface() {
-        if (state.tidal.host === 'library') {
-            renderTidalLibraryDetail();
-            return;
-        }
-        const entry = entryFor('tidal');
-        if (entry) renderTidalBrowse(entry);
+        renderTidalLibraryDetail();
     }
 
     function renderTidalLibraryDetail() {
@@ -2312,16 +1331,6 @@
         if (typeof host.onRender === 'function') host.onRender(content);
     }
 
-    function tidalDetailSnapshot() {
-        return {
-            view: state.tidal.view,
-            viewStack: state.tidal.viewStack.slice(),
-            detailId: state.tidal.detailId,
-            detailTitle: state.tidal.detailTitle,
-            detailArt: state.tidal.detailArt,
-        };
-    }
-
     function restoreTidalDetail(snapshot) {
         state.tidal.view = snapshot ? snapshot.view : null;
         state.tidal.viewStack = snapshot ? snapshot.viewStack.slice() : [];
@@ -2330,28 +1339,9 @@
         state.tidal.detailArt = snapshot ? snapshot.detailArt || '' : '';
     }
 
-    // Switch the live detail host. The previous host's detail chain is
-    // parked, in-flight detail loads are invalidated, and the target host
-    // resumes its own chain (re-rendered, since its loads were cancelled).
-    function activateTidalHost(host) {
-        if (state.tidal.host === host) return;
-        state.tidal.parked[state.tidal.host] = tidalDetailSnapshot();
-        state.tidal.detailRequestId += 1;
-        state.tidal.host = host;
-        restoreTidalDetail(state.tidal.parked[host]);
-        state.tidal.parked[host] = null;
-        if (!isTidalDetailView()) return;
-        if (host === 'library') renderTidalLibraryDetail();
-        else if (state.tidal.contentKey === 'browse') renderTidalSurface();
-    }
-
     // The Library leaves a TIDAL detail chain through its own navigation
     // (view tabs, search): drop the chain without re-rendering the Library.
     function closeTidalLibraryDetail() {
-        if (state.tidal.host !== 'library') {
-            state.tidal.parked.library = null;
-            return;
-        }
         state.tidal.detailRequestId += 1;
         restoreTidalDetail(null);
         if (libraryHost && libraryHost.container) libraryHost.container.innerHTML = '';
@@ -2402,13 +1392,10 @@
                     '</div>' +
                     '<button type="button" class="album-detail-back" id="tidal-detail-back">← Back</button>' +
                 '</div>' +
-                tidalPlaylistSaveRowHtml('album') +
                 '<div class="streaming-results" id="tidal-detail-results">' + contentState('loading', 'Loading…') + '</div>' +
             '</div>';
         content.querySelector('#tidal-detail-back').addEventListener('click', closeTidalDetail);
         bindFavoriteDetailButtons(content);
-        bindTidalPlaylistSaveRow(content);
-        updateTidalPlaylistSaveRow();
         loadTidalAlbum(content, requestId);
     }
 
@@ -2509,13 +1496,10 @@
                     '</div>' +
                     '<button type="button" class="album-detail-back" id="tidal-detail-back">← Back</button>' +
                 '</div>' +
-                tidalPlaylistSaveRowHtml('album') +
                 '<div class="streaming-results" id="tidal-detail-results">' + contentState('loading', 'Loading…') + '</div>' +
             '</div>';
         content.querySelector('#tidal-detail-back').addEventListener('click', closeTidalDetail);
         bindFavoriteDetailButtons(content);
-        bindTidalPlaylistSaveRow(content);
-        updateTidalPlaylistSaveRow();
         loadTidalArtist(content, requestId);
     }
 
@@ -2584,8 +1568,8 @@
             heading.className = 'streaming-results-heading';
             heading.textContent = 'Top Tracks';
             results.appendChild(heading);
-            // renderDetailTracks replaces its container's content, so the
-            // rows get their own host and the heading stays.
+            // renderDetailTracks replaces the content of its container, so
+            // the rows get their own host and the heading stays.
             const trackHost = document.createElement('div');
             results.appendChild(trackHost);
             renderDetailTracks(trackHost, tracks);
@@ -2788,7 +1772,7 @@
     // existing TIDAL search-result flow. Never a live per-keystroke search.
     function openTidalSimilarArtist(item) {
         // In the Library an artist that exists locally opens its own page.
-        if (state.tidal.host === 'library' && libraryHost && typeof libraryHost.openLocalArtist === 'function'
+        if (libraryHost && typeof libraryHost.openLocalArtist === 'function'
             && item && libraryHost.openLocalArtist(item.artist)) {
             return;
         }
@@ -2824,7 +1808,7 @@
             throw new Error('no unique artist match');
         } catch (err) {
             if (detailRequestId !== state.tidal.detailRequestId || !isTidalDetailView()) return;
-            showTidalSearchResultsFor(name);
+            if (canSearchInLibrary()) searchArtistInLibrary(name);
         }
     }
 
@@ -2839,33 +1823,8 @@
 
     // The Library searches its own content and the TIDAL catalog for the name.
     function searchArtistInLibrary(name) {
-        if (state.tidal.host === 'library') state.tidal.parked.tab = null;
         closeTidalLibraryDetail();
         libraryHost.search(name, 'artists');
-    }
-
-    // Reuse the existing TIDAL executed-search flow: close the detail, seed the
-    // permanent search bar with the artist name and render artist results.
-    function showTidalSearchResultsFor(name) {
-        if (state.tidal.host === 'library' && canSearchInLibrary()) {
-            searchArtistInLibrary(name);
-            return;
-        }
-        state.tidal.detailRequestId += 1;
-        state.tidal.view = null;
-        state.tidal.viewStack = [];
-        state.tidal.searchQuery = name;
-        state.tidal.searchExecuted = true;
-        state.tidal.searchResultType = 'artists';
-        state.tidal.searchResults = null;
-        state.tidal.searchInFlight = false;
-        cancelTidalSearchDebounce();
-        const entry = entryFor('tidal');
-        if (entry) {
-            renderTidalBrowse(entry);
-        } else {
-            void executeTidalSearch('artists');
-        }
     }
 
     function renderTidalPlaylist(content) {
@@ -2889,13 +1848,10 @@
                     '</div>' +
                     '<button type="button" class="album-detail-back" id="tidal-detail-back">← Back</button>' +
                 '</div>' +
-                tidalPlaylistSaveRowHtml('album') +
                 '<div class="streaming-results" id="tidal-detail-results">' + contentState('loading', 'Loading…') + '</div>' +
             '</div>';
         content.querySelector('#tidal-detail-back').addEventListener('click', closeTidalDetail);
         bindFavoriteDetailButtons(content);
-        bindTidalPlaylistSaveRow(content);
-        updateTidalPlaylistSaveRow();
         loadTidalPlaylistTracks(content, requestId);
     }
 
@@ -2985,6 +1941,27 @@
         container.appendChild(list);
     }
 
+    // Display data of the TIDAL tracks shown so far, so a saved playlist can
+    // list them later without TIDAL (see trackMeta). Bounded; oldest first out.
+    const TIDAL_TRACK_META_MAX = 2000;
+    const tidalTrackMeta = new Map();
+
+    function rememberTidalTrack(item) {
+        if (!item || item.id == null) return;
+        const id = String(item.id);
+        tidalTrackMeta.delete(id);
+        tidalTrackMeta.set(id, {
+            title: item.title || '',
+            artist: item.artist || '',
+            album: item.album || '',
+            duration: Number(item.duration) > 0 ? Number(item.duration) : 0,
+            art_url: item.art_url || '',
+        });
+        while (tidalTrackMeta.size > TIDAL_TRACK_META_MAX) {
+            tidalTrackMeta.delete(tidalTrackMeta.keys().next().value);
+        }
+    }
+
     // One TIDAL track row for every surface (search results, favorites,
     // details, Library lists): shared row body, + selection, TIDAL heart.
     // A click plays the row inside its list (queueIds).
@@ -2992,6 +1969,11 @@
         const opts = options || {};
         const queueIds = Array.isArray(opts.queueIds) ? opts.queueIds : [];
         const trackId = String(item.id);
+        rememberTidalTrack(item);
+        // A host list can own playback (a saved playlist plays its mixed queue).
+        const playRow = typeof opts.onPlay === 'function'
+            ? () => opts.onPlay(trackId)
+            : () => playTidalTracks(queueIds, trackId);
         const isSelected = state.tidal.selectedTrackIds.has(trackId);
         const li = document.createElement(opts.tag || 'li');
         li.className = 'streaming-result' + (isSelected ? ' is-selected' : '');
@@ -3009,13 +1991,13 @@
         });
         li.querySelector('.track-play').addEventListener('click', (event) => {
             event.stopPropagation();
-            playTidalTracks(queueIds, trackId);
+            playRow();
         });
         const addBtn = li.querySelector('.streaming-add[data-streaming-add]');
         if (addBtn) addBtn.addEventListener('click', (event) => toggleTidalPlaylistTrack(event, trackId));
         li.addEventListener('click', (event) => {
             if (event.target && event.target.closest('.streaming-add, .streaming-fav, .track-fav')) return;
-            playTidalTracks(queueIds, trackId);
+            playRow();
         });
         bindTidalFavoriteButtons(li);
         return li;
@@ -3154,7 +2136,6 @@
             else ids.forEach((id) => set.add(id));
             notifyFavoritesChanged();
         }
-        if (kind === 'playlists') populateTidalPlaylistTarget(list);
         notifyTidalLibrary(kind);
     }
 
@@ -3210,7 +2191,6 @@
 
     // Open a TIDAL album/playlist/artist inside the Library.
     function openTidalLibraryDetail(kind, id, title, artUrl) {
-        activateTidalHost('library');
         if (state.tidal.viewStack.length || isTidalDetailView()) restoreTidalDetail(null);
         if (kind === 'artist') rememberTidalArtist({ id: id, name: title, art_url: artUrl });
         openTidalDetail(kind, id, title, artUrl);
@@ -3282,8 +2262,16 @@
         attachLibraryHost: (host) => { libraryHost = host || null; },
         openDetail: openTidalLibraryDetail,
         closeLibraryDetail: closeTidalLibraryDetail,
-        isLibraryDetailOpen: () => state.tidal.host === 'library' && isTidalDetailView(),
+        isLibraryDetailOpen: () => isTidalDetailView(),
         selectedIds: () => Array.from(state.tidal.selectedTrackIds),
+        trackMeta: (ids) => {
+            const found = {};
+            (ids || []).forEach((id) => {
+                const meta = tidalTrackMeta.get(String(id));
+                if (meta) found[String(id)] = Object.assign({}, meta);
+            });
+            return found;
+        },
         selectTracks: (ids) => setTidalTrackSelection(ids, true),
         deselectTracks: (ids) => setTidalTrackSelection(ids, false),
         clearSelection: clearTidalPlaylistSelection,
@@ -3293,7 +2281,7 @@
         renderArtistInto: renderTidalArtistInto,
         renderSimilarArtists: renderSimilarArtists,
         hydrateSimilarArtists: hydrateSimilarArtistImages,
-        searchArtist: (name) => (canSearchInLibrary() ? searchArtistInLibrary(name) : showTidalSearchResultsFor(name)),
+        searchArtist: (name) => { if (canSearchInLibrary()) searchArtistInLibrary(name); },
         createPlaylist: createTidalPlaylist,
         addToPlaylist: addTracksToTidalPlaylist,
         play: playTidalTracks,
@@ -3317,23 +2305,17 @@
         refreshEnabledFlags,
         refreshActiveTab: () => {
             const tab = window.__visibleTab;
-            if (tab === 'qobuz' || tab === 'tidal') void refreshProvider(tab);
+            if (tab === 'qobuz') void refreshProvider(tab);
             // The Library shows TIDAL login state (header button, favorites).
             else if (tab === 'library' && tidalEnabledAndInstalled()) void refreshProvider('tidal');
         },
-        // Settings -> Providers entry point: render the TIDAL login surface
-        // (same surface the tab's own Connect button opens), so Connect
-        // actually starts the login instead of merely navigating.
-        startTidalLogin: (installed = false) => openTidalLogin(installed),
         // Footer / global favorite hooks: the shared footer heart favorites the
         // current TIDAL track through the same canonical state and API the
-        // TIDAL tab and detail rows use — no second favorite source.
+        // Library rows and details use — no second favorite source.
         isTidalFavorite,
         tidalFavoritesReady,
         ensureTidalFavoritesLoaded,
         toggleTidalFavorite,
-        // Shared grid/list layout control (library toggle bridges here).
-        setTidalLayout,
         // TIDAL inside the shared Library tab (data, rows, details, save row).
         tidal: tidalLibraryAdapter,
     };

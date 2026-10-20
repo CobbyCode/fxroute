@@ -175,6 +175,56 @@ def shuffle_around_current(tracks: list[dict], current_index: int) -> list[dict]
     return rest[:current_index] + [current] + rest[current_index:]
 
 
+def app_queue_candidate(
+    entries: list[dict],
+    current_index: int,
+    *,
+    shuffle: bool = False,
+    loop: bool = False,
+    track: dict | None = None,
+) -> QueueCandidate:
+    """Candidate for a queue the app navigates entry by entry (``app_replace``).
+
+    Used for TIDAL and for queues that mix local and TIDAL entries.  Every
+    entry carries its own ``source``; stream URLs of TIDAL entries are resolved
+    just before their transition, so entries may still have an empty ``url``.
+    ``track`` is the entry that starts (its stream URL already resolved); by
+    default it is ``entries[current_index]``.
+
+    A new queue with shuffle on applies the established shuffle semantics at
+    once (current entry fixed, everything else permuted).  The original order
+    is kept so disabling shuffle restores it.
+    """
+    if not entries:
+        raise ValueError("A queue needs at least one entry")
+    start = track if track is not None else entries[current_index]
+    multi_track = len(entries) > 1
+    original = [dict(item) for item in entries]
+    ordered = [dict(item) for item in entries]
+    if multi_track and shuffle:
+        ordered = shuffle_around_current(ordered, current_index)
+    start_id = str(start.get("id"))
+    start_source = start.get("source")
+    index = next(
+        (
+            position
+            for position, item in enumerate(ordered)
+            if str(item.get("id")) == start_id and item.get("source") == start_source
+        ),
+        -1,
+    )
+    return QueueCandidate(
+        queue=ordered if multi_track else [],
+        original=original if multi_track else [],
+        index=index if multi_track else -1,
+        mode="app_replace",
+        loop=bool(loop),
+        shuffle=bool(shuffle) and multi_track,
+        single_track_loop=bool(loop) and not multi_track,
+        track=start,
+    )
+
+
 def cleared_queue_candidate(track: dict | None = None) -> QueueCandidate:
     """Candidate for a play request that intentionally replaces any queue."""
     return QueueCandidate(

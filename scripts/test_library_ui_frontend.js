@@ -226,9 +226,19 @@ async function testPlaylistExportErrorRendering() {
     assert.deepEqual(messageLessToasts, [['Playlist export failed', 'error']], 'message-less detail falls back');
 
     // Successful export is unchanged: download triggers, success toast, no error.
-    const successToasts = await runExportCase({ ok: true, status: 200, blob: async () => 'BLOB' }, {});
+    const successToasts = await runExportCase({ ok: true, status: 200, headers: new Map(), blob: async () => 'BLOB' }, {});
     assert.equal(downloads, 1, 'successful export triggers the download');
     assert.deepEqual(successToasts, [['Downloading Road Trip.m3u8', 'success']], 'successful export toasts success');
+
+    // TIDAL titles are left out of the file: the toast says how many.
+    const skippedToasts = await runExportCase(
+        { ok: true, status: 200, headers: new Map([['X-FXRoute-Skipped-Tidal', '2']]), blob: async () => 'BLOB' }, {});
+    assert.equal(downloads, 1, 'the export is still downloaded');
+    assert.deepEqual(skippedToasts, [['Downloading Road Trip.m3u8 — 2 TIDAL tracks not included', 'info']],
+        'skipped TIDAL titles are named in the toast');
+    const oneSkippedToasts = await runExportCase(
+        { ok: true, status: 200, headers: new Map([['X-FXRoute-Skipped-Tidal', '1']]), blob: async () => 'BLOB' }, {});
+    assert.deepEqual(oneSkippedToasts, [['Downloading Road Trip.m3u8 — 1 TIDAL track not included', 'info']]);
 
     // The export path must not regress to a raw detail read.
     const libExportSource = fs.readFileSync(path.join(repoRoot, 'static', 'library_ui.js'), 'utf8');

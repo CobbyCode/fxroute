@@ -388,7 +388,7 @@ class ApiPlayQueueOrderTests(unittest.IsolatedAsyncioTestCase):
             with self._patch_context(recording_shuffle):
                 req = SimpleNamespace(
                     source="local", track_id="b", url=None,
-                    queue_track_ids=["c", "a", "b"], shuffle=True, loop=False,
+                    queue_track_ids=["c", "a", "b"], queue_refs=None, shuffle=True, loop=False,
                 )
                 await main.play_track(req)
 
@@ -420,7 +420,7 @@ class ApiPlayQueueOrderTests(unittest.IsolatedAsyncioTestCase):
                 # Different order than the active queue -> new queue start.
                 req = SimpleNamespace(
                     source="local", track_id="b", url=None,
-                    queue_track_ids=["a", "c", "b"], shuffle=True, loop=False,
+                    queue_track_ids=["a", "c", "b"], queue_refs=None, shuffle=True, loop=False,
                 )
                 await main.play_track(req)
 

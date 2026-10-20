@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import List, Optional
 from urllib.parse import unquote
 
-from library.playlists import save_new_playlist
+from library.playlists import is_tidal_ref, save_new_playlist
 
 # Cap for the reported missing-id sample: a long-gone playlist must not
 # produce an unbounded error message.
@@ -38,6 +38,24 @@ class PlaylistTrackUnavailableError(ValueError):
         )
 
 
+class PlaylistHasNoLocalTracksError(ValueError):
+    """Every entry of the playlist is a TIDAL reference.
+
+    TIDAL streams cannot be written to an M3U, so a playlist without a single
+    local file has nothing to export.
+    """
+
+    def __init__(self, tidal_count: int):
+        self.tidal_count = tidal_count
+        super().__init__(
+            f"Playlist export failed: all {tidal_count} track(s) are on TIDAL and cannot be exported"
+        )
+
+
+def count_tidal_refs(playlist) -> int:
+    return sum(1 for track_id in playlist.track_ids if is_tidal_ref(track_id))
+
+
 def parse_m3u_entries(content: str) -> List[str]:
     entries = []
     for raw_line in (content or "").splitlines():
@@ -62,6 +80,15 @@ def track_relative_m3u_path(track, music_root: Path) -> str:
     return Path(track.url or track.id).name
 
 
+def _skipped_tidal_label(playlist, ref: str) -> str:
+    meta = (getattr(playlist, "track_meta", None) or {}).get(ref) or {}
+    label = str(meta.get("title") or "").strip() or ref
+    artist = str(meta.get("artist") or "").strip()
+    label = f"{artist} - {label}" if artist else label
+    # A comment must stay on one line.
+    return " ".join(label.split())
+
+
 def build_m3u_for_playlist(playlist, tracks, music_root: Path) -> str:
     """Render the playlist as M3U, failing closed on unresolvable entries.
 
@@ -70,11 +97,21 @@ def build_m3u_for_playlist(playlist, tracks, music_root: Path) -> str:
     without a trace: the caller gets an explicit
     ``PlaylistTrackUnavailableError`` instead of a silently shortened
     M3U. The playlist and its stored track ids stay unchanged.
+
+    TIDAL references cannot be exported as files.  They are left out on
+    purpose and said so: a header comment carries the count and one comment
+    line names each skipped title, so the omission is visible in the file.
+    A playlist made only of TIDAL references raises
+    ``PlaylistHasNoLocalTracksError``.
     """
     tracks_by_id = {track.id: track for track in tracks}
     missing: List[str] = []
     resolved = []
+    skipped: List[str] = []
     for track_id in playlist.track_ids:
+        if is_tidal_ref(track_id):
+            skipped.append(track_id)
+            continue
         track = tracks_by_id.get(track_id)
         if not track:
             missing.append(track_id)
@@ -82,7 +119,12 @@ def build_m3u_for_playlist(playlist, tracks, music_root: Path) -> str:
         resolved.append(track)
     if missing:
         raise PlaylistTrackUnavailableError(missing)
+    if skipped and not resolved:
+        raise PlaylistHasNoLocalTracksError(len(skipped))
     lines = ["#EXTM3U"]
+    if skipped:
+        lines.append(f"# FXRoute: {len(skipped)} TIDAL track(s) not exported (streaming only)")
+        lines.extend(f"# not exported (TIDAL): {_skipped_tidal_label(playlist, ref)}" for ref in skipped)
     for track in resolved:
         duration = int(track.duration) if track.duration and track.duration > 0 else -1
         label = track.title or Path(track.path or track.id).stem

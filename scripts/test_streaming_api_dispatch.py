@@ -79,12 +79,6 @@ class _FakeProvider:
     async def set_playlist_favorite(self, playlist_id, favorite):
         return {"type": "playlist", "id": playlist_id, "favorite": favorite}
 
-    async def start_device_login(self):
-        return {"user_code": "ABC", "verification_uri_complete": "https://link.tidal.com/ABC"}
-
-    async def finish_device_login(self):
-        return {"authenticated": True}
-
     async def pkce_login_url(self):
         return "https://login.tidal.com/authorize?..."
 

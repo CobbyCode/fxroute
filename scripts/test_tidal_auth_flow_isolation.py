@@ -1,13 +1,14 @@
 # SPDX-License-Identifier: AGPL-3.0-only
-"""TIDAL Device/PKCE pending-state isolation.
+"""TIDAL PKCE pending-state isolation and session loading.
 
-Regression tests for the shared-slot bug: a started device login and a
-started PKCE login overwrote the same ``_pending_session`` without
-invalidating each other, so a superseded attempt could commit late and
-overwrite the newer session. Only the currently valid attempt may commit.
+Only the currently valid PKCE attempt may commit: a login started later, or a
+logout, supersedes an earlier attempt, and a late answer for the earlier one
+never overwrites the newer session.  Sessions written by the removed device
+login keep loading.
 """
 
 import asyncio
+import json
 import sys
 import tempfile
 import unittest
@@ -26,21 +27,14 @@ def _make_session(name, user_id):
         access_token=f"tok-{name}",
         refresh_token="refresh",
         expiry_time=None,
-        is_pkce=("pkce" in name),
+        is_pkce=True,
         country_code="US",
         user=SimpleNamespace(id=user_id, email=f"{name}@example.com"),
         check_login=lambda: True,
     )
-    sess.get_link_login = lambda: SimpleNamespace(
-        verification_uri="https://link.tidal.com",
-        verification_uri_complete="https://link.tidal.com/complete",
-        user_code=f"code-{name}",
-        expires_in=600,
-    )
     sess.pkce_login_url = lambda: f"https://login.tidal.com/pkce-{name}"
     sess.pkce_get_auth_token = lambda url: f"token-{name}"
     sess.process_auth_token = lambda token, is_pkce_token=True: None
-    sess.process_link_login = lambda link, until_expiry=False: None
     return sess
 
 
@@ -62,76 +56,42 @@ class TidalAuthFlowIsolationTests(unittest.IsolatedAsyncioTestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
 
-    async def test_device_then_pkce_invalidates_device(self):
+    async def test_pkce_login_commits_and_persists_the_session(self):
         manager = auth.TidalSession()
-        self._patch_new_session([_make_session("device", 1), _make_session("pkce", 2)])
-        await manager.start_device_login_async()
-        self.assertEqual(manager._pending_flow, "device")
-        await manager.pkce_login_url_async()
-        self.assertEqual(manager._pending_flow, "pkce")
-        self.assertIsNone(manager._pending)
-        with self.assertRaises(auth.TidalAuthError):
-            await manager.finish_device_login_async()
+        self._patch_new_session([_make_session("pkce", 2)])
+        url = await manager.pkce_login_url_async()
+        self.assertEqual(url, "https://login.tidal.com/pkce-pkce")
         payload = await manager.finish_pkce_login_async("https://oops?code=1")
         self.assertEqual(payload["user_id"], 2)
         self.assertEqual(manager._session.access_token, "tok-pkce")
+        saved = json.loads(auth.SESSION_FILE.read_text())
+        self.assertTrue(saved["is_pkce"])
 
-    async def test_pkce_then_device_invalidates_pkce(self):
+    async def test_finish_without_a_started_login_is_rejected(self):
         manager = auth.TidalSession()
-        self._patch_new_session([_make_session("pkce", 10), _make_session("device", 11)])
-        await manager.pkce_login_url_async()
-        self.assertEqual(manager._pending_flow, "pkce")
-        await manager.start_device_login_async()
-        self.assertEqual(manager._pending_flow, "device")
         with self.assertRaises(auth.TidalAuthError):
             await manager.finish_pkce_login_async("https://oops?code=1")
-        self.assertIsNone(manager._session)
+        with self.assertRaises(auth.TidalAuthError):
+            manager.finish_pkce_login("https://oops?code=1")
 
-    async def test_stale_device_cannot_overwrite_newer_pkce(self):
+    async def test_a_second_login_supersedes_the_first(self):
+        manager = auth.TidalSession()
+        self._patch_new_session([_make_session("first", 10), _make_session("second", 11)])
+        await manager.pkce_login_url_async()
+        await manager.pkce_login_url_async()
+        payload = await manager.finish_pkce_login_async("https://oops?code=1")
+        self.assertEqual(payload["user_id"], 11)
+        self.assertEqual(manager._session.access_token, "tok-second")
+        # The first attempt is gone, finishing again has nothing to finish.
+        with self.assertRaises(auth.TidalAuthError):
+            await manager.finish_pkce_login_async("https://oops?code=1")
+
+    async def test_stale_exchange_cannot_commit_after_a_newer_login_started(self):
         import threading
 
         manager = auth.TidalSession()
-        old = _make_session("device-old", 20)
-        new = _make_session("pkce-new", 21)
-        entered = threading.Event()
-        release = threading.Event()
-
-        def blocking_approve(link, until_expiry=False):
-            entered.set()
-            release.wait(5)
-
-        old.process_link_login = blocking_approve
-        self._patch_new_session([old, new])
-        await manager.start_device_login_async()
-        task = asyncio.create_task(manager.finish_device_login_async())
-        await asyncio.to_thread(entered.wait, 3)
-        await manager.pkce_login_url_async()
-        pkce_payload = await manager.finish_pkce_login_async("https://oops?code=1")
-        self.assertEqual(pkce_payload["user_id"], 21)
-        release.set()
-        with self.assertRaises(auth.TidalAuthError):
-            await asyncio.wait_for(task, 3)
-        self.assertIs(manager._session, new)
-        self.assertEqual(manager._session.access_token, "tok-pkce-new")
-
-    async def test_stale_pkce_cannot_overwrite_newer_device(self):
-        manager = auth.TidalSession()
-        old = _make_session("pkce-old", 30)
-        new = _make_session("device-new", 31)
-        self._patch_new_session([old, new])
-        await manager.pkce_login_url_async()
-        await manager.start_device_login_async()
-        with self.assertRaises(auth.TidalAuthError):
-            await manager.finish_pkce_login_async("https://oops?code=1")
-        self.assertIsNone(manager._session)
-        self.assertTrue(auth.SESSION_FILE is not None and not auth.SESSION_FILE.exists())
-
-    async def test_stale_pkce_exchange_cannot_commit_after_device_start(self):
-        import threading
-
-        manager = auth.TidalSession()
-        old = _make_session("pkce-old", 40)
-        new = _make_session("device-new", 41)
+        old = _make_session("old", 40)
+        new = _make_session("new", 41)
         entered = threading.Event()
         release = threading.Event()
         real_exchange = auth.TidalSession._exchange_pkce_login
@@ -147,30 +107,42 @@ class TidalAuthFlowIsolationTests(unittest.IsolatedAsyncioTestCase):
         with mock.patch.object(auth.TidalSession, "_exchange_pkce_login", blocking_exchange):
             task = asyncio.create_task(manager.finish_pkce_login_async("https://oops?code=1"))
             await asyncio.to_thread(entered.wait, 3)
-            await manager.start_device_login_async()
+            await manager.pkce_login_url_async()
             release.set()
             with self.assertRaises(auth.TidalAuthError):
                 await asyncio.wait_for(task, 3)
         self.assertIsNone(manager._session)
+        self.assertFalse(auth.SESSION_FILE.exists())
 
-    def test_sync_finish_rejects_wrong_flow(self):
+    def test_sync_finish_commits_the_pending_login(self):
         manager = auth.TidalSession()
-        pkce_sess = _make_session("pkce", 50)
-        manager._pending_session = pkce_sess
-        manager._pending = None
-        manager._pending_flow = "pkce"
-        with self.assertRaises(auth.TidalAuthError):
-            manager.finish_device_login()
-        manager._pending_flow = "device"
-        manager._pending = SimpleNamespace()
-        # Device wait would block; only the guard is asserted here via flow mismatch above.
-        # Reset to a clean PKCE state and verify PKCE finish works synchronously.
-        manager._pending = None
-        manager._pending_session = pkce_sess
-        manager._pending_flow = "pkce"
+        manager._pending_session = _make_session("pkce", 50)
         with mock.patch.object(auth, "SESSION_FILE", Path(self.tmp.name) / "sync.json"):
             payload = manager.finish_pkce_login("https://oops?code=1")
         self.assertEqual(payload["user_id"], 50)
+
+    def test_session_file_of_the_removed_device_login_still_loads(self):
+        auth.SESSION_FILE.write_text(json.dumps({
+            "token_type": "Bearer",
+            "access_token": "legacy",
+            "refresh_token": "legacy-refresh",
+            "expiry_time": None,
+            "is_pkce": False,
+            "user": {"id": 7, "email": "legacy@example.com"},
+        }))
+        loaded = {}
+        legacy = SimpleNamespace(config=SimpleNamespace(quality=None))
+
+        def load_oauth_session(token_type, access_token, **kwargs):
+            loaded.update(token_type=token_type, access_token=access_token, **kwargs)
+            return True
+
+        legacy.load_oauth_session = load_oauth_session
+        with mock.patch.object(auth, "_new_session", return_value=legacy):
+            session = auth.TidalSession().session()
+        self.assertIs(session, legacy)
+        self.assertEqual(loaded["access_token"], "legacy")
+        self.assertIs(loaded["is_pkce"], False)
 
 
 if __name__ == "__main__":

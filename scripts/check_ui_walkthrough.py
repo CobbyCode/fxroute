@@ -77,11 +77,11 @@ window.fetch = (url, opts) => {
 PREPARE_JS = """
 (() => {
     // Un-hide streaming tabs (stub reports installed; app may gate on status).
-    for (const id of ['tab-btn-spotify', 'tab-btn-qobuz', 'tab-btn-tidal']) {
+    for (const id of ['tab-btn-spotify', 'tab-btn-qobuz']) {
         const b = document.getElementById(id);
         if (b) { b.hidden = false; b.style.display = ''; }
     }
-    for (const id of ['tab-spotify', 'tab-qobuz', 'tab-tidal']) {
+    for (const id of ['tab-spotify', 'tab-qobuz']) {
         const p = document.getElementById(id);
         if (p) { p.hidden = false; p.classList.remove('hidden'); }
     }
@@ -174,7 +174,6 @@ def _run(shots_dir: pathlib.Path) -> int:
                     ("effects", None),
                     ("spotify", None),
                     ("qobuz", None),
-                    ("tidal", None),
                 ]
                 for tab, _extra in tabs:
                     btn = page.locator(f"#tab-btn-{tab}")

@@ -11,7 +11,8 @@ Covers the Library side of the TIDAL merge:
 * a TIDAL tile opens its detail inside the Library and Back returns to the
   grid; an un-hearted TIDAL album leaves the grid at once;
 * the save row follows the selection: TIDAL-only offers Save as new and Add
-  to existing, a mixed selection is blocked with a hint;
+  to existing, a mixed selection saves one local playlist with TIDAL
+  references (see test_library_mixed_playlists.py);
 * more than one page of TIDAL favorites: the first page renders, then the
   full collection (limit=0) replaces it;
 * not connected: Connect TIDAL button, no TIDAL items; not installed: no
@@ -207,8 +208,8 @@ def _run():
                   page.locator("#playlist-tidal-target").is_visible()
                   and page.locator('#playlist-tidal-target option[value="tp1"]').count() == 1)
             page.click('#tracks-list .track-item[data-track-id="local_A/one.flac"] .track-add')
-            check("a mixed selection cannot be saved", page.locator("#save-playlist").is_disabled())
-            check("a mixed selection explains why", page.locator("#playlist-save-hint").is_visible())
+            check("a mixed selection can be saved", not page.locator("#save-playlist").is_disabled())
+            check("a mixed selection says how it is saved", page.locator("#playlist-save-hint").is_visible())
             page.click("#cancel-playlist-selection")
             check("Cancel clears both selections", page.locator("#playlist-save-row").is_hidden())
 

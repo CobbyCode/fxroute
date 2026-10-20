@@ -48,6 +48,7 @@ from connection_manager import ConnectionManager
 from common.atomic_write import atomic_write_bytes
 import system_update as update_lifecycle
 from library.sources import LibraryContext, MusicLibraryManager
+from library.playlists import TIDAL_REF_PREFIX, is_tidal_ref, tidal_ref_id
 from radio.metadata import RadioMetadataService
 from safe_http import BlockedUrlError
 
@@ -3931,6 +3932,110 @@ async def _resolve_tidal_stream_url(track: dict) -> str | None:
     return track["url"] or None
 
 
+async def _resolve_tidal_meta_safe(tidal_id: str) -> dict | None:
+    """Queue metadata for one TIDAL entry, or None when it cannot be resolved."""
+    try:
+        return await _resolve_tidal_track_meta(tidal_id)
+    except HTTPException as exc:
+        logger.warning("TIDAL queue track %s skipped: %s", tidal_id, exc.detail)
+        return None
+    except Exception as exc:
+        logger.warning("TIDAL queue track %s skipped: %s", tidal_id, exc)
+        return None
+
+
+async def _build_mixed_play_candidate(req: PlayRequest, tracks) -> tuple[playback_queue.QueueCandidate, dict]:
+    """Queue candidate for ``queue_refs`` (local ids and ``tidal:<id>``).
+
+    Entries that cannot play right now are left out and counted: TIDAL
+    entries while TIDAL is not connected or when TIDAL no longer knows the
+    track, local entries the library no longer has.  If the requested entry
+    is among them, playback starts at the next playable one.  Without any
+    TIDAL entry left the queue is a plain local queue (native gapless).
+    """
+    refs: list[str] = []
+    for ref in req.queue_refs or []:
+        ref = str(ref or "").strip()
+        if ref and ref not in refs:
+            refs.append(ref)
+    start_ref = (
+        f"{TIDAL_REF_PREFIX}{req.track_id}" if str(req.source) == "tidal" else str(req.track_id)
+    )
+    if start_ref not in refs:
+        refs.insert(0, start_ref)
+    wants_tidal = any(is_tidal_ref(ref) for ref in refs)
+    connected = False
+    if wants_tidal:
+        try:
+            connected = bool(await _tidal_provider().is_authenticated())
+        except Exception as exc:
+            # A missing or broken TIDAL backend is the same as not connected.
+            logger.warning("TIDAL status check failed for a mixed queue: %s", exc)
+    tracks_by_id = {track.id: track for track in (tracks or [])}
+
+    tidal_ids = [tidal_ref_id(ref) for ref in refs if is_tidal_ref(ref)] if connected else []
+    resolved = await asyncio.gather(*(_resolve_tidal_meta_safe(tidal_id) for tidal_id in tidal_ids))
+    tidal_entries = dict(zip(tidal_ids, resolved))
+
+    skipped = {"tidal_not_connected": 0, "unavailable": 0, "missing": 0}
+    playable: list[tuple[str, dict]] = []
+    for ref in refs:
+        if is_tidal_ref(ref):
+            if not connected:
+                skipped["tidal_not_connected"] += 1
+                continue
+            entry = tidal_entries.get(tidal_ref_id(ref))
+            if entry is None:
+                skipped["unavailable"] += 1
+                continue
+            playable.append((ref, entry))
+        else:
+            track = tracks_by_id.get(ref)
+            if track is None:
+                skipped["missing"] += 1
+                continue
+            playable.append((ref, track.to_dict()))
+    if not playable:
+        if wants_tidal and not connected and skipped["tidal_not_connected"]:
+            raise HTTPException(status_code=401, detail="TIDAL is not authenticated")
+        raise HTTPException(status_code=404, detail="Track not found")
+
+    # The requested entry, else the next playable one in queue order.
+    order = {ref: position for position, ref in enumerate(refs)}
+    start_position = order[start_ref]
+    start_index = next(
+        (i for i, (ref, _entry) in enumerate(playable) if order[ref] >= start_position),
+        0,
+    )
+    summary = {
+        "requested": len(refs),
+        "queued": len(playable),
+        "skipped": {key: count for key, count in skipped.items() if count},
+    }
+    if not any(is_tidal_ref(ref) for ref, _entry in playable):
+        candidate = playback_queue.queue.prepare_local_queue(
+            playable[start_index][0],
+            [ref for ref, _entry in playable],
+            shuffle=req.shuffle,
+            loop=req.loop,
+            reshuffle=True,
+            tracks=tracks,
+            active_shuffle=playback_queue.queue.shuffle,
+        )
+        return candidate, summary
+    start_ref_resolved, start_entry = playable[start_index]
+    if is_tidal_ref(start_ref_resolved):
+        start_entry = await _resolve_tidal_track(tidal_ref_id(start_ref_resolved))
+    candidate = playback_queue.app_queue_candidate(
+        [entry for _ref, entry in playable],
+        start_index,
+        shuffle=bool(req.shuffle),
+        loop=bool(req.loop),
+        track=start_entry,
+    )
+    return candidate, summary
+
+
 def _native_mpv_direct_selection_ready(active_queue_ids: list) -> bool:
     """Gate for the native-MPV direct-selection fast path in /api/play.
 
@@ -4018,6 +4123,7 @@ async def play_track(req: PlayRequest):
         }
 
     previous_state = dict(runtime.player_instance.state)
+    queue_summary = None
     if source == "radio":
         track_info = None
         for station in get_stations():
@@ -4034,6 +4140,12 @@ async def play_track(req: PlayRequest):
         if not track_info:
             raise HTTPException(status_code=404, detail="Radio station not found")
         queue_candidate = playback_queue.cleared_queue_candidate(track_info)
+    elif req.queue_refs:
+        scanner = runtime.music_library.scanner
+        tracks = await _drain_worker(scanner.get_tracks) if scanner is not None else None
+        queue_candidate, queue_summary = await _build_mixed_play_candidate(req, tracks)
+        track_info = queue_candidate.track
+        source = str(track_info.get("source") or "local")
     elif source == "tidal":
         if not await _tidal_provider().is_authenticated():
             raise HTTPException(status_code=401, detail="TIDAL is not authenticated")
@@ -4047,14 +4159,6 @@ async def play_track(req: PlayRequest):
         # independent TIDAL API round trip and serial resolution dominated
         # album/playlist start latency.
         other_ids = [str(tidal_id) for tidal_id in queue_ids if str(tidal_id) != str(req.track_id)]
-
-        async def _resolve_tidal_meta_safe(tidal_id: str) -> dict | None:
-            try:
-                return await _resolve_tidal_track_meta(tidal_id)
-            except HTTPException as exc:
-                logger.warning("TIDAL queue track %s skipped: %s", tidal_id, exc.detail)
-                return None
-
         resolved_meta = (
             await asyncio.gather(*(_resolve_tidal_meta_safe(t) for t in other_ids))
             if other_ids
@@ -4070,29 +4174,15 @@ async def play_track(req: PlayRequest):
                 entry = resolved_by_id.get(key)
                 if entry is not None:
                     queue_tracks.append(entry)
-        multi_track = len(queue_tracks) > 1
-        # A new queue with shuffle on applies the established shuffle semantics
-        # immediately (current entry fixed, everything else permuted).  The
-        # original order is kept unshuffled so disabling shuffle restores it.
-        original_queue_tracks = [dict(item) for item in queue_tracks]
-        if multi_track and bool(req.shuffle):
-            current_index = next(
-                (index for index, item in enumerate(queue_tracks) if str(item.get("id")) == str(req.track_id)),
-                0,
-            )
-            queue_tracks = playback_queue.shuffle_around_current(queue_tracks, current_index)
         track_index = next(
             (index for index, item in enumerate(queue_tracks) if str(item.get("id")) == str(req.track_id)),
-            -1,
+            0,
         )
-        queue_candidate = playback_queue.QueueCandidate(
-            queue=[dict(item) for item in queue_tracks] if multi_track else [],
-            original=original_queue_tracks if multi_track else [],
-            index=track_index if multi_track else -1,
-            mode="app_replace",
+        queue_candidate = playback_queue.app_queue_candidate(
+            queue_tracks,
+            track_index,
+            shuffle=bool(req.shuffle),
             loop=bool(req.loop),
-            shuffle=bool(req.shuffle) and multi_track,
-            single_track_loop=bool(req.loop) and not multi_track,
             track=track_info,
         )
     else:
@@ -4188,12 +4278,16 @@ async def play_track(req: PlayRequest):
     )
     if source == "radio":
         await radio_reconnect.reset()
-    return {
+    response = {
         "status": "playing",
         "url": target_url,
         "track": track_info,
         "playback": build_playback_payload(runtime.player_instance.state),
     }
+    if queue_summary is not None:
+        # What a mixed queue actually started with, so the UI can say so.
+        response["queue_summary"] = queue_summary
+    return response
 
 @app.post("/api/pause")
 async def pause_playback():

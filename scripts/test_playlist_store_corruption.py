@@ -158,7 +158,7 @@ class PlaylistStoreCorruptionTestCase(unittest.TestCase):
         with self.assertRaises(library_api.HTTPException) as ctx:
             asyncio.run(
                 library_api.create_or_update_playlist(
-                    SimpleNamespace(name="New", track_ids=["A"])
+                    SimpleNamespace(name="New", track_ids=["A"], track_meta=None)
                 )
             )
         self.assertEqual(ctx.exception.status_code, 500)
@@ -173,7 +173,7 @@ class PlaylistStoreCorruptionTestCase(unittest.TestCase):
         with self.assertRaises(library_api.HTTPException) as ctx:
             asyncio.run(
                 library_api.create_or_update_playlist(
-                    SimpleNamespace(name="New", track_ids=["A"])
+                    SimpleNamespace(name="New", track_ids=["A"], track_meta=None)
                 )
             )
         self.assertEqual(ctx.exception.status_code, 500)

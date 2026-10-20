@@ -779,6 +779,10 @@
 
     function switchToTrack(track, index) {
         if (!track) return;
+        // A mixed local/TIDAL queue changes the source with the entry.
+        if ((currentSource === 'local' || currentSource === 'tidal') && (track.source === 'local' || track.source === 'tidal')) {
+            currentSource = track.source;
+        }
         currentTrack = track;
         queueIndex = index;
         positionSec = 0;
@@ -898,6 +902,48 @@
         if (idx < 0) idx = 0;
         startTrack({ ...chosen, source: 'tidal' }, 'tidal', tidalTracks, idx);
         return tidalTracks[idx];
+    }
+
+    // One queue of local ids and "tidal:<id>" references (saved playlists,
+    // Favorite Tracks), like the real /api/play queue_refs. TIDAL entries are
+    // left out while TIDAL is not connected, unknown ids are left out too; the
+    // summary says what was skipped. Without TIDAL entries it is a local queue.
+    function playRefs(refs, startSource, startId, tidalConnected) {
+        const pool = activeLibraryTracks();
+        const byId = new Map(pool.map(t => [t.id, t]));
+        const wanted = [];
+        (refs || []).forEach(ref => {
+            const text = String(ref || '');
+            if (text && !wanted.includes(text)) wanted.push(text);
+        });
+        const startRef = startSource === 'tidal' ? 'tidal:' + startId : String(startId);
+        if (!wanted.includes(startRef)) wanted.unshift(startRef);
+        const skipped = { tidal_not_connected: 0, unavailable: 0, missing: 0 };
+        const entries = [];
+        wanted.forEach(ref => {
+            if (ref.startsWith('tidal:')) {
+                if (!tidalConnected) { skipped.tidal_not_connected += 1; return; }
+                const track = tidalTrackById(ref.slice(6));
+                if (!track) { skipped.unavailable += 1; return; }
+                entries.push({ ref, track: { ...track, source: 'tidal' } });
+            } else {
+                const track = byId.get(ref);
+                if (!track) { skipped.missing += 1; return; }
+                entries.push({ ref, track: { ...track, source: 'local' } });
+            }
+        });
+        const summary = {
+            requested: wanted.length,
+            queued: entries.length,
+            skipped: Object.fromEntries(Object.entries(skipped).filter(([, count]) => count)),
+        };
+        if (!entries.length) return { track: null, summary, unauthorized: skipped.tidal_not_connected > 0 };
+        const startAt = wanted.indexOf(startRef);
+        let idx = entries.findIndex(entry => wanted.indexOf(entry.ref) >= startAt);
+        if (idx < 0) idx = 0;
+        const tracks = entries.map(entry => entry.track);
+        startTrack(tracks[idx], tracks[idx].source, tracks, idx);
+        return { track: tracks[idx], summary };
     }
 
     function playRadio(stationId) {
@@ -1910,6 +1956,7 @@
         catalogStations,
         playLocal,
         playTidal,
+        playRefs,
         playRadio,
         playNext,
         playPrev,

@@ -91,6 +91,25 @@ const shuffledQueue = {
     },
 };
 
+const mixedTracks = [
+    { id: 'track_a', source: 'local' },
+    { id: '101', source: 'tidal' },
+    { id: 'track_b', source: 'local' },
+];
+
+const mixedQueue = {
+    current_track: { source: 'local', id: 'track_a' },
+    queue: { active: true, index: 0, count: 3, tracks: mixedTracks, loop: false, shuffle: true },
+};
+
+const tidalOnlyQueue = {
+    current_track: { source: 'tidal', id: '101' },
+    queue: {
+        active: true, index: 0, count: 2, loop: true, shuffle: false,
+        tracks: [{ id: '101', source: 'tidal' }, { id: '102', source: 'tidal' }],
+    },
+};
+
 // ---- cases ---------------------------------------------------------------
 
 const cases = [
@@ -114,6 +133,27 @@ const cases = [
         queue_track_ids: ['track_a', 'track_b', 'track_c', 'track_d'],
         shuffle: true,
         loop: false,
+    }],
+    ['mixed queue jumps by reference to a TIDAL entry', mixedQueue, 1, {
+        source: 'tidal',
+        track_id: '101',
+        queue_refs: ['track_a', 'tidal:101', 'track_b'],
+        shuffle: true,
+        loop: false,
+    }],
+    ['mixed queue jumps by reference to a local entry', mixedQueue, 2, {
+        source: 'local',
+        track_id: 'track_b',
+        queue_refs: ['track_a', 'tidal:101', 'track_b'],
+        shuffle: true,
+        loop: false,
+    }],
+    ['TIDAL-only queue is replayed by reference too', tidalOnlyQueue, 1, {
+        source: 'tidal',
+        track_id: '102',
+        queue_refs: ['tidal:101', 'tidal:102'],
+        shuffle: false,
+        loop: true,
     }],
     ['track without id is not playable', {
         current_track: { source: 'local' },

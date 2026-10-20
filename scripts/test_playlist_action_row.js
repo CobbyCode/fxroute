@@ -2,14 +2,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Cross-tab checks for the unified playlist action row.
 //
-// Acceptance: the row appears in every affected tab at the same logical
+// Acceptance: the row appears in every affected view at the same logical
 // position and with the same width as in the working Albums reference,
 // and with a symmetric vertical standoff above/below in every host.
 //
-//   TIDAL: Albums (album detail) is the reference. Tracks (browse list),
-//     Artists (detail) and Playlists (detail) must match it: the browse row
-//     sits before #tidal-browse-body (never under the entire result list)
-//     and every TIDAL row uses the full-width --album variant.
+//   TIDAL: has no row of its own. Its details live in the Library and use the
+//     Library row, docked below the TIDAL detail header.
 //   Local Library: Albums (album detail) is the reference (covered in
 //     test_library_save_row.js). Tracks/Folders/Favorites share the top home
 //     before #tracks-list (likewise never under the result list).
@@ -41,39 +39,15 @@ function extractFunction(source, name) {
     throw new Error(`unterminated ${name}`);
 }
 
-// --- TIDAL browse: row before body, full-width variant ---------------------
+// --- TIDAL: no row of its own, the Library row serves TIDAL details --------
 {
-    const browseSrc = extractFunction(streamingJs, 'renderTidalBrowse');
-    const rowPos = browseSrc.indexOf('tidalPlaylistSaveRowHtml');
-    const bodyPos = browseSrc.indexOf('tidal-browse-body');
-    assert.ok(rowPos >= 0 && bodyPos >= 0, 'browse must render both the save row and the body');
-    assert.ok(rowPos < bodyPos,
-        'TIDAL browse must render the playlist action row BEFORE #tidal-browse-body (never under the Tracks result list)');
-    assert.ok(browseSrc.includes("tidalPlaylistSaveRowHtml('album')"),
-        'TIDAL browse must use the full-width album variant like the Albums reference');
-}
-
-// --- TIDAL details: artist + playlist match the album width ----------------
-{
-    // Lookbehind excludes the function definition itself, so this counts
-    // exactly the four render call sites (browse/album/artist/playlist).
-    const calls = [...streamingJs.matchAll(/(?<!function )tidalPlaylistSaveRowHtml\(([^)]*)\)/g)].map((m) => m[1].trim());
-    assert.equal(calls.length, 4, `expected the 4 save-row call sites (browse/album/artist/playlist), got ${calls.length}`);
-    const plain = calls.filter((args) => args === '');
-    assert.deepEqual(plain, [],
-        'every TIDAL playlist action row (browse, album, artist, playlist) must use the album variant for the same width');
-    for (const fn of ['renderTidalAlbum', 'renderTidalArtist', 'renderTidalPlaylist']) {
-        const src = extractFunction(streamingJs, fn);
-        assert.ok(src.includes("tidalPlaylistSaveRowHtml('album')"),
-            `${fn} must use the album-variant row width`);
-    }
-}
-
-// --- TIDAL CSS: the album variant is the full-width reference --------------
-{
-    const albumRule = css.match(/\.playlist-save-row\.tidal-playlist-save-row--album\s*\{[^}]*\}/);
-    assert.ok(albumRule && /width:\s*100%/.test(albumRule[0]),
-        'the TIDAL album row variant must use the full content width');
+    assert.ok(!streamingJs.includes('tidalPlaylistSaveRowHtml') && !streamingJs.includes('tidal-playlist-save-row'),
+        'TIDAL must not render a playlist action row of its own anymore');
+    assert.ok(!css.includes('tidal-playlist-save-row'),
+        'no stylesheet rule may remain for the removed TIDAL playlist action row');
+    const dockSrc = extractFunction(libraryJs, 'dockPlaylistSaveRow');
+    assert.ok(dockSrc.includes('libraryTidalDetail') && dockSrc.includes('tidal-detail-header'),
+        'the shared row must dock below the TIDAL detail header inside the Library');
 }
 
 // --- Local library: top home shared by Tracks/Folders/Favorites ------------
@@ -183,10 +157,6 @@ function extractFunction(source, name) {
     const discoverRule = css.match(/\.album-discover\s*\{[^}]*\}/);
     assert.ok(discoverRule && /margin-top:\s*0\.55rem\s*;/.test(discoverRule[0]),
         'the discover panel must keep its own top margin (constant in both row states)');
-    // TIDAL browse keeps its own gap; the row adds the small difference to
-    // reach the reference standoff on both sides.
-    assert.ok(/\.streaming-browse\s*>\s*\.playlist-save-row\s*\{[^}]*margin:\s*0\.15rem\s+0\s*;[^}]*\}/.test(css),
-        'the TIDAL browse row must add 0.15rem on both sides of the browse gap');
     // TIDAL detail: the container gap and both flanking margins are derived
     // from one token, so nothing here can be decided by source order and
     // the 0.9rem standoff survives any gap tuning. Both coupled values are
@@ -213,25 +183,6 @@ function extractFunction(source, name) {
     assert.ok(!/\.streaming-detail--hero\s*\{[^}]*gap:/.test(css) &&
         !/\.album-detail--hero,\s*\.streaming-detail--hero\s*\{[^}]*gap:/.test(css),
         'no hero rule may set a gap for the TIDAL root (it is owned by .streaming-detail)');
-    // Overview content-start: the results containers keep their 0.35rem top
-    // margin (subtab-to-content gap while the row is hidden), but while the
-    // row is visible a container opening the body drops it — first tile/row
-    // then starts at the reference standoff like in the Library overviews
-    // (measured 14.4px everywhere) instead of jumping on tab switches.
-    assert.ok(/#tidal-fav-results,\s*#tidal-playlists-results,\s*#tidal-search-items\s*\{[^}]*margin-top:\s*0\.35rem\s*;[^}]*\}/.test(css),
-        'the results containers must keep their 0.35rem top margin for the hidden-row state');
-    assert.ok(/\.streaming-browse:has\(>\s*#tidal-playlist-save-row:not\(\.hidden\)\)\s*>\s*#tidal-browse-body\s*>\s*#tidal-fav-results:first-child[\s\S]*?margin-top:\s*0\s*;/.test(css),
-        'the favorites container must drop its top margin while the row is visible');
-    assert.ok(/\.streaming-browse:has\(>\s*#tidal-playlist-save-row:not\(\.hidden\)\)\s*>\s*#tidal-browse-body\s*>\s*#tidal-playlists-results:first-child[\s\S]*?margin-top:\s*0\s*;/.test(css),
-        'the playlists container must drop its top margin while the row is visible');
-    // Parent gaps that complete the rhythm.
-    assert.ok(/\.streaming-browse\s*\{[^}]*gap:\s*0\.75rem\s*;[^}]*\}/.test(css),
-        'TIDAL browse must keep its 0.75rem gap (plus the row margins = reference)');
-    // The TIDAL detail gap is asserted through its token above; here we only
-    // pin that the value behind the token is still the 0.7rem the reference
-    // rhythm was measured with, without matching the token's own name.
-    assert.ok(/--tidal-detail-gap:\s*0\.7rem\s*;/.test(css),
-        'the TIDAL detail gap token must still resolve to 0.7rem (row margins are derived from it)');
     // Responsive rules must not override the row's own margins: the 0.9rem
     // standoff holds below desktop widths too.
     for (const m of responsiveCss.matchAll(/\.playlist-save-row\s*\{[^}]*\}/g)) {

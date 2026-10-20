@@ -152,9 +152,6 @@ BROWSER_TESTS=(
     scripts/test_number_controls_geometry.py
     scripts/test_reduced_motion.py
     scripts/test_subwoofer_controls_geometry.py
-    scripts/test_tidal_direct_search.py
-    scripts/test_tidal_header_geometry.py
-    scripts/test_tidal_subbar_overflow.py
     scripts/test_view_tab_geometry.py
 )
 

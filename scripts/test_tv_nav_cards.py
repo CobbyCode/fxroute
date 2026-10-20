@@ -27,6 +27,7 @@ window.fetch = (url, opts = {}) => {
     }
     if (u === '/api/tracks' || u === '/api/playlists') return json([]);
     if (/\/api\/albums\/[^/]+\/tracks/.test(u)) return json([{id: 'track0', title: 'Track', duration: 60}]);
+    if (u.includes('/api/streaming/providers/discovery')) return json({providers: window.navTidalEnabled ? [{id: 'tidal', name: 'Tidal', implemented: true, installed: true, available: true, enabled: true}] : []});
     if (u.includes('/api/streaming/tidal/library/snapshot')) return json({});
     if (u.includes('/api/streaming/tidal/favorites/ids')) return json({albums: navItems.filter(i=>!navRemovedIds.has(i.id)).map(i=>i.id), artists: [], playlists: [], tracks: []});
     if (u.includes('/api/streaming/tidal/favorites?')) return json(navItems.filter(i=>!navRemovedIds.has(i.id)));
@@ -43,6 +44,21 @@ LIBRARY_SETUP = """() => {
         tracks:[], showFavoriteAlbums:false, searchQuery:'', albumDetail:null, playlistDetail:null,
         albums:Array.from({length:8},(_,i)=>({id:'nav'+i,name:'Album '+i,artist:'Artist',favorite:false}))});
     FXRouteLibraryUI.renderAlbums();
+}"""
+
+# TIDAL favorite albums listed in the Library Albums view (TIDAL has no tab).
+TIDAL_SETUP = """async () => {
+    switchTab('library');
+    Object.assign(state.library, {viewMode:'albums', albumsLoaded:true,
+        tracks:[], showFavoriteAlbums:false, searchQuery:'', albumDetail:null, playlistDetail:null, albums:[]});
+    window.navTidalEnabled = true;
+    await FXRouteStreaming.refreshEnabledFlags();
+    FXRouteStreaming.renderProvider('tidal', {installed:true, available:true, authenticated:true, capabilities:{}, status:'Stopped', user:{id:'7'}});
+    await FXRouteStreaming.tidal.ensureLibrary(true);
+    FXRouteLibraryUI.renderAlbums();
+    // Let the Library finish its own TIDAL-driven re-renders before the test
+    // styles and focuses the grid.
+    await new Promise(resolve => setTimeout(resolve, 300));
 }"""
 
 RADIO_SETUP = """() => {
@@ -97,10 +113,8 @@ def run():
                     page.evaluate(RADIO_SETUP)
                     grid = '#stations-grid'
                 else:
-                    page.evaluate("FXRouteStreaming.renderProvider('tidal',{installed:true,available:true,authenticated:true,capabilities:{},status:'Stopped'}); switchTab('tidal')")
-                    if surface == 'tidal-playlists':
-                        page.click('[data-browse="playlists"]')
-                    grid = '#tidal-browse-body .tidal-tiles'
+                    page.evaluate(TIDAL_SETUP)
+                    grid = '#albums-grid'
                 page.wait_for_selector(grid + ' > :nth-child(8)')
                 page.eval_on_selector(grid, "(e, list) => {e.classList.toggle('is-list',list); if(!list) {e.style.gridTemplateColumns='repeat(3, 208px)';e.style.justifyContent='start';}}", layout == 'list')
                 return grid
@@ -204,7 +218,7 @@ def run():
                     next_card = '[data-album-id="nav2"]'
                 else:
                     card = grid + ' > :nth-child(2)'
-                    next_card = '#tab-tidal .album-card:has([data-fav-id="nav2"])'
+                    next_card = '#albums-grid .album-card:has([data-fav-id="nav2"])'
                 page.focus(card)
                 page.keyboard.press('ArrowUp')
                 page.keyboard.press('Enter')
@@ -215,21 +229,7 @@ def run():
                 page.keyboard.press('ArrowDown')
                 assert page.locator(next_card).evaluate('(e)=>e===document.activeElement'), 'refreshed favorite path traps D-pad'
 
-            def playlist_refresh(page, layout):
-                grid = setup(page, 'tidal-playlists', layout)
-                if layout == 'list':
-                    page.click('#tidal-view-mode-toggle [data-layout-toggle="list"]')
-                page.focus(grid + ' > :nth-child(2)')
-                page.keyboard.press('ArrowUp')
-                page.evaluate('window.oldHeart=document.activeElement')
-                page.keyboard.press('Enter')
-                page.wait_for_timeout(200)
-                assert page.evaluate("!window.oldHeart.isConnected"), 'playlist fixture must exercise results replacement'
-                assert page.evaluate("document.activeElement.matches('.streaming-fav[data-fav-id=nav1]') && document.activeElement.classList.contains('tv-nav-focus')"), 'surviving playlist heart lost focus after replacing results'
-                page.keyboard.press('ArrowDown')
-                assert page.evaluate("document.activeElement.matches('.album-card') && document.activeElement.querySelector('[data-fav-id=nav1]')"), 'playlist heart cannot return to its card'
-
-            for surface in ('library','radio','tidal','tidal-playlists'):
+            for surface in ('library','radio','tidal'):
                 scenario(surface + ' grid routing', lambda page, s=surface: card_path(page,s))
                 if surface != 'radio':
                     scenario(surface + ' list routing', lambda page, s=surface: card_path(page,s,'list'))
@@ -241,9 +241,7 @@ def run():
             scenario('brand ring clears wordmark',brand_clearance)
             scenario('horizontal row edges never jump diagonally',row_edges)
             scenario('Library favorite removal keeps adjacent focus',lambda page: favorite_refresh(page,'library'))
-            scenario('TIDAL favorite removal keeps adjacent focus',lambda page: favorite_refresh(page,'tidal'))
-            scenario('TIDAL playlist grid refresh keeps heart focus',lambda page: playlist_refresh(page,'grid'))
-            scenario('TIDAL playlist list refresh keeps heart focus',lambda page: playlist_refresh(page,'list'))
+            scenario('Library TIDAL favorite removal keeps adjacent focus',lambda page: favorite_refresh(page,'tidal'))
             browser.close()
     finally:
         server.shutdown()

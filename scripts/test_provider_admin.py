@@ -648,12 +648,14 @@ class TidalLoginParityTests(unittest.TestCase):
         self.assertIn("openTidalLogin: () => void beginTidalLogin()", self.app_js)
         self.assertIn("FXRouteProviderSettings", self.app_js)
 
-    def test_tab_primary_login_routes_to_modal_and_keeps_device_flow(self):
+    def test_library_login_routes_to_the_modal_and_no_device_flow_remains(self):
         self.assertIn("api.openTidalLogin", self.streaming_js)
-        self.assertIn("renderTidalDevice", self.streaming_js)
-        self.assertIn("renderTidalPkce", self.streaming_js)
+        for gone in ("renderTidalDevice", "renderTidalPkce", "auth/device", "AAC 320"):
+            self.assertNotIn(gone, self.streaming_js)
+            self.assertNotIn(gone, self.streaming_api_text)
+        self.assertNotIn("device login", self.index.lower())
 
-    def test_tidal_auth_backend_is_untouched(self):
+    def test_tidal_auth_backend_keeps_the_pkce_flow(self):
         for token in (
             "async def api_tidal_pkce_login_url",
             "async def api_tidal_finish_pkce_login",
@@ -661,6 +663,8 @@ class TidalLoginParityTests(unittest.TestCase):
             "finish_pkce_login(redirect_url)",
         ):
             self.assertIn(token, self.streaming_api_text)
+        for gone in ("api_tidal_start_device_login", "api_tidal_finish_device_login"):
+            self.assertNotIn(gone, self.streaming_api_text)
 
 
 class ProviderReinstallActivationTests(unittest.TestCase):

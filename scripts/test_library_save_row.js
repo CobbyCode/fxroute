@@ -359,9 +359,9 @@ async function runVisibility(sandbox) {
 
         await runVisibility(makeSandbox(tree, { selected: 1, tidalSelected: 1 }));
         assert.equal(tree.saveRow.dataset.saveMode, 'mixed');
-        assert.equal(els.savePlaylistBtn.disabled, true, 'a mixed selection cannot be saved yet');
+        assert.equal(els.savePlaylistBtn.disabled, false, 'a mixed selection saves one playlist with TIDAL references');
         assert.ok(!els.playlistSaveHint.classList.contains('hidden') && els.playlistSaveHint.textContent,
-            'a mixed selection explains why it cannot be saved');
+            'a mixed selection says how it is saved');
         assert.ok(els.playlistTidalTarget.classList.contains('hidden'));
 
         await runVisibility(makeSandbox(tree, { selected: 1 }));

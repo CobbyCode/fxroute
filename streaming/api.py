@@ -547,24 +547,6 @@ async def api_streaming_provider_add_playlist_tracks(provider_id: str, playlist_
         raise _tidal_http_error(exc) from exc
 
 
-@router.post("/api/streaming/tidal/auth/device")
-async def api_tidal_start_device_login():
-    provider = _streaming_provider("tidal")
-    try:
-        return await provider.start_device_login()
-    except Exception as exc:
-        raise _tidal_http_error(exc) from exc
-
-
-@router.post("/api/streaming/tidal/auth/device/finish")
-async def api_tidal_finish_device_login():
-    provider = _streaming_provider("tidal")
-    try:
-        return await provider.finish_device_login()
-    except Exception as exc:
-        raise _tidal_http_error(exc) from exc
-
-
 @router.post("/api/streaming/tidal/auth/pkce")
 async def api_tidal_pkce_login_url():
     provider = _streaming_provider("tidal")

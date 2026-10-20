@@ -62,7 +62,7 @@ assert.ok(!/\bproviderId\s*==/.test(renderNowPlaying), 'renderNowPlaying must no
 assert.ok(/const TRANSPORT\s*=/.test(js), 'transport adapter map must exist');
 assert.ok(js.includes("spotify: { kind: 'app'"), 'spotify transport adapter');
 assert.ok(js.includes("qobuz: { kind: 'remote'"), 'qobuz transport adapter');
-assert.ok(js.includes("tidal: { kind: 'native'"), 'tidal transport adapter');
+assert.ok(!js.includes("tidal: { kind: 'native'"), 'TIDAL has no tab transport: the footer is its player');
 
 // --- quality facts live in the shared footer meta-tag, not in the card --------
 // The now-playing card must no longer carry its own quality badge: the stream
@@ -103,113 +103,39 @@ assert.equal(formatQueueInfo({}), '');
 assert.ok(!/providerId/.test(extractFunction(js, 'formatQueueInfo')),
     'queue info formatting must not branch on provider id');
 
-// --- served shell wires the three provider tabs + the module ----------------------
-for (const provider of ['spotify', 'qobuz', 'tidal']) {
+// --- served shell wires the Spotify and Qobuz tabs + the module -------------------
+for (const provider of ['spotify', 'qobuz']) {
     assert.ok(html.includes(`data-provider="${provider}"`), `index.html must ship a ${provider} shell`);
     assert.ok(html.includes(`data-tab="${provider}"`), `index.html must ship a ${provider} tab button`);
     assert.ok(html.includes(`id="tab-${provider}"`), `index.html must ship a ${provider} tab panel`);
 }
 assert.ok(html.includes('/static/streaming.js?v='), 'index.html must include streaming.js');
 
-// --- TIDAL login flow is present (PKCE default + device alternative) --------------
-assert.ok(js.includes('auth/pkce'), 'PKCE login endpoint used');
-assert.ok(js.includes('auth/device'), 'device login endpoint used');
-assert.ok(js.includes('Device login (limited to AAC 320 kbps)'), 'device login is labelled as limited');
+// --- TIDAL lives in the Library: no tab, no shell, no tab surface --------------
+assert.ok(!html.includes('data-provider="tidal"'), 'index.html must not ship a TIDAL shell');
+assert.ok(!html.includes('data-tab="tidal"'), 'index.html must not ship a TIDAL tab button');
+assert.ok(!html.includes('id="tab-tidal"') && !html.includes('id="tab-btn-tidal"'),
+    'index.html must not ship a TIDAL tab panel');
+assert.ok(html.includes('id="library-tidal-status"') && html.includes('id="library-tidal-detail"'),
+    'the Library must carry the TIDAL status button and the detail host');
+for (const gone of ['renderTidalBrowse', 'renderTidalContent', 'renderTidalLogin', 'renderTidalDevice',
+    'bindTidalSearchBar', 'executeTidalSearch', 'tidalPlaylistSaveRowHtml', 'showTidalSearchResultsFor',
+    'activateTidalHost', 'setTidalLayout']) {
+    assert.ok(!js.includes(gone), `${gone} belonged to the removed TIDAL tab`);
+}
+for (const id of ['tidal-search-input', 'tidal-subbar', 'tidal-toolbar', 'tidal-playlist-save-row']) {
+    assert.ok(!js.includes(id), `${id} belonged to the removed TIDAL tab`);
+}
 
-// --- streaming UI hierarchy --------------------------------------------------
-assert.ok(js.includes("tidal: { name: 'Tidal', canConnect: true, catalog: true }"),
-    'Tidal visible provider name and catalog role must be explicit');
-assert.ok(js.includes('catalogProvider'),
-    'Tidal must be identified as a catalog provider whose player is the footer');
-// --- TIDAL browse: one shared navigation row, search is a permanent bar ----
-// Albums is the default browse category. The four categories live in one
-// navigation row; search categories only exist in the result state and never
-// compete with them.
-assert.ok(js.includes("browseCategory: 'albums'"),
-    'TIDAL browse must default to Albums');
-assert.ok(js.includes("state.tidal.searchQuery = query"),
-    'executed Tidal searches must record the query');
-assert.ok(js.includes("state.tidal.searchQuery = ''"),
-    'clearing Tidal search must reset the executed query');
-assert.ok(!js.includes('Search Tidal for music.'),
-    'no empty search start screen: cleared search returns to the browse section');
-assert.ok(js.includes('function bindTidalSearchBar'),
-    'the browse surface must wire the permanent search bar');
-assert.ok(js.includes('function resetTidalSearch') && js.includes('function clearTidalSearch'),
-    'search reset must be explicit state, not DOM-only toggling');
-const tidalBrowseRender = extractFunction(js, 'renderTidalBrowse');
-assert.ok(tidalBrowseRender.includes('id="tidal-search-input"') && !tidalBrowseRender.includes('tidal-search-btn'),
-    'the direct search input must be part of the browse surface without a Search button');
-assert.ok(tidalBrowseRender.includes('data-placeholder-full="Search albums, tracks, artists, playlists…"') &&
-    tidalBrowseRender.includes('data-placeholder-compact="Search…"'),
-    'the Tidal search placeholder must have full and compact variants');
-assert.ok(tidalBrowseRender.indexOf('tidal-search-input') > tidalBrowseRender.indexOf('data-browse=') &&
-    tidalBrowseRender.indexOf('tidal-search-input') > tidalBrowseRender.indexOf('tidal-subbar'),
-    'the search bar must share the second header row with the browse navigation');
-assert.ok(tidalBrowseRender.includes('tidal-toolbar-actions') && tidalBrowseRender.includes('entry.els.statusLine'),
-    'Tidal connected status must move into the first header row actions');
-assert.ok(tidalBrowseRender.includes('id="tidal-refresh-btn"'),
-    'the first header row must carry the manual refresh button');
-assert.ok(!tidalBrowseRender.includes('tidal-search-types'),
-    'search types must not be visible in the browse state');
-assert.ok(!tidalBrowseRender.includes('data-browse="search"'),
-    'Search must not be a browse tab anymore');
-assert.ok(tidalBrowseRender.includes('data-browse="') && tidalBrowseRender.includes('TIDAL_BROWSE_LABELS[cat]'),
-    'browse tabs must render through the shared category map');
-assert.ok(js.includes("const TIDAL_BROWSE_CATEGORIES = ['albums', 'tracks', 'artists', 'playlists'];"),
-    'browse navigation must be Albums, Tracks, Artists and Playlists only');
-assert.ok(js.includes('renderTidalBrowseSection(state.tidal.browseCategory)'),
-    'first authenticated render must show the current browse category (Albums by default)');
+// --- TIDAL login: the browser (PKCE) login dialog only -----------------------------
+assert.ok(js.includes('api.openTidalLogin'), 'TIDAL login opens the shared provider login dialog');
+assert.ok(!js.includes('auth/device') && !js.toLowerCase().includes('device login') && !js.includes('AAC 320'),
+    'the device login is gone');
+assert.ok(!html.toLowerCase().includes('device login') && !html.includes('AAC 320'), 'the device login is gone from the page');
 
-// --- TIDAL toolbar/search state --------------------------------------------
-// Row 1 is the page title with Connected + refresh on the right; the search
-// controls share the second row with the Tracks/Albums/Artists/Playlists
-// navigation. Search type controls belong to the executed-results view, never
-// to the browse categories.
-assert.ok(js.includes('entry.els.statusLine'),
-    'TIDAL Connected status must be moved into the first header row actions');
-assert.ok(js.includes('function bindTidalRefresh') && js.includes('function refreshTidalCatalog'),
-    'the manual TIDAL refresh must have an explicit handler');
-assert.ok(js.includes('loadTidalFavoriteIds(true)') && js.includes('refreshTidalStatus()'),
-    'refresh must reuse the existing favorite-ids and status provider logic');
-assert.ok(js.includes('refreshActiveTidalView'),
-    'refresh must re-render the currently active TIDAL view');
-assert.ok(js.includes('state.tidal.searchRequestId += 1'),
-    'clearing or navigating away must invalidate pending search responses');
-assert.ok(js.includes('if (input && state.tidal.searchExecuted) input.value = state.tidal.searchQuery'),
-    'a content-key rebuild must restore the executed query in the search input');
-assert.ok(js.includes("window.matchMedia('(max-width: 600px)'") && js.includes('placeholderQuery.addEventListener'),
-    'TIDAL search must switch its placeholder at the compact breakpoint');
-assert.ok(!js.includes('id="tidal-search-types"'),
-    'search types must not be rendered beside the browse search bar');
-assert.ok(js.includes('function renderTidalSearchResults'),
-    'executed searches must have a dedicated result view');
-assert.ok(js.includes('Search results for &quot;'),
-    'executed searches must show the query in a result heading');
-assert.ok(js.includes("const TIDAL_SEARCH_TYPES = ['albums', 'tracks', 'artists', 'playlists'];"),
-    'search result types must have the requested order');
-assert.ok(js.includes('tidal-search-result-types'),
-    'search result type controls must be distinct from the browse categories');
-assert.ok(js.includes('if (!state.tidal.searchExecuted || !state.tidal.searchQuery) return;'),
-    'search type changes must not request before a query was executed');
-assert.ok(js.includes('void executeTidalSearch(type)'),
-    'changing a search type must automatically execute the stored query');
-assert.ok(js.includes("input.addEventListener('input'"),
-    'TIDAL search must react to input changes');
-assert.ok(js.includes('const TIDAL_SEARCH_DEBOUNCE_MS = 300'),
-    'TIDAL direct search must use a short debounce delay');
-assert.ok(js.includes('searchDebounceTimer'),
-    'TIDAL direct search must cancel a pending debounce timer');
-assert.ok(js.includes('state.tidal.searchRequestId += 1'),
-    'new input and clearing must invalidate older search generations');
-assert.ok(!js.includes('id="tidal-search-btn"'),
-    'the old Search button must stay removed');
-
-// --- shared compact view tabs (Library + TIDAL browse + search) ------------
-// Library Tracks/Folders/Albums and TIDAL Tracks/Albums/Artists/Playlists
-// (one navigation row) plus the search result types must be one shared
-// segmented-navigation component (.view-tab). No separate Favorites level
-// and no inner category chips remain.
+// --- shared compact view tabs (Library views + search result types) --------
+// The Library view tabs and the search result types are one shared
+// segmented-navigation component (.view-tab).
 assert.ok(css.includes('.view-tab') && css.includes('.view-tabs'),
     'the shared compact view-tab component must ship in style.css');
 assert.ok(!css.includes('.streaming-chip'),
@@ -222,10 +148,8 @@ assert.ok(!css.includes('.streaming-browse-tabs'),
     'the old level-1 TIDAL browse container class must be gone');
 assert.ok(html.includes('class="view-tab active"'),
     'the library view toggle must use the shared view-tab class');
-assert.ok(js.includes('class="view-tab'),
-    'TIDAL browse and search type tabs must use the shared view-tab class');
-assert.ok(js.includes('.tidal-subbar .view-tab[data-browse]') && js.includes('#tidal-search-result-types .view-tab'),
-    'TIDAL browse and search type click wiring must target the shared class');
+assert.ok(html.includes('id="library-search-types"') && html.includes('data-search-type="albums"'),
+    'the Library search result types must use the shared view-tab class');
 const viewTabCss = css.slice(css.indexOf('.view-tab {'), css.indexOf('.view-tab:hover'));
 assert.ok(/-?\d+px/.test(viewTabCss.match(/min-height:\s*([^;]+);/)[1]),
     'the shared view-tab must define a concrete min-height (36-40px range)');
@@ -235,57 +159,22 @@ assert.ok(tabMinHeight >= 36 && tabMinHeight <= 40,
 assert.ok(!viewTabCss.includes('999px') && viewTabCss.includes('var(--radius-sm)'),
     'the shared view-tab must use the standard radius, not a pill shape');
 
-// Track search results are a temporary queue, while the row + builds a
-// persistent playlist selection (saved as a new TIDAL playlist or appended to
-// an existing one). Playback and favorite actions never touch the selection,
-// and the old opt-in "Play selected" placeholder mode is gone.
-assert.ok(js.includes("const queueIds = type === 'tracks' ? items.map((item) => String(item.id)).filter(Boolean) : [];"),
-    'track search results must build a queue from all displayed tracks');
-assert.ok(js.includes('playTidalTracks(queueIds, trackId)'),
-    'a track search click must start the complete search-results queue');
-assert.ok(!js.includes('tidal-track-selection-toggle') && !js.includes('tidal-play-selected') &&
-    !js.includes('tidal-select-all') && !js.includes('tidal-track-select'),
-    'the old opt-in Select/Play-selected placeholder mode must be gone');
+// The row + builds a persistent playlist selection (saved by the Library save
+// row as a TIDAL playlist, a local playlist or a mix). Playback and favorite
+// actions never touch the selection.
 assert.ok(js.includes('tidalTrackAddButtonHtml') && js.includes('data-streaming-add'),
     'every TIDAL track row must expose the persistent + playlist-selection button');
 assert.ok(js.includes('selectedTrackIds') && js.includes('syncTidalTrackSelection'),
     'the + selection must keep one shared cross-view selection state');
 assert.ok(js.includes("event.target && event.target.closest('.streaming-add, .streaming-fav, .track-fav')"),
     'row clicks must skip the + and heart buttons instead of playing');
-assert.ok(js.includes('tidal-playlist-save-row') && js.includes('tidal-save-playlist') &&
-    js.includes('tidal-playlist-target') && js.includes('tidal-add-to-playlist'),
-    'the shared save row must offer new-playlist save and add-to-existing');
 assert.ok(js.includes('/api/streaming/tidal/playlists/create') &&
     js.includes("'/api/streaming/tidal/playlists/' + encodeURIComponent(playlistId) + '/tracks'"),
     'the save actions must write through the TIDAL playlist endpoints');
-const tidalSearchRender = extractFunction(js, 'renderTidalSearchResults');
-assert.ok(tidalSearchRender.includes('Search results for'),
-    'search results must have a distinct heading');
-assert.ok(tidalSearchRender.includes('tidal-search-result-types'),
-    'search result categories must be rendered only after a search');
-assert.ok(js.includes("artists: 'Artists'") && js.includes("tracks: 'Tracks'") && js.includes("albums: 'Albums'") && js.includes("playlists: 'Playlists'"),
-    'search results must expose all result categories');
-assert.ok(tidalSearchRender.includes('state.tidal.searchQuery'),
-    'the executed query must be shown in the search result heading');
 assert.ok(js.includes('detailRequestId'),
     'TIDAL detail loads must ignore responses from an obsolete detail view');
-
-// Toolbar layout follows the library pattern: title row with Connected +
-// refresh right-aligned, then a second row with the navigation left and the
-// search right. Both right-aligned groups share one right edge so browse <->
-// detail never shifts horizontally.
-assert.ok(css.includes('.tidal-toolbar') && css.includes('.tidal-toolbar-actions'),
-    'TIDAL toolbar must place the connected status + refresh in the title row');
-assert.ok(css.includes('.tidal-subbar'),
-    'TIDAL second header row (navigation + search) must have its own container');
-assert.ok(/@media \(max-width: 760px\)[\s\S]*?\.tidal-subbar \.streaming-search\s*\{[\s\S]*?width: 100%;/.test(css),
-    'TIDAL search must take the full second-row width on mobile');
-assert.ok(!css.includes('.streaming-status-line'),
-    'the old standalone status line must be gone; one shared .streaming-status pill remains');
-assert.ok(css.includes('#tidal-fav-results') && css.includes('#tidal-search-items'),
-    'Favorites and search results must both reserve a gap below their subtabs');
-assert.ok(/#tidal-fav-results[\s\S]*?#tidal-search-items[\s\S]*?margin-top:\s*0\.35rem/.test(css),
-    'the subtab-to-content gap must stay small and consistent');
+assert.ok(js.includes('onPlay') && js.includes('rememberTidalTrack'),
+    'a host list can own playback of its TIDAL rows and the shown tracks stay available for saved playlists');
 
 // Playlist/detail queue semantics stay intact: clicking any track passes the
 // whole track list plus the chosen start id to /api/play.
@@ -303,17 +192,8 @@ assert.ok(!js.includes('trackSelectionMode'),
 assert.ok(js.includes('tidalTrackAddButtonHtml'),
     'TIDAL track rows must always expose the + playlist-selection button');
 
-// Catalog providers must not render a second in-tab now-playing card: the
-// global footer is the authoritative player, so the card stays hidden.
-const nowPlayingRender = js.slice(js.indexOf('function renderNowPlaying'), js.indexOf('function showEmpty'));
-assert.ok(nowPlayingRender.includes('meta.catalog'),
-    'catalog providers must be routed through the catalog flag');
-assert.ok(nowPlayingRender.includes('els.nowPlaying.hidden = true'),
-    'catalog providers must keep the in-tab now-playing card hidden');
-
-// The visible provider status must not surface raw backend identifiers, and
-// player providers integrate the status into the card (top-right chip) while
-// catalog providers keep the standalone line.
+// The visible provider status must not surface raw backend identifiers; the
+// status is integrated into the player card (top-right chip).
 for (const name of ['renderStatusLine', 'buildStatusBits', 'buildStatusDetail']) {
     const fn = extractFunction(js, name);
     assert.ok(!fn.includes('qbzd'), `${name} must not surface the qbzd backend name`);
@@ -322,10 +202,8 @@ for (const name of ['renderStatusLine', 'buildStatusBits', 'buildStatusDetail'])
 const statusLineRender = extractFunction(js, 'renderStatusLine');
 assert.ok(statusLineRender.includes('els.statusChip'),
     'player providers must render status into the in-card status pill');
-assert.ok(statusLineRender.includes('els.statusLine'),
-    'catalog providers keep the toolbar status pill');
-assert.ok(statusLineRender.includes('catalogProvider'),
-    'status placement must branch on the catalog flag, not the provider id');
+assert.ok(!statusLineRender.includes('catalogProvider'),
+    'there is no catalog provider tab anymore');
 assert.ok(js.includes("'<span class=\"streaming-status\" hidden></span>'"),
     'the now-playing card must carry the shared in-card status pill');
 assert.ok(js.includes("textContent = 'Connected'"),
@@ -333,17 +211,14 @@ assert.ok(js.includes("textContent = 'Connected'"),
 assert.ok(js.includes('buildStatusDetail'),
     'backend/provider detail must stay available via the pill tooltip');
 const bitsBuilder = extractFunction(js, 'buildStatusBits');
-assert.ok(!bitsBuilder.includes("PROVIDER_META.tidal.name"),
-    'the status label must not repeat the provider name (Tidal is the page title)');
 assert.ok(bitsBuilder.includes("['Connected']"),
     'all providers must share the identical Connected status language');
 assert.ok(bitsBuilder.includes('data.connected === true'),
     'Spotify Connected status must require a live backend signal');
 
-// The served navigation changes visible copy only, not the provider id.
-assert.ok(html.includes('data-tab="tidal"') && html.includes('<span>Tidal</span>'),
-    'Tidal navigation must use title case while retaining its tidal tab id');
-assert.ok(!html.includes('<span>TIDAL</span>'), 'served navigation must not use all-caps TIDAL');
+// The served navigation has no TIDAL entry at all.
+assert.ok(!html.includes('<span>Tidal</span>') && !html.includes('<span>TIDAL</span>'),
+    'served navigation must not list TIDAL');
 
 // Footer clearance is part of the streaming content layout contract.
 assert.ok(css.includes('.tab-content') && css.includes('calc(2rem + var(--playback-footer-space))'),
@@ -387,12 +262,6 @@ assert.ok(js.includes('favoriteButtonHtml') && js.includes('data-fav-type') && j
     'tracks and albums must render a favorite heart button');
 assert.ok(js.includes('set_track_favorite') === false && js.includes('/favorite'),
     'the heart must write back through the provider favorite endpoint');
-assert.ok(js.includes("const TIDAL_BROWSE_CATEGORIES = ['albums', 'tracks', 'artists', 'playlists'];"),
-    'the four browse categories must be Albums, Tracks, Artists and Playlists in one row');
-assert.ok(js.includes("TIDAL_BROWSE_LABELS = { tracks: 'Tracks', albums: 'Albums', artists: 'Artists', playlists: 'Playlists' }"),
-    'Tracks, Albums, Artists and Playlists must be the four labelled browse tabs');
-assert.ok(js.includes('data-browse="\' + cat + \'"'),
-    'the browse tabs must carry their category in data-browse');
 assert.ok(js.includes("const TIDAL_SEARCH_TYPES = ['albums', 'tracks', 'artists', 'playlists'];"),
     'the search result view must keep the track/album/artist/playlist search types');
 assert.ok(js.includes('/api/streaming/tidal/favorites?type=') && js.includes('/api/streaming/tidal/playlists'),
@@ -401,8 +270,8 @@ assert.ok(js.includes('/api/streaming/tidal/favorites?type=') && js.includes('/a
 // Playlists are favoritable like tracks/albums: heart on every playlist row,
 // state tracked in the same authoritative favorites/ids payload, and write-back
 // through the generic favorite endpoint.
-assert.ok(js.includes("favoriteButtonHtml('playlists', item.id)"),
-    'playlist rows (search + playlists view) must render a favorite heart');
+assert.ok(libraryJs.includes('TIDAL_CARD_FAVORITE_KINDS'),
+    'playlist cards must render a favorite heart');
 assert.ok(js.includes("playlists: new Set((data.playlists || []).map(String))"),
     'favorites/ids must feed playlist hearts alongside tracks/albums');
 assert.ok(js.includes("playlists: new Set()"),
@@ -447,13 +316,11 @@ assert.ok(css.includes('"back back"') && css.includes('"cover meta"'),
 assert.ok(/"back"\s*"cover"\s*"meta"/.test(css),
     'phone detail header must stack back/cover/meta vertically');
 
-// --- status line is a main-surface-only detail ------------------------------
-// The permanent Connected status stays on the main catalog surface; detail
-// views hide it (real errors still render via the login surface and line).
+// --- detail views --------------------------------------------------------------
 assert.ok(js.includes('function isTidalDetailView'),
-    'streaming must have an explicit detail-view guard for the status line');
+    'streaming must have an explicit detail-view guard for the Library host');
 assert.ok(js.includes("state.tidal.view === 'album' || state.tidal.view === 'playlist' || state.tidal.view === 'artist'"),
-    'album/playlist/artist must count as detail views for the status line');
+    'album/playlist/artist must count as detail views');
 
 // --- TIDAL artist detail: same path from search and favorites ----------------
 // Artist rows open a shared artist detail (cover/name/follow star in the
@@ -486,12 +353,6 @@ assert.ok(js.includes('viewStack'),
     'detail navigation must keep a back stack so nested details return through');
 assert.ok(js.includes('function closeTidalDetail'),
     'detail back must pop the shared navigation stack');
-const statusRender = extractFunction(js, 'renderStatusLine');
-assert.ok(statusRender.includes('applyCatalogStatusLine'),
-    'catalog status must render through the shared status-line helper');
-const browseRender = extractFunction(js, 'renderTidalBrowse');
-assert.ok(browseRender.includes('applyCatalogStatusLine'),
-    'navigating into/out of detail views must sync the status line immediately');
 
 // --- one shared detail track row for library and Tidal ----------------------
 // The shared row builder lives in library_ui.js and is handed to streaming.js

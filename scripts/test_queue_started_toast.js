@@ -123,16 +123,10 @@ function makeEl() {
 function shellEl(pid) {
     const el = makeEl(); el['data-provider'] = pid;
     const memo = {};
-    const tabs = ['tracks', 'albums', 'artists', 'playlists'].map((n) => {
-        const t = makeEl(); t.dataset.browse = n; return t;
-    });
     el.querySelector = (sel) => {
         if (!memo[sel]) {
             memo[sel] = makeEl();
-            memo[sel].querySelectorAll = (inner) => {
-                if (inner === '.view-tab' || inner === '.tidal-subbar .view-tab[data-browse]') return tabs;
-                return [];
-            };
+            memo[sel].querySelectorAll = () => [];
             memo[sel].querySelector = (inner) => {
                 const k = sel + ' ' + inner;
                 if (!memo[k]) memo[k] = makeEl();
@@ -147,10 +141,9 @@ function shellEl(pid) {
 const baseCaps = { transport: true, seek: true, shuffle: true, loop: true, progress: true, cover: true, audio_format: true, bit_depth: true, sample_rate: true };
 
 function runStreaming({ fetchImpl, cueCalls }) {
-    const providers = ['spotify', 'qobuz', 'tidal'];
+    const providers = ['spotify', 'qobuz'];
     const shells = {}; const tabButtons = {}; const tabPanels = {}; const byId = {}; const createdEls = [];
     for (const pid of providers) { shells[pid] = shellEl(pid); tabButtons[pid] = makeEl(); tabPanels[pid] = makeEl(); }
-    const tidalBrowseBody = makeEl();
     const document = {
         hidden: false,
         querySelectorAll(sel) {
@@ -164,7 +157,6 @@ function runStreaming({ fetchImpl, cueCalls }) {
         getElementById(id) {
             const m = id.match(/^tab-(\w+)$/);
             if (m) return tabPanels[m[1]];
-            if (id === 'tidal-browse-body') return tidalBrowseBody;
             if (!byId[id]) byId[id] = makeEl();
             return byId[id];
         },
@@ -211,7 +203,7 @@ function runStreaming({ fetchImpl, cueCalls }) {
     // Mirrors app.js' WS-init snapshot handling: the first snapshot of a
     // provider anchors its session track without cuing.
     const seedSession = (provider, snapshot) => sandbox.maybeShowStreamingQueueCue(provider, null, snapshot);
-    return { sandbox, shells, fetchCalls, createdEls, document, tidalBrowseBody, seedSession };
+    return { sandbox, shells, fetchCalls, createdEls, document, seedSession };
 }
 
 (async () => {
@@ -325,7 +317,7 @@ function runStreaming({ fetchImpl, cueCalls }) {
             { id: '175015090', title: 'Big Poppa (2005 Remaster)', artist: 'The Notorious B.I.G.', album: 'Biggie', art_url: TIDAL_TRACK.art_url, duration: 253 },
             { id: TIDAL_TRACK.id, title: TIDAL_TRACK.title, artist: TIDAL_TRACK.artist, album: TIDAL_TRACK.album, art_url: TIDAL_TRACK.art_url, duration: 220 },
         ];
-        const { sandbox, shells, createdEls } = runStreaming({
+        const { sandbox } = runStreaming({
             cueCalls,
             fetchImpl: async (u, opts) => {
                 if (u === '/api/play') {
@@ -340,13 +332,10 @@ function runStreaming({ fetchImpl, cueCalls }) {
                 return { ok: true, json: async () => ({}) };
             },
         });
-        const tidalData = { installed: true, available: true, authenticated: true, capabilities: baseCaps, status: 'Stopped', title: '', artist: '', album: '', artUrl: '', shuffle: false, loop: 'none', position: 0, duration: 0 };
-        sandbox.window.FXRouteStreaming.renderProvider('tidal', tidalData);
         await new Promise((r) => setTimeout(r, 0));
-        shells.tidal.querySelector('.streaming-content').querySelectorAll('.view-tab').find((t) => t.dataset.browse === 'tracks').click();
-        await new Promise((r) => setTimeout(r, 0));
-        await new Promise((r) => setTimeout(r, 0));
-        const rows = createdEls.filter((el) => el.className === 'streaming-result');
+        // The Library lists TIDAL tracks through the adapter row builder.
+        const ids = favTracks.map((item) => item.id);
+        const rows = favTracks.map((item) => sandbox.window.FXRouteStreaming.tidal.buildTrackRow(item, { tag: 'div', queueIds: ids }));
         assert.ok(rows.length >= 2, 'tidal tracks must render');
         rows[1].click();
         await new Promise((r) => setTimeout(r, 0));
@@ -362,7 +351,7 @@ function runStreaming({ fetchImpl, cueCalls }) {
     // 8. Functional: TIDAL single-track shows Now playing (same as local single).
     await run('tidal single track shows Now playing', async () => {
         const cueCalls = [];
-        const { sandbox, shells, createdEls } = runStreaming({
+        const { sandbox } = runStreaming({
             cueCalls,
             fetchImpl: async (u) => {
                 if (u === '/api/play') {
@@ -376,13 +365,9 @@ function runStreaming({ fetchImpl, cueCalls }) {
                 return { ok: true, json: async () => ({}) };
             },
         });
-        const tidalData = { installed: true, available: true, authenticated: true, capabilities: baseCaps, status: 'Stopped', title: '', artist: '', album: '', artUrl: '', shuffle: false, loop: 'none', position: 0, duration: 0 };
-        sandbox.window.FXRouteStreaming.renderProvider('tidal', tidalData);
         await new Promise((r) => setTimeout(r, 0));
-        shells.tidal.querySelector('.streaming-content').querySelectorAll('.view-tab').find((t) => t.dataset.browse === 'tracks').click();
-        await new Promise((r) => setTimeout(r, 0));
-        await new Promise((r) => setTimeout(r, 0));
-        createdEls.filter((el) => el.className === 'streaming-result')[0].click();
+        const single = { id: TIDAL_TRACK.id, title: TIDAL_TRACK.title, artist: TIDAL_TRACK.artist, album: TIDAL_TRACK.album, art_url: TIDAL_TRACK.art_url, duration: 220 };
+        sandbox.window.FXRouteStreaming.tidal.buildTrackRow(single, { tag: 'div', queueIds: [single.id] }).click();
         await new Promise((r) => setTimeout(r, 0));
         assert.equal(cueCalls.length, 1);
         assert.equal(cueCalls[0][1], 'Now playing');
