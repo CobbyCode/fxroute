@@ -2478,7 +2478,7 @@
             if (Array.isArray(items) && items.length) renderDetailTracks(results, items, null);
             else results.innerHTML = '';
             const hasSimilar = renderSimilarArtists(results, similar);
-            if (hasSimilar) void hydrateSimilarArtistImages(results, similar, requestId, 'album');
+            if (hasSimilar) void hydrateSimilarArtistImages(results, similar, () => requestId === state.tidal.detailRequestId && state.tidal.view === 'album');
             if ((!Array.isArray(items) || !items.length) && !hasSimilar) {
                 results.innerHTML = contentState('empty', 'No tracks or similar artists available.');
             }
@@ -2573,15 +2573,50 @@
         }
     }
 
+    // Top Tracks and Albums of a TIDAL artist payload; shared by the TIDAL
+    // artist detail and the "On TIDAL" section of a local artist page.
+    // Returns whether anything was rendered.
+    function renderTidalArtistBody(results, data) {
+        const tracks = Array.isArray(data.top_tracks) ? data.top_tracks : [];
+        const albums = Array.isArray(data.albums) ? data.albums : [];
+        if (tracks.length) {
+            const heading = document.createElement('h4');
+            heading.className = 'streaming-results-heading';
+            heading.textContent = 'Top Tracks';
+            results.appendChild(heading);
+            // renderDetailTracks replaces its container's content, so the
+            // rows get their own host and the heading stays.
+            const trackHost = document.createElement('div');
+            results.appendChild(trackHost);
+            renderDetailTracks(trackHost, tracks);
+        }
+        if (albums.length) {
+            const heading = document.createElement('h4');
+            heading.className = 'streaming-results-heading';
+            heading.textContent = 'Albums';
+            results.appendChild(heading);
+            const list = document.createElement('ul');
+            list.className = 'tidal-tiles';
+            albums.forEach((item) => list.appendChild(renderSearchItem('albums', item, [])));
+            results.appendChild(list);
+        }
+        return tracks.length > 0 || albums.length > 0;
+    }
+
+    async function fetchTidalArtist(id) {
+        const resp = await fetch('/api/streaming/tidal/artists/' + encodeURIComponent(id));
+        if (!resp.ok) throw new Error(await errorDetail(resp));
+        const data = await resp.json();
+        rememberTidalArtist(data);
+        return data;
+    }
+
     async function loadTidalArtist(content, requestId) {
         const results = content.querySelector('#tidal-detail-results');
         try {
-            const resp = await fetch('/api/streaming/tidal/artists/' + encodeURIComponent(state.tidal.detailId));
-            if (!resp.ok) throw new Error(await errorDetail(resp));
-            const data = await resp.json();
+            const data = await fetchTidalArtist(state.tidal.detailId);
             try { await loadTidalFavoriteIds(); } catch (e) { /* hearts degrade to unfilled */ }
             if (requestId !== state.tidal.detailRequestId || state.tidal.view !== 'artist') return;
-            rememberTidalArtist(data);
             if (data.art_url) {
                 state.tidal.detailArt = data.art_url;
                 const cover = content.querySelector('.tidal-detail-cover');
@@ -2601,29 +2636,11 @@
             }
             renderArtistAbout(content.querySelector('#tidal-artist-about'), data.enrichment && data.enrichment.about);
             syncFavoriteDetailButtons('artists', state.tidal.detailId);
-            const tracks = Array.isArray(data.top_tracks) ? data.top_tracks : [];
-            const albums = Array.isArray(data.albums) ? data.albums : [];
-            if (tracks.length) {
-                const heading = document.createElement('h4');
-                heading.className = 'streaming-results-heading';
-                heading.textContent = 'Top Tracks';
-                results.appendChild(heading);
-                renderDetailTracks(results, tracks, null);
-            }
-            if (albums.length) {
-                const heading = document.createElement('h4');
-                heading.className = 'streaming-results-heading';
-                heading.textContent = 'Albums';
-                results.appendChild(heading);
-                const list = document.createElement('ul');
-                list.className = 'tidal-tiles';
-                albums.forEach((item) => list.appendChild(renderSearchItem('albums', item, [])));
-                results.appendChild(list);
-            }
+            const hasBody = renderTidalArtistBody(results, data);
             const similar = (data.enrichment && data.enrichment.similar) || [];
             const hasSimilar = renderSimilarArtists(results, similar);
-            if (hasSimilar) void hydrateSimilarArtistImages(results, similar, requestId, 'artist');
-            if (!tracks.length && !albums.length && !hasSimilar) {
+            if (hasSimilar) void hydrateSimilarArtistImages(results, similar, () => requestId === state.tidal.detailRequestId && state.tidal.view === 'artist');
+            if (!hasBody && !hasSimilar) {
                 results.innerHTML = contentState('empty', 'No tracks or albums available.');
             }
         } catch (err) {
@@ -2635,7 +2652,8 @@
     // One Discover Similar card: cover tile (mapped artists reuse their stored
     // art URL without a new request; everything else starts with the shared
     // neutral placeholder) plus the artist name.
-    function renderSimilarArtistItem(item) {
+    function renderSimilarArtistItem(item, onOpen) {
+        const open = typeof onOpen === 'function' ? onOpen : openTidalSimilarArtist;
         const li = document.createElement('li');
         li.className = 'streaming-similar-item';
         li.setAttribute('role', 'button');
@@ -2644,17 +2662,20 @@
         li.innerHTML =
             '<div class="streaming-result-cover">' + coverImg(item.art_url, 'eager') + '</div>' +
             '<span class="streaming-similar-name">' + escapeHtml(item.artist || 'Unknown artist') + '</span>';
-        li.addEventListener('click', () => openTidalSimilarArtist(item));
+        li.addEventListener('click', () => open(item));
         li.addEventListener('keydown', (event) => {
             if (event.key === 'Enter' || event.key === ' ') {
                 event.preventDefault();
-                openTidalSimilarArtist(item);
+                open(item);
             }
         });
         return li;
     }
 
-    function renderSimilarArtists(container, items) {
+    // The one Discover Similar renderer: TIDAL details and the Library's
+    // album/artist pages share it. onOpen replaces the default TIDAL
+    // navigation for a card (the Library prefers its own artists).
+    function renderSimilarArtists(container, items, onOpen) {
         const similar = Array.isArray(items)
             ? items.filter((item) => item && item.artist).slice(0, 6)
             : [];
@@ -2666,7 +2687,7 @@
         const list = document.createElement('ul');
         list.className = 'streaming-similar-grid';
         similar.forEach((item, index) => {
-            const card = renderSimilarArtistItem(item);
+            const card = renderSimilarArtistItem(item, onOpen);
             card.dataset.similarIndex = String(index);
             list.appendChild(card);
         });
@@ -2734,7 +2755,7 @@
     // Resolve missing covers independently so each card is patched as soon as
     // its own TIDAL search returns. The detail request guard prevents a late
     // response from modifying a different view.
-    function hydrateSimilarArtistImages(container, items, requestId, view) {
+    function hydrateSimilarArtistImages(container, items, isCurrent) {
         const similar = Array.isArray(items)
             ? items.filter((item) => item && item.artist).slice(0, 6)
             : [];
@@ -2752,7 +2773,7 @@
                 if (!match || !match.art_url) return;
                 item.provider_artist_id = item.provider_artist_id || match.id;
                 item.art_url = match.art_url;
-                if (requestId !== state.tidal.detailRequestId || state.tidal.view !== view) return;
+                if (!isCurrent()) return;
                 const card = cards[index];
                 if (!card || !card.isConnected) return;
                 const cover = card.querySelector('.streaming-result-cover');
@@ -2766,6 +2787,11 @@
     // artist name runs, opening its single unique match or falling back to the
     // existing TIDAL search-result flow. Never a live per-keystroke search.
     function openTidalSimilarArtist(item) {
+        // In the Library an artist that exists locally opens its own page.
+        if (state.tidal.host === 'library' && libraryHost && typeof libraryHost.openLocalArtist === 'function'
+            && item && libraryHost.openLocalArtist(item.artist)) {
+            return;
+        }
         if (item && item.provider_artist_id) {
             openTidalSimilarArtistDetail(item.provider_artist_id, item.artist || '', item.art_url || '');
             return;
@@ -3052,7 +3078,7 @@
     // Library adapter: TIDAL data and rendering for the shared Library tab
     // -----------------------------------------------------------------------
     // Favorite collections the Library merges with local music.
-    const TIDAL_LIBRARY_KINDS = ['albums', 'tracks', 'playlists'];
+    const TIDAL_LIBRARY_KINDS = ['albums', 'tracks', 'playlists', 'artists'];
     // First page size of a favorites listing; the rest loads behind it.
     const TIDAL_FAVORITES_PAGE = 50;
     // A Library visit re-reads the collections at most this often.
@@ -3192,6 +3218,25 @@
         openTidalDetail(kind, id, title, artUrl);
     }
 
+    function setTidalTrackSelection(ids, selected) {
+        (ids || []).forEach((id) => {
+            if (selected) state.tidal.selectedTrackIds.add(String(id));
+            else state.tidal.selectedTrackIds.delete(String(id));
+        });
+        syncTidalTrackSelection();
+    }
+
+    // "On TIDAL" section of a local artist page: the artist's top tracks and
+    // albums, rendered by the TIDAL detail code. Resolves with the artist
+    // payload (enrichment included) so the page can read its MBID and bio.
+    async function renderTidalArtistInto(container, id, isCurrent) {
+        const data = await fetchTidalArtist(id);
+        try { await loadTidalFavoriteIds(); } catch (e) { /* hearts degrade to unfilled */ }
+        if (typeof isCurrent === 'function' && !isCurrent()) return null;
+        renderTidalArtistBody(container, data);
+        return data;
+    }
+
     const tidalLibraryAdapter = {
         connection: tidalConnection,
         ensureLibrary: ensureTidalLibrary,
@@ -3206,7 +3251,16 @@
         closeLibraryDetail: closeTidalLibraryDetail,
         isLibraryDetailOpen: () => state.tidal.host === 'library' && isTidalDetailView(),
         selectedIds: () => Array.from(state.tidal.selectedTrackIds),
+        selectTracks: (ids) => setTidalTrackSelection(ids, true),
+        deselectTracks: (ids) => setTidalTrackSelection(ids, false),
         clearSelection: clearTidalPlaylistSelection,
+        toggleFavorite: toggleTidalFavorite,
+        resolveArtist: resolveTidalArtistMatch,
+        rememberArtist: rememberTidalArtist,
+        renderArtistInto: renderTidalArtistInto,
+        renderSimilarArtists: renderSimilarArtists,
+        hydrateSimilarArtists: hydrateSimilarArtistImages,
+        searchArtist: (name) => showTidalSearchResultsFor(name),
         createPlaylist: createTidalPlaylist,
         addToPlaylist: addTracksToTidalPlaylist,
         play: playTidalTracks,

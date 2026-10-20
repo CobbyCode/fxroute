@@ -167,14 +167,14 @@ class StoreTests(unittest.TestCase):
         album = self.store.get_album("album-key")
         self.assertTrue(album["favorite"])
 
-    def test_favorite_track_prioritized_in_top_tracks(self):
+    def test_favorite_track_is_not_prioritized_in_top_tracks(self):
         self._seed("low_fav", play_count=1, last_played_at="2024-01-01T00:00:00+00:00", favorite=True)
         self._seed("high_plain", play_count=50, last_played_at="2024-01-02T00:00:00+00:00")
 
         top = self.store.get_top_tracks(limit=40)
         ids = [row["track_id"] for row in top]
-        self.assertEqual(ids[0], "low_fav", "favorited track must come first regardless of play_count")
-        self.assertEqual(ids[1], "high_plain")
+        self.assertEqual(ids, ["high_plain", "low_fav"], "Top 40 sorts by play count only")
+        self.assertTrue(top[1]["favorite"], "the favorite flag is still reported for the heart")
 
     def test_non_favorite_ordering_unchanged(self):
         self._seed("older", play_count=10, last_played_at="2024-01-01T00:00:00+00:00")
@@ -190,13 +190,11 @@ class StoreTests(unittest.TestCase):
         top = self.store.get_top_tracks(limit=40)
         self.assertEqual(len(top), 40)
 
-    def test_zero_play_favorite_is_included(self):
+    def test_zero_play_favorite_is_not_a_most_played_track(self):
         self._seed("fresh_fav", play_count=0, favorite=True)
         self._seed("played", play_count=5, last_played_at="2024-01-01T00:00:00+00:00")
         top = self.store.get_top_tracks(limit=40)
-        ids = [row["track_id"] for row in top]
-        self.assertIn("fresh_fav", ids)
-        self.assertEqual(ids[0], "fresh_fav")
+        self.assertEqual([row["track_id"] for row in top], ["played"])
 
     def test_migration_preserves_existing_track_data(self):
         # Build a pre-favorite library in a fresh path: tracks table without the favorite column.
@@ -365,9 +363,9 @@ class ScannerTests(unittest.TestCase):
             Track(id="plain", title="Plain"),
         ]
         result = self.scanner.get_top_played_tracks(limit=40)
-        self.assertEqual([row["id"] for row in result], ["fav", "plain"])
-        self.assertTrue(result[0]["favorite"])
-        self.assertFalse(result[1]["favorite"])
+        self.assertEqual([row["id"] for row in result], ["plain", "fav"])
+        self.assertFalse(result[0]["favorite"])
+        self.assertTrue(result[1]["favorite"])
 
 
 class RouteTests(unittest.IsolatedAsyncioTestCase):

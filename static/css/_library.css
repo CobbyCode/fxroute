@@ -639,68 +639,34 @@
 .album-discover {
     margin-top: 0.55rem;
 }
-.album-discover-panel {
-    color: var(--text-secondary);
-    font-size: 0.86rem;
-}
-.album-discover-panel summary {
-    position: relative;
-    display: inline-flex;
-    align-items: baseline;
-    gap: 0.45rem;
-    padding-left: 1.8rem;
-    width: fit-content;
-    color: var(--text-primary);
-    cursor: pointer;
-    font-weight: 650;
-    list-style: none;
-}
-.album-discover-panel summary::-webkit-details-marker {
-    display: none;
-}
-.album-discover-panel summary::before {
-    content: "▸";
-    position: absolute;
-    left: 0.9rem;
-    margin-left: 0;
-    top: 0.34rem;
-    font-size: 0.78rem;
-    line-height: 1;
-    color: var(--text-secondary);
-}
-.album-discover-panel[open] summary::before {
-    content: "▾";
-}
-.album-discover-panel summary small {
+.album-discover-note {
+    margin: 0 1rem;
     color: var(--text-muted);
-    font-size: 0.78rem;
-    font-weight: 500;
+    font-size: 0.82rem;
 }
-.album-discover-list {
-    display: grid;
-    gap: 0.28rem;
-    margin: 0.5rem 0 0;
-    padding: 0;
-    list-style: none;
+/* Artist page sections (albums, TIDAL part) sit between the hero and the
+   track list inside the shared album detail. */
+.artist-detail-section.streaming-results-heading {
+    margin-left: 1rem;
+    margin-right: 1rem;
 }
-.album-discover-item {
+.artist-detail-albums .streaming-results-heading {
+    margin-left: 1rem;
+}
+.artist-detail-albums .albums-grid {
+    margin-top: 0.4rem;
+}
+.artist-detail-tidal {
+    margin-top: 1.1rem;
+}
+.artist-detail-source {
     display: flex;
-    align-items: baseline;
-    justify-content: space-between;
-    gap: 0.7rem;
-    min-height: 2.1rem;
-    padding: 0.42rem 0.56rem;
-    border: 1px solid var(--border);
-    border-radius: 7px;
-    background: var(--slate-900-a22);
-}
-.album-discover-title {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    align-items: center;
+    gap: 0.5rem;
+    margin: 0 1rem;
     color: var(--text-primary);
-    font-weight: 600;
+    font-size: 1rem;
+    font-weight: 700;
 }
 .track-item-empty {
     justify-content: center;

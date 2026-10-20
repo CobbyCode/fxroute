@@ -122,15 +122,15 @@ const similarRender = extractFunction(js, 'loadTidalArtist');
 assert.ok(similarRender.includes('renderSimilarArtists(results, similar)'),
     'artist detail must use the shared similar-artist renderer');
 const similarGrid = extractFunction(js, 'renderSimilarArtists');
-assert.ok(similarGrid.includes("'Discover Similar'") && similarGrid.includes('streaming-similar-grid') && similarGrid.includes('renderSimilarArtistItem(item)'),
+assert.ok(similarGrid.includes("'Discover Similar'") && similarGrid.includes('streaming-similar-grid') && similarGrid.includes('renderSimilarArtistItem(item, onOpen)'),
     'similar artists must render as a card grid through one shared helper');
-assert.ok(artistLoad.includes("hydrateSimilarArtistImages(results, similar, requestId, 'artist')"),
+assert.ok(artistLoad.includes("hydrateSimilarArtistImages(results, similar, () => requestId === state.tidal.detailRequestId && state.tidal.view === 'artist')"),
     'artist detail must hydrate missing similar-artist art after the first render');
 const similarItem = extractFunction(js, 'renderSimilarArtistItem');
 assert.ok(similarItem.includes("coverImg(item.art_url, 'eager')"),
     'similar cards must request available covers during the first render');
-assert.ok(similarItem.includes("openTidalSimilarArtist(item)"),
-    'similar card click must route through the similar-artist opener');
+assert.ok(similarItem.includes('openTidalSimilarArtist') && similarItem.includes('open(item)'),
+    'similar card click must route through the similar-artist opener unless the host supplies its own');
 const cover = extractFunction(js, 'coverImg');
 assert.ok(cover.includes('loading'),
     'shared cover markup must support an explicit loading priority');
@@ -138,7 +138,7 @@ assert.ok(cover.includes('loading'),
 const albumLoad = extractFunction(js, 'loadTidalAlbum');
 assert.ok(albumLoad.includes('renderSimilarArtists(results, similar)') && albumLoad.includes('enrichment.similar'),
     'album detail must reuse the same Discover Similar card renderer');
-assert.ok(albumLoad.includes("hydrateSimilarArtistImages(results, similar, requestId, 'album')"),
+assert.ok(albumLoad.includes("hydrateSimilarArtistImages(results, similar, () => requestId === state.tidal.detailRequestId && state.tidal.view === 'album')"),
     'album detail must hydrate missing similar-artist art after the first render');
 
 const hydrateSimilar = extractFunction(js, 'hydrateSimilarArtistImages');
@@ -148,8 +148,8 @@ assert.ok(hydrateSimilar.includes('.streaming-similar-item') && hydrateSimilar.i
     'similar-art hydration must target the existing card instead of replacing the grid');
 assert.ok(hydrateSimilar.includes("cover.innerHTML = coverImg(match.art_url, 'eager')"),
     'similar-art hydration must patch the card cover when the result arrives');
-assert.ok(hydrateSimilar.includes('state.tidal.detailRequestId') && hydrateSimilar.includes('state.tidal.view'),
-    'late similar-art responses must be ignored after leaving the detail');
+assert.ok(hydrateSimilar.includes('isCurrent()'),
+    'late similar-art responses must be ignored after leaving the page (callers pass the guard)');
 
 const openSimilar = extractFunction(js, 'openTidalSimilarArtist');
 assert.ok(openSimilar.includes('item.provider_artist_id'),

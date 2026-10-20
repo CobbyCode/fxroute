@@ -469,11 +469,18 @@ const artistRender = extractFunction(js, 'renderTidalArtist');
 assert.ok(artistRender.includes("favoriteDetailHtml('artists')"),
     'the artist detail header must carry the follow heart');
 const artistLoad = extractFunction(js, 'loadTidalArtist');
-assert.ok(artistLoad.includes("'/api/streaming/tidal/artists/' + encodeURIComponent(state.tidal.detailId)"),
+const artistFetch = extractFunction(js, 'fetchTidalArtist');
+assert.ok(artistFetch.includes("'/api/streaming/tidal/artists/' + encodeURIComponent(id)"),
     'the artist detail must fetch through the artist endpoint');
-assert.ok(artistLoad.includes("heading.textContent = 'Top Tracks'") && artistLoad.includes("heading.textContent = 'Albums'"),
+assert.ok(artistLoad.includes('fetchTidalArtist(state.tidal.detailId)'),
+    'the artist detail must load through the shared artist fetch');
+// Top Tracks + Albums render through one body shared with the Library artist page.
+const artistBody = extractFunction(js, 'renderTidalArtistBody');
+assert.ok(artistLoad.includes('renderTidalArtistBody(results, data)'),
+    'the artist detail must render its sections through the shared body');
+assert.ok(artistBody.includes("heading.textContent = 'Top Tracks'") && artistBody.includes("heading.textContent = 'Albums'"),
     'the artist detail must render Top Tracks and Albums sections');
-assert.ok(artistLoad.includes("renderSearchItem('albums', item, [])"),
+assert.ok(artistBody.includes("renderSearchItem('albums', item, [])"),
     'album rows in the artist detail must reuse the existing album row/click');
 assert.ok(js.includes('viewStack'),
     'detail navigation must keep a back stack so nested details return through');

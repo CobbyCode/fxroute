@@ -53,6 +53,7 @@ import re
 import sqlite3
 import threading
 import time
+import unicodedata
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -126,6 +127,13 @@ def _normalize_text(value: str) -> str:
     text = re.sub(r"\([^)]*\)|\[[^]]*\]", " ", text)
     text = re.sub(r"[^a-z0-9]+", " ", text)
     return re.sub(r"\s+", " ", text).strip()
+
+
+def _name_key(value: Any) -> str:
+    """Unicode-aware artist name key (accents and punctuation ignored)."""
+    text = unicodedata.normalize("NFKD", str(value or ""))
+    text = "".join(ch for ch in text if not unicodedata.combining(ch)).lower()
+    return re.sub(r"[\W_]+", " ", text).strip()
 
 
 def _json_list(values: Any) -> str:
@@ -447,6 +455,18 @@ class ArtistEnrichmentStore:
                 """,
                 (provider, mb_artist_id),
             ).fetchone()
+
+    def list_mapped_provider_artists(self, provider: str) -> list[sqlite3.Row]:
+        """Every confidently mapped provider artist, newest mapping first."""
+        with self._connect() as conn:
+            return conn.execute(
+                """
+                SELECT provider_artist_id, name, art_url, mb_artist_id FROM provider_artists
+                WHERE provider = ? AND match_state = 'mapped'
+                ORDER BY matched_at DESC
+                """,
+                (provider,),
+            ).fetchall()
 
     def reverse_provider_by_name(self, provider: str, name: str) -> Optional[sqlite3.Row]:
         """Return the single confident provider mapping for a normalized name.
@@ -1134,6 +1154,9 @@ class ArtistEnrichmentService:
         return results
 
     def _similar_with_mappings(self, provider: str, mb_artist_id: str, artist_name: str) -> list[dict[str, Any]]:
+        return self.attach_provider_mappings(provider, self.similar_artists(mb_artist_id, artist_name))
+
+    def attach_provider_mappings(self, provider: str, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Attach cached provider mappings to similar items without any request.
 
         A similar artist whose canonical MBID (or, failing that, whose unique
@@ -1142,7 +1165,7 @@ class ArtistEnrichmentService:
         per-item enrichment is ever triggered here.
         """
         out = []
-        for item in self.similar_artists(mb_artist_id, artist_name):
+        for item in items:
             enriched = dict(item)
             mapped = None
             if item.get("artist_mbid"):
@@ -1156,6 +1179,46 @@ class ArtistEnrichmentService:
                 if mapped["name"]:
                     enriched["artist"] = mapped["name"]
             out.append(enriched)
+        return out
+
+    def provider_matches(self, provider: str, artists: list[dict[str, Any]]) -> list[Optional[dict[str, Any]]]:
+        """Resolve local artists to cached provider mappings, one answer per input.
+
+        Reads the stored mappings once; no provider request is made.  An MBID
+        hit wins.  A name hit is accepted only when a single provider artist
+        carries that name and its MBID does not contradict the local one, so an
+        ambiguous name stays unmatched instead of being guessed.
+        """
+        rows = self.store.list_mapped_provider_artists(provider)
+        by_mbid: dict[str, sqlite3.Row] = {}
+        by_name: dict[str, dict[str, sqlite3.Row]] = {}
+        for row in rows:
+            mbid = str(row["mb_artist_id"] or "").strip().lower()
+            if mbid:
+                by_mbid.setdefault(mbid, row)
+            key = _name_key(row["name"])
+            if key:
+                by_name.setdefault(key, {}).setdefault(str(row["provider_artist_id"]), row)
+        out: list[Optional[dict[str, Any]]] = []
+        for entry in artists:
+            mbid = str((entry or {}).get("mbid") or "").strip().lower()
+            row = by_mbid.get(mbid) if mbid else None
+            if row is None:
+                candidates = by_name.get(_name_key((entry or {}).get("name")), {})
+                if len(candidates) == 1:
+                    candidate = next(iter(candidates.values()))
+                    candidate_mbid = str(candidate["mb_artist_id"] or "").strip().lower()
+                    if not (mbid and candidate_mbid and candidate_mbid != mbid):
+                        row = candidate
+            out.append(
+                {
+                    "provider_artist_id": str(row["provider_artist_id"]),
+                    "name": row["name"],
+                    "art_url": row["art_url"] or "",
+                }
+                if row is not None
+                else None
+            )
         return out
 
     # -- release supplement ---------------------------------------------------

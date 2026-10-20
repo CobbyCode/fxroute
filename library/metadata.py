@@ -626,8 +626,8 @@ class LibraryMetadataStore:
                 SELECT track_id, play_count, last_played_at, favorite
                 FROM tracks
                 WHERE missing_since IS NULL
-                  AND (favorite = 1 OR COALESCE(play_count, 0) > 0)
-                ORDER BY favorite DESC, play_count DESC, COALESCE(last_played_at, '') DESC, title COLLATE NOCASE
+                  AND COALESCE(play_count, 0) > 0
+                ORDER BY play_count DESC, COALESCE(last_played_at, '') DESC, title COLLATE NOCASE
                 LIMIT ?
                 """,
                 (safe_limit,),

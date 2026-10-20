@@ -499,8 +499,12 @@ async def set_track_favorite(track_id: str, request: Request):
 
 
 @router.get("/api/albums/{album_id}/discover")
-async def get_album_discover(album_id: str, refresh: bool = False):
-    """Return cached similar-music suggestions for an album."""
+async def get_album_discover(album_id: str, refresh: bool = False, provider: str = ""):
+    """Return cached similar-music suggestions for an album.
+
+    With ``provider`` set, items whose artist already maps to that streaming
+    provider carry its artist id and art URL (stored mappings only, no request).
+    """
     library_scanner, _settings = _library_runtime()
     if not library_scanner:
         raise HTTPException(status_code=503, detail="Library not available")
@@ -508,13 +512,45 @@ async def get_album_discover(album_id: str, refresh: bool = False):
     if not tracks:
         raise HTTPException(status_code=404, detail="Album not found")
     result = library_scanner.get_album_discover(album_id, force=refresh)
+    items = result.get("items") or []
+    provider = provider.strip().lower()
+    if provider and items:
+        enrichment = library_scanner.metadata_store.artist_enrichment
+        items = await _run_blocking(enrichment.attach_provider_mappings, provider, items)
     return {
         "album_id": album_id,
-        "items": result.get("items") or [],
+        "items": items,
         "source": result.get("source"),
         "cached": bool(result.get("cached")),
         "error": result.get("error"),
     }
+
+
+ARTIST_MATCH_MAX_ARTISTS = 5000
+
+
+@router.post("/api/artists/provider-matches")
+async def get_artist_provider_matches(request: Request):
+    """Map local artists to cached streaming-provider artists.
+
+    Body: ``{"provider": "tidal", "artists": [{"name": ..., "mbid": ...}]}``.
+    The answer lists one entry per input artist (``null`` = no confident
+    match), so the client can index it by position.
+    """
+    library_scanner, _settings = _library_runtime()
+    if not library_scanner:
+        raise HTTPException(status_code=503, detail="Library not available")
+    body = await _favorite_body(request)
+    provider = str(body.get("provider") or "").strip().lower()
+    artists = body.get("artists")
+    if not provider or not isinstance(artists, list):
+        raise HTTPException(status_code=400, detail="provider and artists are required")
+    if len(artists) > ARTIST_MATCH_MAX_ARTISTS:
+        raise HTTPException(status_code=400, detail="Too many artists")
+    entries = [item if isinstance(item, dict) else {} for item in artists]
+    enrichment = library_scanner.metadata_store.artist_enrichment
+    matches = await _run_blocking(enrichment.provider_matches, provider, entries)
+    return {"provider": provider, "matches": matches}
 
 
 @router.get("/api/albums/{album_id}/cover")

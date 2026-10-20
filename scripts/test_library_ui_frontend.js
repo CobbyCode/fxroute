@@ -32,7 +32,7 @@ const MOVED = [
     'setAlbumDetailBackdrop', 'setPlaylistDetailBackdrop', 'renderPlaylistDetailInfo',
     'playlistFeaturingLine', 'trackThumbHtml', 'findAlbumForTrack', 'playlistDistinctAlbums',
     'playlistCoverHtml', 'playlistFallbackMarkSvg', 'scrollLibraryDetailToTop',
-    'openAlbumDetail', 'openSmartTopTracks', 'loadAlbumDiscover', 'renderAlbumDiscover',
+    'openAlbumDetail', 'openSmartTopTracks', 'loadAlbumDiscover', 'renderSimilarArtists', 'renderArtists', 'openArtistDetail', 'buildArtistIndex',
     'albumDiscoverShellHtml', 'renderAlbumDetailTracks',
     'libraryFavoriteButtonHtml', 'detailFavoriteButtonHtml', 'librarySelectionButtonHtml',
     'detailTrackRowHtml', 'updateAlbumFavoriteButton', 'toggleCurrentAlbumFavorite',

@@ -91,10 +91,10 @@ async function checkCatalog(fetch, { selectId, albums, coverRe, label }) {
     }
     const discover = await (await fetch('/api/albums/' + sample.id + '/discover')).json();
     assert.ok(discover.items.length > 0 && discover.items.length <= 6,
-        'discover returns 1..6 similar albums, got ' + discover.items.length);
-    assert.ok(discover.items.every(a => gotAlbums.some(b => b.id === a.id)),
+        'discover returns 1..6 similar artists, got ' + discover.items.length);
+    assert.ok(discover.items.every(a => gotAlbums.some(b => b.artist === a.artist)),
         'discover stays inside ' + label);
-    assert.ok(!discover.items.some(a => a.id === sample.id), 'discover excludes the album itself');
+    assert.ok(!discover.items.some(a => a.artist === sample.artist), 'discover excludes the album artist');
     return { gotAlbums, gotTracks, playlists, sample, albumTracks };
 }
 

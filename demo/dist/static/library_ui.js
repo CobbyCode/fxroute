@@ -520,19 +520,23 @@ function getFolderChildren() {
 }
 
 function renderLibraryView() {
-    if (deps.getState().library.viewMode === 'albums') {
+    const mode = deps.getState().library.viewMode;
+    if (mode === 'albums' || mode === 'artists') {
         if (deps.getState().library.albumDetail) {
             // Re-open the album detail if we were viewing one; the smart
-            // playlists rebuild through their own loaders.
+            // playlists and artist pages rebuild through their own loaders.
             const albumId = deps.getState().library.albumDetail.album.id;
             deps.getState().library.albumDetail = null;
             if (albumId === FAVORITE_TRACKS_ID) openSmartFavoriteTracks();
             else if (albumId === 'smart_top40') openSmartTopTracks();
+            else if (albumId.startsWith(ARTIST_ID_PREFIX)) openArtistDetail(albumId.slice(ARTIST_ID_PREFIX.length));
             else openAlbumDetail(albumId);
         } else if (deps.getState().library.playlistDetail) {
             const playlistId = deps.getState().library.playlistDetail.playlist.id;
             deps.getState().library.playlistDetail = null;
             openPlaylistDetail(playlistId);
+        } else if (mode === 'artists') {
+            renderArtists();
         } else {
             renderAlbums();
         }
@@ -548,6 +552,11 @@ function renderLibraryViewButtons() {
         const active = mode === 'tracks';
         deps.getElements().libraryViewTracksBtn.classList.toggle('active', active);
         deps.getElements().libraryViewTracksBtn.setAttribute('aria-pressed', active ? 'true' : 'false');
+    }
+    if (deps.getElements().libraryViewArtistsBtn) {
+        const active = mode === 'artists';
+        deps.getElements().libraryViewArtistsBtn.classList.toggle('active', active);
+        deps.getElements().libraryViewArtistsBtn.setAttribute('aria-pressed', active ? 'true' : 'false');
     }
     if (deps.getElements().libraryViewFoldersBtn) {
         const active = mode === 'folders';
@@ -811,11 +820,16 @@ function setLibraryViewMode(mode) {
         deps.getState().library.viewMode = 'albums';
         deps.getState().library.showFavoriteAlbums = true;
     } else {
-        deps.getState().library.viewMode = mode === 'folders' ? 'folders' : mode === 'albums' ? 'albums' : 'tracks';
+        deps.getState().library.viewMode = mode === 'folders' ? 'folders' : mode === 'albums' ? 'albums' : mode === 'artists' ? 'artists' : 'tracks';
         if (mode === 'albums') deps.getState().library.showFavoriteAlbums = false;
     }
+    albumReturnArtistKey = '';
     if (deps.getState().library.viewMode === 'tracks') deps.getState().library.currentFolder = '';
-    if (deps.getState().library.viewMode === 'albums') {
+    if (deps.getState().library.viewMode === 'artists') {
+        deps.getState().library.albumDetail = null;
+        deps.getState().library.playlistDetail = null;
+        renderArtists();
+    } else if (deps.getState().library.viewMode === 'albums') {
         deps.getState().library.albumDetail = null;
         deps.getState().library.playlistDetail = null;
         if (!deps.getState().library.albumsLoaded) {
@@ -847,15 +861,21 @@ function storeViewMode(surface, mode) {
 }
 
 function setAlbumLayout(mode) {
-    if (deps.getState().library.viewMode !== 'albums' || deps.getState().library.albumDetail || deps.getState().library.playlistDetail) return;
+    if (!isTileViewMode() || deps.getState().library.albumDetail || deps.getState().library.playlistDetail) return;
     const layout = mode === 'list' ? 'list' : 'grid';
     storeViewMode('library-albums', layout);
     deps.getState().library.albumLayout = layout;
-    renderAlbums();
+    renderLibraryView();
+}
+
+// Albums and Artists are tile collections sharing grid, layout toggle and
+// detail pages.
+function isTileViewMode() {
+    return ['albums', 'artists'].includes(deps.getState().library.viewMode);
 }
 
 function updateLibraryViewModeToggle() {
-    const active = deps.getState().library.viewMode === 'albums' && !deps.getState().library.albumDetail && !deps.getState().library.playlistDetail && !deps.getState().library.tidalDetailOpen;
+    const active = isTileViewMode() && !deps.getState().library.albumDetail && !deps.getState().library.playlistDetail && !deps.getState().library.tidalDetailOpen;
     if (deps.getElements().libraryViewModeToggle) deps.getElements().libraryViewModeToggle.classList.toggle('hidden', !active);
     const layout = deps.getState().library.albumLayout || 'grid';
     if (deps.getElements().libraryViewModeGridBtn) {
@@ -888,8 +908,8 @@ async function fetchAlbums() {
         deps.getState().library.albumsCacheToken = Date.now();
         // Never clobber an open album/playlist detail with a background
         // re-render; the late init fetch would otherwise close the detail.
-        if (deps.getState().library.viewMode === 'albums' && !deps.getState().library.albumDetail && !deps.getState().library.playlistDetail) {
-            renderAlbums();
+        if (isTileViewMode() && !deps.getState().library.albumDetail && !deps.getState().library.playlistDetail) {
+            renderLibraryView();
         }
     } catch (e) {
         console.warn('Failed to fetch albums', e);
@@ -897,8 +917,8 @@ async function fetchAlbums() {
         // error state and only retries on explicit navigation or refresh.
         deps.getState().library.albumsError = e?.message || 'Failed to fetch albums';
         deps.showToast(deps.getState().library.albumsError, 'error');
-        if (deps.getState().library.viewMode === 'albums' && !deps.getState().library.albumDetail && !deps.getState().library.playlistDetail) {
-            renderAlbums();
+        if (isTileViewMode() && !deps.getState().library.albumDetail && !deps.getState().library.playlistDetail) {
+            renderLibraryView();
         }
     } finally {
         albumsFetchInFlight = false;
@@ -1063,6 +1083,416 @@ function renderAlbums() {
             deletePlaylistById(playlistId);
         });
     });
+}
+
+// -- Artists -------------------------------------------------------------------
+// Artists come from the local metadata: the album artist, or the track artist
+// for compilations and untagged tracks (credits are not split). That works
+// without TIDAL. A TIDAL favorite artist with the same normalized name joins
+// its local entry and adds the image; TIDAL-only favorites get entries of
+// their own. The mapping of local artists to TIDAL artists is read from the
+// stored enrichment mappings (no TIDAL request).
+const ARTIST_ID_PREFIX = 'artist:';
+const VARIOUS_ARTIST_KEYS = new Set(['various', 'various artists']);
+
+let localArtistIndexCache = null;
+const artistMatchCache = { userId: null, index: null, pending: null, map: new Map(), remembered: new Map() };
+let artistDetailToken = 0;
+// Set while an album opened from an artist page is shown: Back returns there.
+let albumReturnArtistKey = '';
+
+function isVariousArtist(name) {
+    return VARIOUS_ARTIST_KEYS.has(deps.nameKey(name));
+}
+
+function buildArtistIndex(albums, tracks) {
+    const entries = new Map();
+    const touch = (name) => {
+        const key = deps.nameKey(name);
+        if (!key) return null;
+        let entry = entries.get(key);
+        if (!entry) {
+            entry = { key, name: String(name).trim(), albums: [], trackIds: [], mbid: '', description: '' };
+            entries.set(key, entry);
+        }
+        return entry;
+    };
+    albums.forEach((album) => {
+        if (isVariousArtist(album.artist)) return;
+        const entry = touch(album.artist);
+        if (!entry) return;
+        entry.albums.push(album);
+        if (!entry.mbid && album.mb_artist_id) entry.mbid = String(album.mb_artist_id);
+        if (!entry.description && album.artist_description) entry.description = String(album.artist_description);
+    });
+    tracks.forEach((track) => {
+        const album = findAlbumForTrack(track);
+        const owner = album && !isVariousArtist(album.artist) ? touch(album.artist) : touch(track.artist);
+        if (owner) owner.trackIds.push(track.id);
+    });
+    entries.forEach((entry) => {
+        entry.albums.sort((a, b) => ((a.year || 9999) - (b.year || 9999))
+            || String(a.name || '').localeCompare(String(b.name || ''), undefined, { sensitivity: 'base' }));
+    });
+    return entries;
+}
+
+function localArtistIndex() {
+    const library = deps.getState().library;
+    const albums = library.albums || [];
+    const tracks = library.tracks || [];
+    const cache = localArtistIndexCache;
+    if (cache && cache.albums === albums && cache.tracks === tracks && cache.trackCount === tracks.length) {
+        return cache.entries;
+    }
+    const entries = buildArtistIndex(albums, tracks);
+    localArtistIndexCache = { albums, tracks, trackCount: tracks.length, entries };
+    return entries;
+}
+
+// A TIDAL artist the entry resolves to: the favorite, else a stored mapping.
+function artistTidalRef(view) {
+    if (view.tidal) return view.tidal;
+    return view.match || null;
+}
+
+function getArtistEntries() {
+    const connected = !!(tidalLibrary() && tidalLibrary().connection().authenticated);
+    const views = new Map();
+    localArtistIndex().forEach((entry, key) => {
+        views.set(key, Object.assign({ tidal: null, match: null }, entry,
+            connected ? { match: artistMatchCache.map.get(key) || artistMatchCache.remembered.get(key) || null } : {}));
+    });
+    tidalLibraryFavorites('artists', { ignoreQuery: true }).forEach((item) => {
+        const key = deps.nameKey(item.name);
+        if (!key) return;
+        let view = views.get(key);
+        if (!view) {
+            view = { key, name: item.name, albums: [], trackIds: [], mbid: '', description: '', tidal: null, match: null };
+            views.set(key, view);
+        }
+        view.tidal = item;
+        // Keep the reference so an un-hearted artist can be hearted again.
+        artistMatchCache.remembered.set(key, item);
+    });
+    return Array.from(views.values()).sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()));
+}
+
+// One batch read of the stored TIDAL mappings for all local artists; the
+// grid re-renders when it lands.
+function ensureArtistMatches() {
+    const tidal = tidalLibrary();
+    const connection = tidal ? tidal.connection() : null;
+    if (!connection || !connection.authenticated) {
+        if (artistMatchCache.map.size || artistMatchCache.remembered.size) {
+            artistMatchCache.map = new Map();
+            artistMatchCache.remembered = new Map();
+        }
+        artistMatchCache.userId = null;
+        artistMatchCache.index = null;
+        return Promise.resolve();
+    }
+    const index = localArtistIndex();
+    if (artistMatchCache.userId !== connection.userId) {
+        artistMatchCache.map = new Map();
+        artistMatchCache.remembered = new Map();
+        artistMatchCache.index = null;
+    }
+    artistMatchCache.userId = connection.userId;
+    if (artistMatchCache.index === index || !index.size) return artistMatchCache.pending || Promise.resolve();
+    artistMatchCache.index = index;
+    const entries = Array.from(index.values());
+    const userId = connection.userId;
+    const request = fetch('/api/artists/provider-matches', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ provider: 'tidal', artists: entries.map(entry => ({ name: entry.name, mbid: entry.mbid })) }),
+    }).then(async (resp) => {
+        if (!resp.ok) throw new Error('Failed to match artists');
+        const data = await resp.json();
+        if (artistMatchCache.userId !== userId || artistMatchCache.index !== index) return;
+        const map = new Map();
+        (data.matches || []).forEach((match, position) => {
+            if (!match || !entries[position]) return;
+            map.set(entries[position].key, { id: match.provider_artist_id, name: match.name, art_url: match.art_url || '' });
+        });
+        artistMatchCache.map = map;
+        scheduleTidalLibraryRender();
+    }).catch(() => {
+        // Unmatched artists stay plain local entries; retry on the next visit.
+        if (artistMatchCache.index === index) artistMatchCache.index = null;
+    }).finally(() => {
+        if (artistMatchCache.pending === request) artistMatchCache.pending = null;
+    });
+    artistMatchCache.pending = request;
+    return request;
+}
+
+function artistCountText(view) {
+    if (view.albums.length) return `${view.albums.length} album${view.albums.length === 1 ? '' : 's'}`;
+    if (view.trackIds.length) return `${view.trackIds.length} track${view.trackIds.length === 1 ? '' : 's'}`;
+    return 'Artist';
+}
+
+function localArtistArtHtml(view) {
+    const cover = view.albums.map(albumCoverUrl).find(Boolean) || '';
+    const fallbackSvg = deps.albumArtFallbackSvg(view.name);
+    return `<img class="album-art" src="${deps.escapeHtml(cover || fallbackSvg)}"
+                 alt="${deps.escapeHtml(view.name)}"
+                 onload="this.classList.add('loaded')"
+                 onerror="this.onerror=null;this.src='${fallbackSvg}'" />`;
+}
+
+function artistCardHtml(view) {
+    const tidal = tidalLibrary();
+    const ref = tidal ? artistTidalRef(view) : null;
+    const tidalOnly = !view.albums.length && !view.trackIds.length;
+    const art = ref && ref.art_url ? tidal.cardArtHtml(ref.art_url, view.name) : localArtistArtHtml(view);
+    const glyph = tidalOnly ? deps.sourceGlyphHtml('tidal', 'source-glyph--tile') : '';
+    const heart = ref ? tidal.favoriteButtonHtml('artists', ref.id) : '';
+    return `
+        <div class="album-card artist-card" data-artist-key="${deps.escapeHtml(view.key)}" role="button" tabindex="0">
+            <div class="album-art-wrap">${art}${glyph}</div>
+            ${heart}
+            <div class="album-name">${deps.escapeHtml(view.name)}</div>
+            <div class="album-artist">${deps.escapeHtml(artistCountText(view))}</div>
+        </div>`;
+}
+
+function renderArtists() {
+    if (deps.getState().library.tidalDetailOpen) return;
+    renderLibraryViewButtons();
+    updateLibraryViewModeToggle();
+    updateLibrarySelectionUI();
+    const els = deps.getElements();
+    const loadingEl = document.querySelector('#tab-library .content-state');
+    els.tracksList.classList.add('hidden');
+    els.albumDetail.classList.add('hidden');
+    if (els.playlistDetail) els.playlistDetail.classList.add('hidden');
+    updatePlaylistSaveRowVisibility();
+    if (els.libraryFolderPath) els.libraryFolderPath.classList.add('hidden');
+
+    if (!deps.getState().library.albumsLoaded) {
+        if (deps.getState().library.albumsError) {
+            window.FXRouteContentState.set(loadingEl, 'error', deps.getState().library.albumsError);
+            els.albumsGrid.classList.add('hidden');
+            return;
+        }
+        window.FXRouteContentState.set(loadingEl, 'loading', formatLibraryScanStatus() || 'Loading artists…');
+        els.albumsGrid.classList.add('hidden');
+        fetchAlbums();
+        return;
+    }
+
+    const query = libraryQuery();
+    const views = getArtistEntries().filter(view => !query || view.name.toLowerCase().includes(query));
+    if (views.length === 0) {
+        const scanText = formatLibraryScanStatus();
+        if (scanText) window.FXRouteContentState.set(loadingEl, 'loading', scanText);
+        else window.FXRouteContentState.set(loadingEl, 'empty', query ? 'No matching artists.' : 'No artists found. Import music with artist tags.');
+        els.albumsGrid.innerHTML = '';
+        els.albumsGrid.classList.remove('hidden');
+        return;
+    }
+    window.FXRouteContentState.hide(loadingEl);
+    els.albumsGrid.classList.toggle('is-list', (deps.getState().library.albumLayout || 'grid') === 'list');
+    els.albumsGrid.innerHTML = views.map(artistCardHtml).join('');
+    els.albumsGrid.classList.remove('hidden');
+    els.albumsGrid.querySelectorAll('.artist-card').forEach((card) => {
+        const open = () => openArtistDetail(card.dataset.artistKey);
+        card.addEventListener('click', open);
+        card.addEventListener('keydown', (event) => {
+            if (event.target !== event.currentTarget) return;
+            if (event.key !== 'Enter' && event.key !== ' ') return;
+            event.preventDefault();
+            open();
+        });
+    });
+    const tidal = tidalLibrary();
+    if (tidal) tidal.bindFavoriteButtons(els.albumsGrid);
+    void ensureArtistMatches();
+}
+
+function clearAlbumDetailExtras() {
+    deps.getElements().albumDetail.querySelectorAll('.album-detail-facts, .album-detail-about, .artist-detail-section')
+        .forEach(node => node.remove());
+}
+
+function compareArtistTracks(albumOrder) {
+    const albumRank = (track) => {
+        const rank = albumOrder.get(String(track.album || '').trim().toLowerCase());
+        return rank === undefined ? albumOrder.size : rank;
+    };
+    return (a, b) => (albumRank(a) - albumRank(b))
+        || ((a.disc_number || 0) - (b.disc_number || 0))
+        || ((a.track_number || 9999) - (b.track_number || 9999))
+        || String(a.title || '').localeCompare(String(b.title || ''), undefined, { sensitivity: 'base' });
+}
+
+// Local artist page. It reuses the album detail (hero, track list with
+// selection/hearts/playback, Back); the artist's albums sit above the track
+// list, the TIDAL part and Discover Similar below it.
+async function openArtistDetail(key) {
+    const view = getArtistEntries().find(item => item.key === key);
+    if (!view) return;
+    const tidal = tidalLibrary();
+    const ref = tidal ? artistTidalRef(view) : null;
+    if (!view.albums.length && !view.trackIds.length) {
+        if (ref) tidal.openDetail('artist', ref.id, view.name, ref.art_url || '');
+        return;
+    }
+    const library = deps.getState().library;
+    const els = deps.getElements();
+    albumReturnArtistKey = '';
+    const token = ++artistDetailToken;
+    const tracksById = new Map((library.tracks || []).map(track => [track.id, track]));
+    const albumOrder = new Map(view.albums.map((album, index) => [String(album.name || '').trim().toLowerCase(), index]));
+    const tracks = view.trackIds.map(id => tracksById.get(id)).filter(Boolean).sort(compareArtistTracks(albumOrder));
+    const album = {
+        id: ARTIST_ID_PREFIX + key,
+        name: view.name,
+        artist: 'Artist',
+        smart: true,
+        artistKey: key,
+        tidalArtistId: ref ? String(ref.id) : '',
+        summaryPrefix: view.albums.length ? `${view.albums.length} album${view.albums.length === 1 ? '' : 's'}` : '',
+    };
+    const isCurrent = () => token === artistDetailToken && library.albumDetail && library.albumDetail.album.id === album.id;
+    library.albumDetail = { album, tracks };
+    library.playlistDetail = null;
+    updateLibraryViewModeToggle();
+
+    const artUrl = (ref && ref.art_url) || view.albums.map(albumCoverUrl).find(Boolean) || '';
+    setAlbumCoverImage(els.albumDetailCover, artUrl, view.name);
+    setAlbumDetailBackdrop(artUrl);
+    els.albumDetailName.textContent = view.name;
+    els.albumDetailArtist.textContent = 'Artist';
+    updateAlbumFavoriteButton(album);
+    clearAlbumDetailExtras();
+    renderAlbumDetailTracks();
+    if (view.description) {
+        els.albumDetailCount.insertAdjacentHTML('afterend', detailAboutHtml('About this artist', view.description));
+    }
+    if (view.albums.length) {
+        const section = document.createElement('section');
+        section.className = 'artist-detail-section artist-detail-albums';
+        section.innerHTML = '<h4 class="streaming-results-heading">Albums</h4>'
+            + `<div class="albums-grid">${view.albums.map(localAlbumCardHtml).join('')}</div>`;
+        section.querySelectorAll('.album-card[data-album-id]').forEach((card) => {
+            const open = () => {
+                albumReturnArtistKey = key;
+                openAlbumDetail(card.dataset.albumId);
+            };
+            card.addEventListener('click', open);
+            card.addEventListener('keydown', (event) => {
+                if (event.target !== event.currentTarget) return;
+                if (event.key !== 'Enter' && event.key !== ' ') return;
+                event.preventDefault();
+                open();
+            });
+        });
+        section.querySelectorAll('.album-card-fav[data-fav-id]').forEach((btn) => {
+            btn.addEventListener('click', (event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                toggleAlbumCardFavorite(btn.dataset.favId);
+            });
+        });
+        els.albumDetail.insertBefore(section, els.albumDetailTracks);
+    }
+    if (tracks.length) {
+        const heading = document.createElement('h4');
+        heading.className = 'streaming-results-heading artist-detail-section';
+        heading.textContent = 'Tracks';
+        els.albumDetail.insertBefore(heading, els.albumDetailTracks);
+    }
+    if (els.albumDiscover) {
+        els.albumDiscover.classList.add('hidden');
+        els.albumDiscover.innerHTML = '';
+    }
+    els.albumsGrid.classList.add('hidden');
+    if (els.playlistDetail) els.playlistDetail.classList.add('hidden');
+    els.albumDetail.classList.remove('hidden');
+    updatePlaylistSaveRowVisibility();
+    scrollLibraryDetailToTop();
+    void loadArtistExtras(view, ref, isCurrent);
+}
+
+// Artist page parts that need the network: the TIDAL section (when the artist
+// resolves on a connected TIDAL) and Discover Similar.
+async function loadArtistExtras(view, ref, isCurrent) {
+    const tidal = tidalLibrary();
+    const els = deps.getElements();
+    let tidalData = null;
+    let tidalRef = ref;
+    if (tidal && tidal.connection().authenticated) {
+        if (!tidalRef) {
+            let ambiguous = false;
+            try {
+                const found = await tidal.resolveArtist(view.name);
+                if (found && !found.ambiguous) tidalRef = { id: found.id, name: found.name, art_url: found.art_url };
+                else if (found) ambiguous = true;
+            } catch (e) { /* no TIDAL part for this artist */ }
+            if (!isCurrent()) return;
+            // Several TIDAL artists share the name: never guess, offer the search.
+            if (ambiguous) {
+                const section = document.createElement('section');
+                section.className = 'artist-detail-section artist-detail-tidal';
+                section.innerHTML = `<h3 class="artist-detail-source">${deps.sourceGlyphHtml('tidal')}<span>On TIDAL</span></h3>`
+                    + '<p class="album-discover-note">Several TIDAL artists share this name.</p>'
+                    + '<button type="button" class="btn-secondary artist-search-tidal">Search on TIDAL</button>';
+                section.querySelector('.artist-search-tidal').addEventListener('click', () => tidal.searchArtist(view.name));
+                els.albumDetail.insertBefore(section, els.albumDiscover || null);
+            }
+        }
+        if (tidalRef) {
+            const section = document.createElement('section');
+            section.className = 'artist-detail-section artist-detail-tidal';
+            section.innerHTML = `<h3 class="artist-detail-source">${deps.sourceGlyphHtml('tidal')}<span>On TIDAL</span></h3>`;
+            els.albumDetail.insertBefore(section, els.albumDiscover || null);
+            try {
+                tidalData = await tidal.renderArtistInto(section, tidalRef.id, isCurrent);
+            } catch (e) {
+                section.remove();
+            }
+            if (!isCurrent()) return;
+            const mbid = tidalData && tidalData.enrichment && tidalData.enrichment.mb_artist_id;
+            if (tidalData && view.mbid && mbid && String(mbid).toLowerCase() !== view.mbid.toLowerCase()) {
+                // Another artist with this name: the TIDAL part does not belong here.
+                section.remove();
+                tidalData = null;
+            } else if (tidalData && !section.querySelector('.streaming-results-heading')) {
+                section.remove();
+            }
+            if (tidalData) {
+                const detailAlbum = deps.getState().library.albumDetail.album;
+                detailAlbum.tidalArtistId = String(tidalRef.id);
+                updateAlbumFavoriteButton(detailAlbum);
+                const about = tidalData.enrichment && tidalData.enrichment.about;
+                if (about && !view.description && !els.albumDetail.querySelector('.album-detail-about')) {
+                    els.albumDetailCount.insertAdjacentHTML('afterend', detailAboutHtml('About this artist', about));
+                }
+            }
+        }
+    }
+    const seed = view.mbid ? view.albums.find(album => album.mb_artist_id) : null;
+    if (seed) {
+        await loadAlbumDiscover(seed.id, isCurrent);
+    } else if (tidalData && tidalData.enrichment && tidalData.enrichment.similar) {
+        renderSimilarArtists(tidalData.enrichment.similar, isCurrent);
+    }
+}
+
+// Local artist for a name, when the library has one.
+function openLocalArtistByName(name) {
+    const key = deps.nameKey(name);
+    if (!key || !localArtistIndex().has(key)) return false;
+    leaveTidalLibraryDetail();
+    deps.getState().library.viewMode = 'artists';
+    renderLibraryViewButtons();
+    updateLibrarySearchPlaceholder();
+    openArtistDetail(key);
+    return true;
 }
 
 function localAlbumCardHtml(album) {
@@ -1304,7 +1734,7 @@ async function openAlbumDetail(albumId) {
         deps.getElements().albumDetailName.textContent = album.name;
         deps.getElements().albumDetailArtist.textContent = album.artist;
         updateAlbumFavoriteButton(album);
-        deps.getElements().albumDetail.querySelectorAll('.album-detail-facts, .album-detail-about').forEach(node => node.remove());
+        clearAlbumDetailExtras();
         const factsHtml = albumFactsHtml(album);
         if (factsHtml) {
             deps.getElements().albumDetailCount.insertAdjacentHTML('afterend', factsHtml);
@@ -1316,7 +1746,7 @@ async function openAlbumDetail(albumId) {
         }
 
         renderAlbumDetailTracks();
-        loadAlbumDiscover(albumId);
+        loadAlbumDiscover(albumId, () => deps.getState().library.albumDetail?.album?.id === albumId);
 
         // Show detail, hide grid
         deps.getElements().albumsGrid.classList.add('hidden');
@@ -1361,7 +1791,7 @@ async function openSmartTopTracks() {
         deps.getElements().albumDetailArtist.textContent = album.artist;
         deps.getElements().albumDetailCount.textContent = `${deps.getState().library.albumDetail.tracks.length} track${deps.getState().library.albumDetail.tracks.length === 1 ? '' : 's'}`;
         updateAlbumFavoriteButton(album);
-        deps.getElements().albumDetail.querySelectorAll('.album-detail-facts, .album-detail-about').forEach(node => node.remove());
+        clearAlbumDetailExtras();
         renderAlbumDetailTracks();
         if (deps.getElements().albumDiscover) {
             deps.getElements().albumDiscover.classList.add('hidden');
@@ -1399,7 +1829,7 @@ function openSmartFavoriteTracks() {
     els.albumDetailName.textContent = album.name;
     els.albumDetailArtist.textContent = album.artist;
     updateAlbumFavoriteButton(album);
-    els.albumDetail.querySelectorAll('.album-detail-facts, .album-detail-about').forEach(node => node.remove());
+    clearAlbumDetailExtras();
     renderAlbumDetailTracks();
     if (els.albumDiscover) {
         els.albumDiscover.classList.add('hidden');
@@ -1412,57 +1842,73 @@ function openSmartFavoriteTracks() {
     scrollLibraryDetailToTop();
 }
 
-async function loadAlbumDiscover(albumId) {
-    if (!deps.getElements().albumDiscover) return;
-    deps.getElements().albumDiscover.classList.remove('hidden');
-    deps.getElements().albumDiscover.innerHTML = albumDiscoverShellHtml('loading');
+// Discover Similar for album and artist pages: suggestions come from the seed
+// album (/api/albums/{id}/discover) and render through the same cards as the
+// TIDAL detail pages. Connected, artists that map to TIDAL carry their image.
+async function loadAlbumDiscover(albumId, isCurrent = () => true) {
+    const host = deps.getElements().albumDiscover;
+    if (!host) return;
+    const tidal = tidalLibrary();
+    const connected = !!(tidal && tidal.connection().authenticated);
+    host.classList.remove('hidden');
+    host.innerHTML = albumDiscoverShellHtml('Looking up similar artists…');
     try {
-        const resp = await fetch(`/api/albums/${encodeURIComponent(albumId)}/discover`);
+        const resp = await fetch(`/api/albums/${encodeURIComponent(albumId)}/discover${connected ? '?provider=tidal' : ''}`);
         const data = await resp.json().catch(() => ({}));
         if (!resp.ok) throw new Error(data.detail || 'Failed to load suggestions');
-        renderAlbumDiscover(data.items || []);
+        if (!isCurrent()) return;
+        renderSimilarArtists(data.items || [], isCurrent);
     } catch (e) {
         console.warn('Failed to load album discover suggestions', e);
-        deps.getElements().albumDiscover.classList.add('hidden');
-        deps.getElements().albumDiscover.innerHTML = '';
+        if (!isCurrent()) return;
+        host.classList.add('hidden');
+        host.innerHTML = '';
     }
 }
 
-function renderAlbumDiscover(items) {
-    if (!deps.getElements().albumDiscover) return;
-    if (!Array.isArray(items) || items.length === 0) {
-        deps.getElements().albumDiscover.classList.add('hidden');
-        deps.getElements().albumDiscover.innerHTML = '';
+function renderSimilarArtists(items, isCurrent = () => true) {
+    const host = deps.getElements().albumDiscover;
+    if (!host) return;
+    const tidal = tidalLibrary();
+    const similar = Array.isArray(items) ? items.filter(item => item && item.artist) : [];
+    if (!tidal || !similar.length) {
+        host.classList.add('hidden');
+        host.innerHTML = '';
         return;
     }
-    const rows = items.slice(0, 6).map((item) => {
-        const artist = deps.escapeHtml(item.artist || 'Unknown artist');
-        return `
-            <li class="album-discover-item">
-                <span class="album-discover-title">${artist}</span>
-            </li>
-        `;
-    }).join('');
-    deps.getElements().albumDiscover.classList.remove('hidden');
-    deps.getElements().albumDiscover.innerHTML = `
-        <details class="album-discover-panel">
-            <summary>
-                <span>Discover similar music</span>
-            </summary>
-            <ul class="album-discover-list">${rows}</ul>
-        </details>
-    `;
+    // Artists the library has itself show their own cover.
+    const index = localArtistIndex();
+    similar.forEach((item) => {
+        const entry = item.art_url ? null : index.get(deps.nameKey(item.artist));
+        const cover = entry && entry.albums.map(albumCoverUrl).find(Boolean);
+        if (cover) item.art_url = cover;
+    });
+    host.classList.remove('hidden');
+    host.innerHTML = '';
+    tidal.renderSimilarArtists(host, similar, openSimilarArtist);
+    if (tidal.connection().authenticated) tidal.hydrateSimilarArtists(host, similar, isCurrent);
 }
 
-function albumDiscoverShellHtml(stateName) {
-    const note = stateName === 'loading' ? 'Looking up similar artists…' : 'No suggestions yet.';
+// A similar artist opens its local page when the library has one, else its
+// TIDAL page (connected); otherwise the card stays informational.
+function openSimilarArtist(item) {
+    if (openLocalArtistByName(item.artist)) return;
+    const tidal = tidalLibrary();
+    if (!tidal || !tidal.connection().authenticated) return;
+    if (item.provider_artist_id) {
+        tidal.openDetail('artist', item.provider_artist_id, item.artist, item.art_url || '');
+        return;
+    }
+    tidal.resolveArtist(item.artist).then((match) => {
+        if (match && !match.ambiguous) tidal.openDetail('artist', match.id, match.name || item.artist, match.art_url || '');
+        else tidal.searchArtist(item.artist);
+    }).catch(() => tidal.searchArtist(item.artist));
+}
+
+function albumDiscoverShellHtml(note) {
     return `
-        <details class="album-discover-panel">
-            <summary>
-                <span>Discover similar music</span>
-                <small>${deps.escapeHtml(note)}</small>
-            </summary>
-        </details>
+        <h4 class="streaming-results-heading">Discover Similar</h4>
+        <p class="album-discover-note">${deps.escapeHtml(note)}</p>
     `;
 }
 
@@ -1484,7 +1930,7 @@ function renderAlbumDetailTracks() {
         ? `${tracks.length + tidalTracks.length} of ${total} track${total === 1 ? '' : 's'}`
         : `${total} track${total === 1 ? '' : 's'}`;
     const album = detail.album;
-    deps.getElements().albumDetailCount.textContent = [trackCount, album.release_type, album.year, album.country]
+    deps.getElements().albumDetailCount.textContent = [album.summaryPrefix, trackCount, album.release_type, album.year, album.country]
         .filter(Boolean).join(' · ');
     if (tracks.length === 0 && tidalTracks.length === 0) {
         deps.getElements().albumDetailTracks.innerHTML = '<div class="track-item track-item-empty">No matching tracks.</div>';
@@ -1585,6 +2031,20 @@ function detailTrackRowHtml({ index, title, sub, album, favoriteButton, selectio
 
 function updateAlbumFavoriteButton(album) {
     if (!deps.getElements().albumFavoriteToggle) return;
+    const tidal = album?.tidalArtistId ? tidalLibrary() : null;
+    if (tidal && tidal.connection().authenticated) {
+        // An artist page with a TIDAL artist hearts that artist on TIDAL.
+        const favorite = tidal.isFavorite('artists', album.tidalArtistId);
+        const toggle = deps.getElements().albumFavoriteToggle;
+        toggle.classList.remove('hidden');
+        toggle.disabled = false;
+        toggle.innerHTML = deps.favoriteHeartSvg();
+        toggle.classList.toggle('active', favorite);
+        toggle.setAttribute('aria-pressed', favorite ? 'true' : 'false');
+        toggle.setAttribute('aria-label', favorite ? 'Remove artist from TIDAL favorites' : 'Add artist to TIDAL favorites');
+        toggle.setAttribute('data-tooltip', favorite ? 'Remove from TIDAL favorites' : 'Add to TIDAL favorites');
+        return;
+    }
     if (album?.smart) {
         deps.getElements().albumFavoriteToggle.classList.add('hidden');
         deps.getElements().albumFavoriteToggle.disabled = true;
@@ -1604,6 +2064,16 @@ async function toggleCurrentAlbumFavorite() {
     const detail = deps.getState().library.albumDetail;
     const album = detail?.album;
     if (!album || !deps.getElements().albumFavoriteToggle) return;
+    const tidal = album.tidalArtistId ? tidalLibrary() : null;
+    if (tidal) {
+        deps.getElements().albumFavoriteToggle.disabled = true;
+        try {
+            await tidal.toggleFavorite('artists', album.tidalArtistId);
+        } finally {
+            updateAlbumFavoriteButton(album);
+        }
+        return;
+    }
     const nextFavorite = !album.favorite;
     deps.getElements().albumFavoriteToggle.disabled = true;
     try {
@@ -1705,9 +2175,16 @@ function detailAboutHtml(label, description) {
 
 function closeAlbumDetail() {
     deps.getState().library.albumDetail = null;
+    // An album opened from an artist page returns to that page.
+    const returnKey = albumReturnArtistKey;
+    albumReturnArtistKey = '';
+    if (returnKey) {
+        openArtistDetail(returnKey);
+        return;
+    }
     // Re-render the grid (instead of just unhiding it) so newly saved
     // playlists appear as tiles as soon as the user leaves the album.
-    renderAlbums();
+    renderLibraryView();
 }
 
 async function playTrackInAlbum(trackId, albumId) {
@@ -2025,10 +2502,20 @@ function cancelPlaylistSelection() {
     updatePlaylistSaveRowVisibility();
 }
 
+// TIDAL favorite tracks listed after the local ones in Tracks join the
+// selection actions; Folders and every other view stay local.
+function visibleTidalTrackIds() {
+    if (deps.getState().library.viewMode !== 'tracks') return [];
+    return tidalLibraryFavorites('tracks').map(item => String(item.id));
+}
+
 function selectAllVisibleTracks() {
     const selectedIds = new Set(deps.getState().library.selectedTrackIds);
     getFilteredTracks().forEach(track => selectedIds.add(track.id));
     deps.getState().library.selectedTrackIds = Array.from(selectedIds);
+    const tidal = tidalLibrary();
+    const tidalIds = visibleTidalTrackIds();
+    if (tidal && tidalIds.length) tidal.selectTracks(tidalIds);
     updateLibrarySelectionUI();
     syncRenderedTrackSelection();
 }
@@ -2036,15 +2523,20 @@ function selectAllVisibleTracks() {
 function clearVisibleTrackSelection() {
     const visibleIds = new Set(getFilteredTracks().map(track => track.id));
     deps.getState().library.selectedTrackIds = deps.getState().library.selectedTrackIds.filter(id => !visibleIds.has(id));
+    const tidal = tidalLibrary();
+    const tidalIds = visibleTidalTrackIds();
+    if (tidal && tidalIds.length) tidal.deselectTracks(tidalIds);
     updateLibrarySelectionUI();
     syncRenderedTrackSelection();
 }
 
 function toggleVisibleTrackSelection() {
-    const filteredTracks = getFilteredTracks();
     const selectedIds = new Set(deps.getState().library.selectedTrackIds);
-    const visibleIds = filteredTracks.map(track => track.id);
-    const allVisibleSelected = visibleIds.length > 0 && visibleIds.every(id => selectedIds.has(id));
+    const tidal = tidalLibrary();
+    const tidalSelected = new Set(tidal ? tidal.selectedIds() : []);
+    const allVisibleSelected = getFilteredTracks().every(track => selectedIds.has(track.id))
+        && visibleTidalTrackIds().every(id => tidalSelected.has(id))
+        && (getFilteredTracks().length + visibleTidalTrackIds().length) > 0;
     if (allVisibleSelected) {
         clearVisibleTrackSelection();
     } else {
@@ -2057,10 +2549,12 @@ function setLibrarySearchQuery(value) {
     updateLibrarySearchControls();
     // A TIDAL detail is not filtered; the grids apply the query on Back.
     if (deps.getState().library.tidalDetailOpen) return;
-    if (deps.getState().library.viewMode === 'albums' && deps.getState().library.albumDetail) {
+    if (isTileViewMode() && deps.getState().library.albumDetail) {
         renderAlbumDetailTracks();
-    } else if (deps.getState().library.viewMode === 'albums' && deps.getState().library.playlistDetail) {
+    } else if (isTileViewMode() && deps.getState().library.playlistDetail) {
         renderPlaylistDetailTracks();
+    } else if (deps.getState().library.viewMode === 'artists') {
+        renderArtists();
     } else if (deps.getState().library.viewMode === 'albums') {
         renderAlbums();
     } else {
@@ -2077,7 +2571,13 @@ function updateLibrarySearchControls() {
 function updateLibrarySearchPlaceholder() {
     if (!deps.getElements().librarySearchInput) return;
     const compact = window.matchMedia && window.matchMedia("(max-width: 600px)").matches;
+    const isArtists = deps.getState().library.viewMode === "artists";
     const isAlbums = deps.getState().library.viewMode === "albums";
+    if (isArtists) {
+        deps.getElements().librarySearchInput.placeholder = "Search artists…";
+        deps.getElements().librarySearchInput.setAttribute('aria-label', "Search artists");
+        return;
+    }
     const fullText = isAlbums
         ? (deps.getElements().librarySearchInput.dataset.placeholderAlbumsFull || "Search album, artist, genre, year…")
         : (deps.getElements().librarySearchInput.dataset.placeholderFull || "Search folder, artist, track…");
@@ -2193,17 +2693,22 @@ function updateLibrarySelectionUI() {
     const filteredPlaylists = getFilteredPlaylists();
     const selectedIds = new Set(deps.getState().library.selectedTrackIds);
     const visibleIds = filteredTracks.map(track => track.id);
-    const selectedVisibleCount = visibleIds.filter(id => selectedIds.has(id)).length;
+    const tidal = tidalLibrary();
+    const tidalSelected = new Set(tidal ? tidal.selectedIds() : []);
+    const tidalVisibleIds = visibleTidalTrackIds();
+    const visibleCount = visibleIds.length + tidalVisibleIds.length;
+    const selectedVisibleCount = visibleIds.filter(id => selectedIds.has(id)).length
+        + tidalVisibleIds.filter(id => tidalSelected.has(id)).length;
     const totalSelectedCount = selectedIds.size;
     const hasSearch = !!(deps.getState().library.searchQuery || '').trim();
     const isTracksMode = deps.getState().library.viewMode === 'tracks';
 
     // Select all: visible in tracks and folders mode, hidden in albums
     if (deps.getElements().selectAllTracksBtn) {
-        const isAlbumsMode = deps.getState().library.viewMode === 'albums';
-        const allVisibleSelected = filteredTracks.length > 0 && selectedVisibleCount === filteredTracks.length;
+        const isAlbumsMode = isTileViewMode();
+        const allVisibleSelected = visibleCount > 0 && selectedVisibleCount === visibleCount;
         deps.getElements().selectAllTracksBtn.classList.toggle('hidden', isAlbumsMode);
-        deps.getElements().selectAllTracksBtn.disabled = isAlbumsMode || filteredTracks.length === 0;
+        deps.getElements().selectAllTracksBtn.disabled = isAlbumsMode || visibleCount === 0;
         if (allVisibleSelected) {
             deps.getElements().selectAllTracksBtn.textContent = hasSearch ? 'Clear visible' : 'Clear selection';
         } else {
@@ -2785,6 +3290,8 @@ function attachTidalLibraryHost() {
         onOpen: showTidalLibraryDetail,
         onClose: hideTidalLibraryDetail,
         onRender: () => updatePlaylistSaveRowVisibility(),
+        // A similar artist the library has opens its local page.
+        openLocalArtist: openLocalArtistByName,
     });
 }
 
@@ -2884,10 +3391,20 @@ function scheduleTidalLibraryRender() {
     tidalRefreshTimer = setTimeout(() => {
         tidalRefreshTimer = null;
         const library = deps.getState().library;
-        if (library.tidalDetailOpen || library.albumDetail || library.playlistDetail) return;
+        if (library.tidalDetailOpen || library.albumDetail || library.playlistDetail) {
+            syncArtistDetailHeart();
+            return;
+        }
         if (library.viewMode === 'albums') renderAlbums();
+        else if (library.viewMode === 'artists') renderArtists();
         else if (library.viewMode === 'tracks') renderTracks();
     }, 60);
+}
+
+// The artist page heart follows the TIDAL favorite state without a reload.
+function syncArtistDetailHeart() {
+    const album = deps.getState().library.albumDetail?.album;
+    if (album && album.tidalArtistId) updateAlbumFavoriteButton(album);
 }
 
 function setupTidalLibrary() {
@@ -2898,7 +3415,10 @@ function setupTidalLibrary() {
         root.addEventListener('fxroute:tidal-status', onTidalStatusChanged);
         root.addEventListener('fxroute:tidal-library', scheduleTidalLibraryRender);
         root.addEventListener('fxroute:tidal-favorites', scheduleTidalLibraryRender);
-        root.addEventListener('fxroute:tidal-selection', () => updatePlaylistSaveRowVisibility());
+        root.addEventListener('fxroute:tidal-selection', () => {
+            updatePlaylistSaveRowVisibility();
+            updateLibrarySelectionUI();
+        });
     }
     renderTidalHeaderButton();
 }
@@ -2908,6 +3428,9 @@ function setupLibraryActions() {
     deps.getElements().refreshLibraryBtn.addEventListener('click', refreshLibrary);
     if (deps.getElements().libraryViewTracksBtn) {
         deps.getElements().libraryViewTracksBtn.addEventListener('click', () => setLibraryViewMode('tracks'));
+    }
+    if (deps.getElements().libraryViewArtistsBtn) {
+        deps.getElements().libraryViewArtistsBtn.addEventListener('click', () => setLibraryViewMode('artists'));
     }
     if (deps.getElements().libraryViewFoldersBtn) {
         deps.getElements().libraryViewFoldersBtn.addEventListener('click', () => setLibraryViewMode('folders'));
@@ -3062,7 +3585,10 @@ function setupLibraryActions() {
         readStoredViewMode,
         refreshLibrary,
         renderAlbumDetailTracks,
-        renderAlbumDiscover,
+        renderSimilarArtists,
+        buildArtistIndex,
+        renderArtists,
+        openArtistDetail,
         renderAlbums,
         renderLibraryFolderPath,
         renderLibraryModeButtons,

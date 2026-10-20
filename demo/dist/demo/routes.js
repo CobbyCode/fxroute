@@ -2940,6 +2940,13 @@
         if (p === '/api/tracks') return j(activeLib().tracks);
         if (p === '/api/albums') {
             const catalog = activeLib().albums;
+            // Enriched backends serve the artist MusicBrainz id the Library
+            // seeds Discover Similar with; the demo derives a stable stand-in.
+            catalog.forEach(a => {
+                if (!a.mb_artist_id && a.artist && !/^various/i.test(a.artist)) {
+                    a.mb_artist_id = 'demo-mbid-' + String(a.artist).toLowerCase().replace(/[^a-z0-9]+/g, '-');
+                }
+            });
             const q = String(query.get('query') || '').toLowerCase();
             return j(q ? catalog.filter(a => (a.name + ' ' + a.artist + ' ' + (a.genres || []).join(' ')).toLowerCase().includes(q)) : catalog);
         }
@@ -3026,17 +3033,18 @@
         const albumDiscover = p.match(/^\/api\/albums\/([^/]+)\/discover$/);
         if (albumDiscover) {
             // Same contract as the backend (ListenBrainz artist-seeded
-            // suggestions, max 6): reuse the active demo catalog — same
-            // genre first, then same decade, then the rest in catalog
-            // order. Returns full album entries so the real UI renders
-            // identical tiles, no demo-only recommendation logic.
+            // similar artists, max 6): other artists of the active demo
+            // catalog — same genre first, then same decade, then catalog
+            // order. With ?provider=tidal an artist that also exists in the
+            // demo TIDAL catalog carries its stored id and art, like the
+            // real mapping lookup.
             const catalog = activeLib().albums;
             const album = catalog.find(a => a.id === albumDiscover[1]);
             if (!album) return err('Album not found');
             const genre = (album.genres || [])[0] || '';
             const decade = Math.floor(Number(album.year || 0) / 10);
             const scored = catalog
-                .filter(a => a.id !== album.id)
+                .filter(a => a.artist !== album.artist && !/^various/i.test(a.artist || ''))
                 .map(a => {
                     const sameGenre = genre && (a.genres || []).includes(genre) ? 0 : 1;
                     const sameDecade = Number.isFinite(decade) && decade > 0
@@ -3044,7 +3052,35 @@
                     return { album: a, score: sameGenre * 10 + sameDecade };
                 })
                 .sort((x, y) => x.score - y.score);
-            return j({ album_id: album.id, items: scored.slice(0, 6).map(s => s.album), source: 'demo', cached: true, error: '' });
+            const seen = new Set();
+            const items = [];
+            for (const entry of scored) {
+                const artist = entry.album.artist;
+                if (seen.has(artist)) continue;
+                seen.add(artist);
+                const item = { type: 'artist', artist, artist_mbid: 'demo-mbid-' + artist.toLowerCase().replace(/[^a-z0-9]+/g, '-'), listen_count: 0 };
+                if (query.get('provider') === 'tidal') {
+                    const mapped = tidalArtists().find(t => t.name.toLowerCase() === artist.toLowerCase());
+                    if (mapped) {
+                        item.provider_artist_id = mapped.id;
+                        item.art_url = mapped.art_url || '';
+                    }
+                }
+                items.push(item);
+                if (items.length >= 6) break;
+            }
+            return j({ album_id: album.id, items, source: 'demo', cached: true, error: '' });
+        }
+        if (p === '/api/artists/provider-matches' && post) {
+            // Stored-mapping lookup: a demo artist matches the TIDAL demo
+            // artist of the same name.
+            const artists = Array.isArray(body.artists) ? body.artists : [];
+            const matches = artists.map(entry => {
+                const name = String((entry && entry.name) || '').toLowerCase();
+                const mapped = name ? tidalArtists().find(t => t.name.toLowerCase() === name) : null;
+                return mapped ? { provider_artist_id: mapped.id, name: mapped.name, art_url: mapped.art_url || '' } : null;
+            });
+            return j({ provider: String(body.provider || ''), matches });
         }
         if (p === '/api/smart/top-tracks') return j(activeLib().tracks.slice(0, 40));
         if (p === '/api/library/status') {

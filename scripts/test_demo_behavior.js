@@ -1152,8 +1152,10 @@ const radio = state.getPlayback();
     // ── Album About + Discover Similar contract ─────────────────────────
     // About texts ride the same backend fields (artist_description /
     // album_description) the real UI renders as directly visible text;
-    // Discover reuses the demo library itself (same genre/decade first),
-    // max 6 items, never the album itself, 404 for unknown ids.
+    // Discover serves similar artists from the demo library itself (same
+    // genre/decade first), max 6 unique artists, never the album's own
+    // artist, 404 for unknown ids; ?provider=tidal attaches the stored
+    // TIDAL mappings of artists that exist in the demo TIDAL catalog.
     // This section covers the main catalog, so select Local first (the
     // demo presents SMB_Demo_Library-1 by default).
     await demoFetch('/api/music-libraries/select', { method: 'POST', body: JSON.stringify({ id: 'local' }) });
@@ -1168,9 +1170,23 @@ const radio = state.getPlayback();
         const disc = await (await demoFetch('/api/albums/' + encodeURIComponent(album.id) + '/discover')).json();
         assert.equal(disc.album_id, album.id);
         assert.ok(Array.isArray(disc.items) && disc.items.length > 0 && disc.items.length <= 6);
-        assert.ok(disc.items.every(item => item.id !== album.id), 'discover must not suggest the album itself');
-        assert.ok(disc.items.every(item => item.name && item.artist && item.coverUrl));
+        assert.ok(disc.items.every(item => item.type === 'artist' && item.artist && item.artist_mbid),
+            'discover items are similar artists with a MusicBrainz id');
+        assert.ok(disc.items.every(item => item.artist !== album.artist), 'discover must not suggest the album artist');
+        assert.equal(new Set(disc.items.map(item => item.artist)).size, disc.items.length, 'discover artists are unique');
+        assert.ok(disc.items.every(item => !('provider_artist_id' in item)), 'no provider mappings without ?provider');
+        assert.ok(album.mb_artist_id, 'the album list carries the artist MusicBrainz id Discover is seeded with');
     }
+    const tidalDisc = await (await demoFetch('/api/albums/after-the-rain/discover?provider=tidal')).json();
+    const mappedItems = tidalDisc.items.filter(item => item.provider_artist_id);
+    assert.ok(mappedItems.every(item => item.art_url), 'mapped similar artists carry their stored TIDAL art');
+    const matchAnswer = await (await demoFetch('/api/artists/provider-matches', {
+        method: 'POST',
+        body: JSON.stringify({ provider: 'tidal', artists: [{ name: 'Modern Legends' }, { name: 'Nobody At All' }] }),
+    })).json();
+    assert.equal(matchAnswer.matches.length, 2);
+    assert.ok(matchAnswer.matches[0] && matchAnswer.matches[0].provider_artist_id, 'a demo artist maps to the TIDAL demo artist of the same name');
+    assert.equal(matchAnswer.matches[1], null, 'an unknown artist stays unmatched');
     const afterRainDisc = await (await demoFetch('/api/albums/after-the-rain/discover')).json();
     assert.ok(afterRainDisc.items.some(item => item.artist !== 'Blue Meridian'), 'discover must reach beyond the same artist');
     const unknownDisc = await demoFetch('/api/albums/does-not-exist/discover');

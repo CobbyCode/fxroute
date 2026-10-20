@@ -135,6 +135,7 @@ function makeSandbox({ tracksOk = true } = {}) {
         albumFactsHtml: () => '',
         albumAboutHtml: () => '',
         renderAlbumDetailTracks() {},
+        clearAlbumDetailExtras() {},
         loadAlbumDiscover() {},
         showToast() {},
         resolvePlaylistTracks: () => [],
