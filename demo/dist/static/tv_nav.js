@@ -53,6 +53,10 @@
         'button', 'tab', 'menuitem', 'option', 'switch', 'checkbox', 'link',
     ]);
 
+    // Per-document navigation state: the element the remote focused and the
+    // observer that restores it when a status-driven re-render replaces it.
+    const docStates = new WeakMap();
+
     // Back controls of detail views inside a tab. Backspace returns to the
     // list these views were opened from.
     const BACK_CONTROL_SELECTOR = [
@@ -212,6 +216,70 @@
         return dialogs.length ? dialogs[dialogs.length - 1] : doc.body;
     }
 
+    function setNavFocus(ctx, element) {
+        ctx.navFocus = element;
+        ctx.navRect = rectOf(element);
+        if (ctx.observer && ctx.doc.body) {
+            ctx.observer.observe(ctx.doc.body, { childList: true, subtree: true });
+        }
+    }
+
+    function clearNavFocus(ctx) {
+        ctx.navFocus = null;
+        ctx.navRect = null;
+        ctx.observer?.disconnect();
+    }
+
+    function nearestToRect(rect, scope) {
+        const candidates = focusablesIn(scope);
+        if (!rect) return candidates[0] || null;
+        const cx = (rect.left + rect.right) / 2;
+        const cy = (rect.top + rect.bottom) / 2;
+        let best = null;
+        let bestDistance = Infinity;
+        for (const element of candidates) {
+            const candidate = rectOf(element);
+            if (!candidate) continue;
+            const dx = (candidate.left + candidate.right) / 2 - cx;
+            const dy = (candidate.top + candidate.bottom) / 2 - cy;
+            const distance = dx * dx + dy * dy;
+            if (distance < bestDistance) {
+                best = element;
+                bestDistance = distance;
+            }
+        }
+        return best;
+    }
+
+    // Status polls re-render lists (settings providers, sources) while the
+    // remote stays on one of their buttons. When that button disappears, the
+    // browser drops the focus to <body>; continue on the nearest control of
+    // the same dialog instead of making the user start over.
+    function restoreLostFocus(ctx) {
+        if (!ctx.navFocus || ctx.restoring || ctx.navFocus.isConnected) return;
+        const doc = ctx.doc;
+        const active = doc.activeElement;
+        if (active && active !== doc.body && active !== doc.documentElement) {
+            clearNavFocus(ctx);
+            return;
+        }
+        const scope = resolveScope(doc);
+        if (scope === doc.body) {
+            // The dialog closed: the modal manager restores the opener.
+            clearNavFocus(ctx);
+            return;
+        }
+        const target = nearestToRect(ctx.navRect, scope);
+        clearNavFocus(ctx);
+        if (!target) return;
+        ctx.restoring = true;
+        try {
+            focusElement(target, doc);
+        } finally {
+            ctx.restoring = false;
+        }
+    }
+
     function focusElement(element, doc) {
         if (!element || typeof element.focus !== 'function') return false;
         try {
@@ -224,6 +292,8 @@
         if (typeof element.scrollIntoView === 'function') {
             element.scrollIntoView({ block: 'nearest', inline: 'nearest' });
         }
+        const ctx = docStates.get(doc);
+        if (ctx) setNavFocus(ctx, element);
         return true;
     }
 
@@ -516,8 +586,20 @@
             || (typeof document !== 'undefined' ? document : null);
         if (!doc || doc.__fxrouteTvNavBound) return null;
         doc.__fxrouteTvNavBound = true;
-        const ctx = { doc };
+        const ctx = {
+            doc,
+            navFocus: null,
+            navRect: null,
+            restoring: false,
+            observer: typeof MutationObserver === 'function'
+                ? new MutationObserver(() => restoreLostFocus(ctx))
+                : null,
+        };
+        docStates.set(doc, ctx);
         doc.addEventListener('keydown', event => handleKeyDown(event, ctx), false);
+        doc.addEventListener('focusin', event => {
+            if (ctx.navFocus && event.target !== ctx.navFocus) clearNavFocus(ctx);
+        }, true);
         doc.addEventListener('focusout', event => {
             event.target?.classList?.remove(FOCUS_CLASS);
         }, true);

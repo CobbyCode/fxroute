@@ -101,8 +101,8 @@ def _run():
     server = _serve()
     checks = {"count": 0}
 
-    def check(name, condition):
-        assert condition, name
+    def check(name, condition, detail=None):
+        assert condition, f"{name} [{detail!r}]" if detail is not None else name
         checks["count"] += 1
 
     try:
@@ -278,6 +278,16 @@ def _run():
             page.wait_for_timeout(120)
             check("arrows move to the next input",
                   page.evaluate("document.activeElement.textContent") == "Optical")
+
+            # A status-driven re-render can replace the focused row. The
+            # navigation keeps the focus on the nearest remaining control
+            # instead of dropping it to <body>.
+            page.evaluate("document.activeElement.remove()")
+            page.wait_for_timeout(150)
+            check("focus survives a list re-render",
+                  page.evaluate("document.getElementById('source-picker').contains(document.activeElement)"))
+            check("focus moves to the nearest remaining row", _focus(page)["text"] == "App", _focus(page))
+            check("the restored row carries the focus ring", _focus(page)["ring"])
 
             # ContextMenu closes the picker again; Backspace also closes it.
             page.keyboard.press("ContextMenu")
