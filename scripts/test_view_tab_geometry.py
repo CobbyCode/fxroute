@@ -114,15 +114,31 @@ def _run():
                 page.wait_for_timeout(200)
                 # Library view tabs.
                 activate("library")
-                lib_heights = heights("#tab-library .view-tab")
+                lib_heights = heights("#tab-library .library-view-toggle .view-tab")
                 check(f"[{width}px] library renders five view tabs", len(lib_heights) == 5)
                 check(f"[{width}px] library view tabs share one height",
                       max(lib_heights) - min(lib_heights) <= 0.5)
                 check(f"[{width}px] library view tabs keep a touchable height (>=36px)",
                       min(lib_heights) >= 36)
-                lib_pads = pads("#tab-library .view-tab")
+                lib_pads = pads("#tab-library .library-view-toggle .view-tab")
                 check(f"[{width}px] library view tabs share horizontal padding",
                       len({tuple(p) for p in lib_pads}) == 1)
+
+                # Library search results swap in their own type tabs, the same
+                # component and size as the view tabs they replace.
+                page.fill("#library-search", "a")
+                page.wait_for_timeout(200)
+                type_heights = heights("#library-search-types .view-tab")
+                check(f"[{width}px] library search shows four result type tabs", len(type_heights) == 4)
+                check(f"[{width}px] result type tabs match the library view tab height",
+                      abs(min(type_heights) - min(lib_heights)) <= 0.5)
+                check(f"[{width}px] result type tabs replace the view tabs",
+                      page.locator("#tab-library .library-view-toggle").is_hidden())
+                page.fill("#library-search", "")
+                page.wait_for_timeout(200)
+                check(f"[{width}px] clearing the search brings the view tabs back",
+                      page.locator("#tab-library .library-view-toggle").is_visible()
+                      and page.locator("#library-search-types").is_hidden())
 
                 # TIDAL browse navigation: one shared row of four view tabs.
                 activate("tidal")
@@ -174,7 +190,7 @@ def _run():
             page.set_viewport_size({"width": 390, "height": 844})
             page.wait_for_timeout(200)
             activate("library")
-            lib_heights = heights("#tab-library .view-tab")
+            lib_heights = heights("#tab-library .library-view-toggle .view-tab")
             check("[390px] library view tabs stay touchable on mobile", min(lib_heights) >= 36)
             check("[390px] library no horizontal overflow",
                   page.evaluate("document.documentElement.scrollWidth <= window.innerWidth + 1"))

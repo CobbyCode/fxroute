@@ -2360,6 +2360,41 @@ label.effects-delete-item {
     background: var(--accent);
 }
 .library-tidal-status.is-connected .library-tidal-status-dot { display: inline-block; }
+/* Search results: "In your library" and "TIDAL" sections under the result
+   type tabs. The grids inside keep the regular tile rhythm. */
+.albums-grid.is-search-results,
+#tracks-list.is-search-results {
+    display: block;
+}
+.library-search-section + .library-search-section {
+    margin-top: 1.1rem;
+}
+.library-search-heading {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    margin-top: 0.2rem;
+}
+.library-search-heading .source-glyph {
+    width: 1.15em;
+    height: 1.15em;
+}
+.library-search-grid {
+    margin-top: 0.4rem;
+}
+.library-search-rows {
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+}
+.library-search-empty {
+    margin: 0.2rem 0 0.6rem;
+    color: var(--text-muted);
+    font-size: 0.86rem;
+}
+.library-search-action {
+    margin-bottom: 0.4rem;
+}
 /* TIDAL album/playlist/artist details opened from the Library. */
 .library-tidal-detail {
     margin-top: 0.9rem;
@@ -2376,7 +2411,8 @@ label.effects-delete-item {
     border-bottom: 1px solid var(--border-strong);
     padding-bottom: 0.5rem;
 }
-.library-view-toggle {
+.library-view-toggle,
+.library-search-types {
     display: flex;
     align-items: center;
     /* Shrinkable like the TIDAL tabs row so the four tabs wrap instead of

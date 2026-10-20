@@ -313,10 +313,15 @@ def _run():
                   page.locator(".artist-detail-tidal .streaming-result").count() == 0
                   and page.locator("#album-favorite-toggle").is_hidden())
             page.click(".artist-search-tidal")
-            page.wait_for_selector("#tab-tidal:not(.hidden)")
-            check("Search on TIDAL runs the TIDAL search for the name",
-                  page.locator("#tidal-search-input").input_value() == "Foxtrot")
-            page.click("#tab-btn-library")
+            page.wait_for_selector('[data-search-section="tidal"] .album-card[data-tidal-kind="artist"]')
+            check("Search on TIDAL searches the Library for the name, artists first",
+                  page.locator("#library-search").input_value() == "Foxtrot"
+                  and page.locator("#library-search-type-artists.active").count() == 1
+                  and page.locator("#tab-tidal").is_hidden())
+            check("both TIDAL artists of that name are offered next to the local one",
+                  page.locator('[data-search-section="tidal"] .album-card[data-tidal-kind="artist"]').count() == 2
+                  and page.locator('.library-search-section .artist-card[data-artist-key="foxtrot"]').count() == 1)
+            page.fill("#library-search", "")
             page.wait_for_selector("#library-view-artists")
             page.click("#library-view-artists")
             page.wait_for_selector("#albums-grid .artist-card")

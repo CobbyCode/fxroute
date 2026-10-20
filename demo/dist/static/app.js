@@ -1129,6 +1129,8 @@ const elements = {
     libraryViewFavoritesBtn: document.getElementById('library-view-favorites'),
     libraryViewAlbumsBtn: document.getElementById('library-view-albums'),
     libraryFolderPath: document.getElementById('library-folder-path'),
+    libraryViewToggle: document.querySelector('.library-view-toggle'),
+    librarySearchTypes: document.getElementById('library-search-types'),
     librarySearchInput: document.getElementById('library-search'),
     librarySearchClear: document.getElementById('library-search-clear'),
     albumsGrid: document.getElementById('albums-grid'),

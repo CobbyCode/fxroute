@@ -2833,24 +2833,22 @@
             .replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
     }
 
+    function canSearchInLibrary() {
+        return !!(libraryHost && typeof libraryHost.search === 'function');
+    }
+
+    // The Library searches its own content and the TIDAL catalog for the name.
+    function searchArtistInLibrary(name) {
+        if (state.tidal.host === 'library') state.tidal.parked.tab = null;
+        closeTidalLibraryDetail();
+        libraryHost.search(name, 'artists');
+    }
+
     // Reuse the existing TIDAL executed-search flow: close the detail, seed the
     // permanent search bar with the artist name and render artist results.
     function showTidalSearchResultsFor(name) {
-        if (state.tidal.host === 'library') {
-            // The Library has no TIDAL catalog search yet: close the detail
-            // chain there and run the search in the TIDAL tab.
-            if (libraryHost && typeof libraryHost.onClose === 'function') libraryHost.onClose();
-            closeTidalLibraryDetail();
-            state.tidal.parked.tab = null;
-            state.tidal.searchQuery = name;
-            state.tidal.searchExecuted = true;
-            state.tidal.searchResultType = 'artists';
-            state.tidal.searchResults = null;
-            state.tidal.searchInFlight = false;
-            cancelTidalSearchDebounce();
-            if (typeof switchTab === 'function') switchTab('tidal');
-            const tabEntry = entryFor('tidal');
-            if (tabEntry && state.tidal.contentKey === 'browse') renderTidalBrowse(tabEntry);
+        if (state.tidal.host === 'library' && canSearchInLibrary()) {
+            searchArtistInLibrary(name);
             return;
         }
         state.tidal.detailRequestId += 1;
@@ -3237,8 +3235,43 @@
         return data;
     }
 
+    // Library search: one catalog request for all four result types, kept
+    // per account and query so switching the type or coming back from a
+    // detail does not search again.
+    const TIDAL_CATALOG_SEARCH_LIMIT = 25;
+    const TIDAL_CATALOG_SEARCH_TTL_MS = 5 * 60 * 1000;
+    const TIDAL_CATALOG_SEARCH_MAX_ENTRIES = 12;
+    const catalogSearches = new Map();
+
+    function searchTidalCatalog(query) {
+        const text = String(query || '').trim();
+        const connection = tidalConnection();
+        const cacheKey = (connection.userId || '') + '|' + text.toLowerCase();
+        const cached = catalogSearches.get(cacheKey);
+        if (cached && Date.now() - cached.at < TIDAL_CATALOG_SEARCH_TTL_MS) return cached.promise;
+        const promise = (async () => {
+            const resp = await fetch('/api/streaming/tidal/search?q=' + encodeURIComponent(text)
+                + '&types=' + TIDAL_SEARCH_TYPES.join(',') + '&limit=' + TIDAL_CATALOG_SEARCH_LIMIT);
+            if (!resp.ok) throw new Error(await errorDetail(resp));
+            const data = await resp.json();
+            const results = {};
+            TIDAL_SEARCH_TYPES.forEach((type) => { results[type] = Array.isArray(data[type]) ? data[type] : []; });
+            results.artists.forEach(rememberTidalArtist);
+            try { await loadTidalFavoriteIds(); } catch (e) { /* hearts render unfilled until state loads */ }
+            return results;
+        })();
+        catalogSearches.set(cacheKey, { at: Date.now(), promise: promise });
+        // A failed search must be retried, never replayed from the cache.
+        promise.catch(() => { if (catalogSearches.get(cacheKey) && catalogSearches.get(cacheKey).promise === promise) catalogSearches.delete(cacheKey); });
+        while (catalogSearches.size > TIDAL_CATALOG_SEARCH_MAX_ENTRIES) {
+            catalogSearches.delete(catalogSearches.keys().next().value);
+        }
+        return promise;
+    }
+
     const tidalLibraryAdapter = {
         connection: tidalConnection,
+        searchCatalog: searchTidalCatalog,
         ensureLibrary: ensureTidalLibrary,
         items: tidalLibraryItems,
         isFavorite: isTidalFavorite,
@@ -3260,7 +3293,7 @@
         renderArtistInto: renderTidalArtistInto,
         renderSimilarArtists: renderSimilarArtists,
         hydrateSimilarArtists: hydrateSimilarArtistImages,
-        searchArtist: (name) => showTidalSearchResultsFor(name),
+        searchArtist: (name) => (canSearchInLibrary() ? searchArtistInLibrary(name) : showTidalSearchResultsFor(name)),
         createPlaylist: createTidalPlaylist,
         addToPlaylist: addTracksToTidalPlaylist,
         play: playTidalTracks,
