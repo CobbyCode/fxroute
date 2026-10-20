@@ -29,6 +29,16 @@
     const FOCUS_CLASS = 'tv-nav-focus';
     const CARD_SELECTOR = '.album-card, .station-card';
     const CARD_FAVORITE_SELECTOR = '.album-card-fav, .station-card-fav, .streaming-fav';
+    // Rows with a round Play button (album/playlist details, track,
+    // playlist and folder lists): Up/Down step from row to row on the Play
+    // buttons, Left/Right stay inside one row (Play, Plus, heart, actions).
+    const TRACK_ROW_SELECTOR = '.track-item, .streaming-result';
+    const TRACK_PLAY_SELECTOR = '.track-play';
+    const DETAIL_VIEW_SELECTOR = '.album-detail, .streaming-detail';
+    // DSP cards and their effect groups (Upmixer, Loudness, ... and the
+    // Protection rows): Left/Right follow the group's control order.
+    const EFFECTS_CARD_SELECTOR = '.effects-card';
+    const EFFECT_GROUP_SELECTOR = '.effects-effect, .effects-extras-row';
 
     // Anything a remote can land on. tabIndex >= 0 is checked separately so
     // inactive tab stops and click-only decoration stay out of the path.
@@ -235,6 +245,12 @@
             index: Array.from(card.parentElement.children).filter(item => item.matches(CARD_SELECTOR)).indexOf(card),
             favorite: element.matches(CARD_FAVORITE_SELECTOR),
         } : null;
+        const row = trackRow(element);
+        ctx.trackFocus = row ? {
+            anchorId: row.parentElement.closest('[id]')?.id,
+            key: rowKey(row),
+            control: focusablesIn(row).indexOf(element),
+        } : null;
         if (ctx.observer && ctx.doc.body) {
             ctx.observer.observe(ctx.doc.body, { childList: true, subtree: true });
         }
@@ -244,6 +260,7 @@
         ctx.navFocus = null;
         ctx.navRect = null;
         ctx.cardFocus = null;
+        ctx.trackFocus = null;
         ctx.observer?.disconnect();
     }
 
@@ -274,21 +291,38 @@
     // browser drops the focus to <body>; continue on the nearest control of
     // the same dialog instead of making the user start over.
     function restoreLostFocus(ctx) {
-        if (!ctx.navFocus || ctx.restoring || ctx.navFocus.isConnected) return;
+        if (!ctx.navFocus || ctx.restoring) return;
         const doc = ctx.doc;
         const active = doc.activeElement;
-        if (active && active !== doc.body && active !== doc.documentElement) {
+        const lost = !active || active === doc.body || active === doc.documentElement;
+        if (ctx.navFocus.isConnected) {
+            // A control disabled during its request (e.g. a track heart) drops
+            // the focus; it takes it back once it is enabled again.
+            const control = ctx.navFocus;
+            if (lost && isVisible(control) && !isDisabled(control) && resolveScope(doc).contains(control)) {
+                ctx.restoring = true;
+                try {
+                    focusElement(control, doc);
+                } finally {
+                    ctx.restoring = false;
+                }
+            }
+            return;
+        }
+        if (!lost) {
             clearNavFocus(ctx);
             return;
         }
         const scope = resolveScope(doc);
-        const cardTarget = scope === doc.body ? restoredCardTarget(ctx.cardFocus, ctx.navRect) : null;
-        if (scope === doc.body && !cardTarget) {
+        const listTarget = scope === doc.body
+            ? restoredCardTarget(ctx.cardFocus, ctx.navRect) || restoredTrackTarget(ctx.trackFocus, doc)
+            : null;
+        if (scope === doc.body && !listTarget) {
             // The dialog closed: the modal manager restores the opener.
             clearNavFocus(ctx);
             return;
         }
-        const target = cardTarget || nearestToRect(ctx.navRect, scope);
+        const target = listTarget || nearestToRect(ctx.navRect, scope);
         clearNavFocus(ctx);
         if (!target) return;
         ctx.restoring = true;
@@ -398,10 +432,107 @@
         return element.matches(CARD_FAVORITE_SELECTOR) && navigationCard(element);
     }
 
+    function trackPlay(row) {
+        return focusablesIn(row).find(element => element.matches(TRACK_PLAY_SELECTOR)) || null;
+    }
+
+    function trackRow(element) {
+        const row = element?.closest(TRACK_ROW_SELECTOR);
+        return row && trackPlay(row) ? row : null;
+    }
+
+    // Siblings only: track lists can be long, so no full-list scan per key.
+    function adjacentTrackRow(row, direction) {
+        const step = direction === 'down' ? 'nextElementSibling' : 'previousElementSibling';
+        for (let item = row[step]; item; item = item[step]) {
+            if (trackRow(item) === item) return item;
+        }
+        return null;
+    }
+
+    function firstTrackRow(list) {
+        for (let item = list.firstElementChild; item; item = item.nextElementSibling) {
+            if (trackRow(item) === item) return item;
+        }
+        return null;
+    }
+
+    // An opened album/playlist detail starts on its first track.
+    function detailTrackEntry(doc) {
+        for (const view of doc.querySelectorAll(DETAIL_VIEW_SELECTOR)) {
+            if (!isVisible(view)) continue;
+            const row = Array.from(view.querySelectorAll(TRACK_ROW_SELECTOR)).find(item => trackRow(item) === item);
+            if (row) return trackPlay(row);
+        }
+        return null;
+    }
+
+    function rowKey(row) {
+        for (const key of ['trackId', 'playlistId', 'folder']) {
+            if (row.dataset[key] !== undefined) return JSON.stringify([key, row.dataset[key]]);
+        }
+        return null;
+    }
+
+    // A re-rendered list keeps the same row and control.
+    function restoredTrackTarget(snapshot, doc) {
+        if (!snapshot?.anchorId || snapshot.key === null) return null;
+        const anchor = doc.getElementById(snapshot.anchorId);
+        if (!anchor || !isVisible(anchor)) return null;
+        const row = Array.from(anchor.querySelectorAll(TRACK_ROW_SELECTOR))
+            .find(item => rowKey(item) === snapshot.key && trackRow(item) === item);
+        if (!row) return null;
+        return focusablesIn(row)[snapshot.control] || trackPlay(row);
+    }
+
     function overlapsAxis(from, to, direction) {
         return direction === 'left' || direction === 'right'
             ? Math.min(from.bottom, to.bottom) - Math.max(from.top, to.top) > 1
             : Math.min(from.right, to.right) - Math.max(from.left, to.left) > 1;
+    }
+
+    function effectsTarget(doc, scope, current, effectsCard, direction) {
+        const group = current.closest(EFFECT_GROUP_SELECTOR);
+        if (group) {
+            const items = focusablesIn(group);
+            const index = items.indexOf(current);
+            const next = index < 0 ? null : items[index + (direction === 'right' ? 1 : -1)];
+            if (next) return next;
+        }
+        const from = rectOf(current);
+        const band = rectOf(effectsCard);
+        if (!from || !band) return null;
+        const candidates = focusablesIn(scope)
+            .filter(element => {
+                if (element === current || group?.contains(element)) return false;
+                // From a group edge, never into another effect group.
+                if (group && element.closest(EFFECT_GROUP_SELECTOR)) return false;
+                const card = element.closest(EFFECTS_CARD_SELECTOR);
+                const rect = card && rectOf(card);
+                return rect && Math.min(rect.bottom, band.bottom) - Math.max(rect.top, band.top) > 1
+                    && !inIndependentScrollport(element, current, doc);
+            })
+            .map(element => ({ element, rect: rectOf(element) }))
+            .filter(candidate => candidate.rect);
+        const local = candidates.filter(candidate => effectsCard.contains(candidate.element));
+        return pickSpatial(from, local, direction) || pickSpatial(from, candidates, direction);
+    }
+
+    // DSP cards: Left/Right stay among the cards beside each other (no jump
+    // to the header or footer), and the opposite key retraces the last steps.
+    function effectsStep(doc, scope, current, effectsCard, direction) {
+        const ctx = docStates.get(doc);
+        const trail = ctx ? ctx.effectsTrail : [];
+        const last = trail[trail.length - 1];
+        if (last && last.to === current && last.direction !== direction && last.from.isConnected
+                && isVisible(last.from) && !isDisabled(last.from) && scope.contains(last.from)) {
+            trail.pop();
+            return last.from;
+        }
+        const target = effectsTarget(doc, scope, current, effectsCard, direction);
+        if (last && (last.to !== current || last.direction !== direction)) trail.length = 0;
+        if (target) trail.push({ from: current, to: target, direction });
+        return target;
     }
 
     function moveFocus(doc, direction) {
@@ -410,28 +541,55 @@
         const current = active && active !== doc.body && scope.contains(active) && isVisible(active)
             ? active
             : null;
+        const ctx = docStates.get(doc);
+        const effectsCard = current && (direction === 'left' || direction === 'right')
+            && current.closest(EFFECTS_CARD_SELECTOR);
+        if (effectsCard) {
+            const target = effectsStep(doc, scope, current, effectsCard, direction);
+            return target ? focusElement(target, doc) : false;
+        }
+        if (ctx) ctx.effectsTrail = [];
         if (!current) {
-            const initial = firstVisibleCandidate(scope, doc);
+            const initial = (scope === doc.body && detailTrackEntry(doc)) || firstVisibleCandidate(scope, doc);
             return initial ? focusElement(initial, doc) : false;
         }
+        const row = trackRow(current);
+        if (row && (direction === 'left' || direction === 'right')) {
+            const from = rectOf(current);
+            const controls = focusablesIn(row).filter(element => element !== current)
+                .map(element => ({ element, rect: rectOf(element) }))
+                .filter(candidate => candidate.rect);
+            const control = from && pickSpatial(from, controls, direction);
+            return control ? focusElement(control, doc) : false;
+        }
+        const nextRow = row && adjacentTrackRow(row, direction);
+        if (nextRow) return focusElement(trackPlay(nextRow), doc);
         const card = navigationCard(current);
         const favorite = card && focusablesIn(card).find(element => element.matches(CARD_FAVORITE_SELECTOR));
         // Cards are the primary grid stops. Up explicitly enters the heart;
         // Down returns, while another Up leaves from the whole card's column.
         if (current === card && direction === 'up' && favorite) return focusElement(favorite, doc);
         if (card && current === favorite && direction === 'down') return focusElement(card, doc);
-        const origin = card && current === favorite ? card : current;
+        // Leaving a track list starts from the track's Play button.
+        const origin = row ? trackPlay(row) : (card && current === favorite ? card : current);
         const from = rectOf(origin);
         if (!from) {
             const initial = firstVisibleCandidate(scope, doc);
             return initial ? focusElement(initial, doc) : false;
         }
+        // Track lists are left and entered vertically only (e.g. Left from
+        // a detail's Back button must reach the header, not a track).
+        const horizontal = direction === 'left' || direction === 'right';
         const candidates = focusablesIn(scope)
             .filter(element => element !== origin && !element.contains(current) && !isCardFavorite(element)
+                && !(row && row.parentElement.contains(element))
+                && !(horizontal && element.closest(TRACK_ROW_SELECTOR))
                 && !inIndependentScrollport(element, current, doc))
             .map(element => ({ element, rect: rectOf(element) }))
             .filter(candidate => candidate.rect);
-        const tile = current.closest('.effects-card, .radio-panel, .library-panel, .streaming-panel, .manage-dialog');
+        // A detail view keeps its header (favorite, Back) and list together.
+        const tile = current.closest(DETAIL_VIEW_SELECTOR
+            + ', .effects-card, .radio-panel, .library-panel, .streaming-panel, .manage-dialog');
         const local = tile ? candidates.filter(candidate => tile.contains(candidate.element)) : [];
         const peers = card ? candidates.filter(candidate => candidate.element.matches(CARD_SELECTOR)
             && candidate.element.parentElement === card.parentElement
@@ -442,6 +600,11 @@
         }
         const target = pickSpatial(from, peers, direction)
             || pickSpatial(from, local, direction) || pickSpatial(from, candidates, direction);
+        // Entering a track list lands on a Play button, from above on the first.
+        const entered = !row && target && trackRow(target);
+        if (entered) {
+            return focusElement(trackPlay(direction === 'down' ? firstTrackRow(entered.parentElement) : entered), doc);
+        }
         return target ? focusElement(target, doc) : false;
     }
 
@@ -458,6 +621,9 @@
         const active = doc.activeElement;
         if (!isNativeKeyOwner(active)) return false;
         const target = nearestToRect(rectOf(active), resolveScope(doc), active);
+        // The released field must not take the focus back after a re-render.
+        const ctx = docStates.get(doc);
+        if (ctx) clearNavFocus(ctx);
         active.blur();
         if (target) focusElement(target, doc);
         return true;
@@ -788,6 +954,7 @@
         if (event.key === 'Tab') {
             ctx.remote = false;
             ctx.editing = null;
+            ctx.effectsTrail = [];
             ctx.navFocus?.classList?.remove(FOCUS_CLASS);
             clearNavFocus(ctx);
             return;
@@ -908,6 +1075,8 @@
             navFocus: null,
             navRect: null,
             cardFocus: null,
+            trackFocus: null,
+            effectsTrail: [],
             restoring: false,
             remote: false,
             editing: null,
@@ -937,6 +1106,7 @@
         doc.addEventListener('pointerdown', () => {
             ctx.remote = false;
             ctx.editing = null;
+            ctx.effectsTrail = [];
             ctx.navFocus?.classList?.remove(FOCUS_CLASS);
             clearNavFocus(ctx);
         }, true);
