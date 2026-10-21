@@ -6997,7 +6997,7 @@ async def _restore_saved_music_library(manager: MusicLibraryManager, *, retry_de
                 return False
             previous = manager.active_snapshot()
             try:
-                root = await asyncio.to_thread(manager.activate, library_id, mount_if_needed=False)
+                root = await asyncio.to_thread(manager.activate, library_id, mount_if_needed=False, clear_restore_error=False)
             except (ValueError, OSError) as exc:
                 note_unavailable(exc)
                 return False
@@ -7010,6 +7010,7 @@ async def _restore_saved_music_library(manager: MusicLibraryManager, *, retry_de
             except BaseException:
                 await asyncio.to_thread(manager.restore_active, *previous, remember_selection=False)
                 raise
+            manager.restore_error = ""
             return True
 
     while runtime.music_library.manager is manager:
@@ -7031,13 +7032,11 @@ async def _commit_music_library_switch(
     manager on the new library while the scanner, the queue and the player
     still describe the previous one.
     """
-    if restore_only:
-        scanner.cancel_refresh(retire=False)
-    else:
+    if not restore_only:
         scanner.cancel_refresh()
-    # A reconcile posted by the retired scanner must not prune the queue
-    # the switch is about to reset and refill.
-    _invalidate_pending_queue_reconcile()
+        # A reconcile posted by the retired scanner must not prune the queue
+        # the switch is about to reset and refill.
+        _invalidate_pending_queue_reconcile()
     active_refreshes = [task for task in runtime.library_refresh_tasks if not task.done()]
     if active_refreshes:
         await asyncio.gather(*active_refreshes, return_exceptions=True)
@@ -7076,10 +7075,11 @@ async def select_music_library(request: Request):
             raise HTTPException(status_code=409, detail="A playback transition is in progress")
         previous_library = manager.active_snapshot()
         try:
-            root = await asyncio.to_thread(manager.activate, library_id)
+            root = await asyncio.to_thread(manager.activate, library_id, clear_restore_error=False)
         except (ValueError, FileNotFoundError) as exc:
             raise bad_request(exc) from exc
         if root == scanner.music_root:
+            manager.restore_error = ""
             # Cached response: the selector entry was already known, so no
             # network rescan belongs into this answer path.
             return manager.status_cached()
@@ -7094,6 +7094,7 @@ async def select_music_library(request: Request):
         except asyncio.CancelledError:
             # The section finished; only the caller's request was cancelled, so
             # there is nothing to undo.
+            manager.restore_error = ""
             raise
         except BaseException:
             # The switch did not complete: put the manager back so manager,
@@ -7104,6 +7105,7 @@ async def select_music_library(request: Request):
             except Exception:
                 logger.exception("Failed to roll back the music library switch")
             raise
+        manager.restore_error = ""
         return manager.status_cached()
 
 

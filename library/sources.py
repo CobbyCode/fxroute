@@ -398,14 +398,15 @@ class MusicLibraryManager:
         finally:
             Path(temporary).unlink(missing_ok=True)
 
-    def _remember_selection(self, library_id: str, entry: dict | None = None) -> None:
+    def _remember_selection(self, library_id: str, entry: dict | None = None, *, clear_restore_error: bool = True) -> None:
         with self._state_lock:
             if entry is not None:
                 self._manual[library_id] = entry
                 self._hidden.discard(library_id)
             self.saved_active_id = library_id
-            self.restore_error = ""
             self._save_state()
+            if clear_restore_error:
+                self.restore_error = ""
 
     # ── Library context generation ───────────────────────────────────
 
@@ -444,7 +445,7 @@ class MusicLibraryManager:
             self.active_type = library_type
             self.active_root = root
         if remember_selection:
-            self._remember_selection(library_id)
+            self._remember_selection(library_id, clear_restore_error=False)
 
     def _resolve_discovery_hosts(self) -> list[str]:
         if self._configured_hosts is not None:
@@ -701,9 +702,9 @@ class MusicLibraryManager:
     def _mount(self, entry: dict[str, str]) -> Path:
         return self._mount_nfs(entry) if entry["type"] == "nfs" else self._mount_smb(entry)
 
-    def activate(self, library_id: str, *, mount_if_needed: bool = True) -> Path:
+    def activate(self, library_id: str, *, mount_if_needed: bool = True, clear_restore_error: bool = True) -> Path:
         if library_id == "local":
-            self._remember_selection("local")
+            self._remember_selection("local", clear_restore_error=clear_restore_error)
             self._publish_active("local", "local", self.local_root)
             return self.active_root
         entry = self._network_entry(library_id)
@@ -716,7 +717,7 @@ class MusicLibraryManager:
                 raise FileNotFoundError('Music library mount disappeared before activation')
         with self._state_lock:
             entry = self._network_entry(library_id)
-            self._remember_selection(library_id, entry)
+            self._remember_selection(library_id, entry, clear_restore_error=clear_restore_error)
             self._publish_active(library_id, entry["type"], root)
         return root
 

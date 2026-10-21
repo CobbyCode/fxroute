@@ -372,6 +372,13 @@ class PlaybackLibraryContextTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.manager.active_id, "local")
         self.assertTrue(self.manager.context_is_current(before))
 
+    def test_failed_selection_save_preserves_restore_error(self):
+        self.manager.restore_error = 'Saved share was offline'
+        with patch.object(self.manager, '_save_state', side_effect=OSError('Disk full')):
+            with self.assertRaisesRegex(OSError, 'Disk full'):
+                self.manager.activate('local')
+        self.assertEqual(self.manager.restore_error, 'Saved share was offline')
+
     def test_restore_active_republishes_without_advancing_the_generation(self):
         before = self.manager.capture_context()
         self._activate_smb()
@@ -416,6 +423,7 @@ class LibrarySwitchCancellationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_cancellation_after_activate_completes_the_switch(self):
         """The reproduced bug: manager on the new library, scanner/queue on the old."""
+        self.manager.restore_error = 'Saved share was offline'
         gate = asyncio.Event()
         blocker = asyncio.create_task(gate.wait(), name="switch-blocker")
         main.runtime.library_refresh_tasks.add(blocker)
@@ -439,6 +447,7 @@ class LibrarySwitchCancellationTests(unittest.IsolatedAsyncioTestCase):
 
             # The switch ran to completion despite the cancellation.
             self.assertEqual(self.manager.active_id, SMB_LIBRARY_ID)
+            self.assertEqual(self.manager.restore_error, '')
             self.assertEqual(self.manager.active_root, self.smb_root)
             self.assertIsNot(main.runtime.music_library.scanner, self.scanner)
             self.assertEqual(
@@ -451,6 +460,7 @@ class LibrarySwitchCancellationTests(unittest.IsolatedAsyncioTestCase):
             await self._drain_pending_scan()
 
     async def test_failed_switch_restores_the_previous_library(self):
+        self.manager.restore_error = 'Saved share was offline'
         main.playback_queue.queue.tracks = [{"id": "local_a", "url": "/music/a.mp3", "source": "local"}]
         player = _FakePlayer(running=True, stop_error=RuntimeError("mpv is gone"))
 
@@ -462,6 +472,7 @@ class LibrarySwitchCancellationTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(self.manager.active_id, "local", "a failed switch must roll the manager back")
             self.assertEqual(self.manager.active_type, "local")
             self.assertEqual(self.manager.active_root, self.local_root)
+            self.assertEqual(self.manager.restore_error, 'Saved share was offline')
             self.assertIs(main.runtime.music_library.scanner, self.scanner, "scanner must stay on the old library")
             self.assertEqual(
                 [track["id"] for track in main.playback_queue.queue.tracks],
@@ -470,11 +481,13 @@ class LibrarySwitchCancellationTests(unittest.IsolatedAsyncioTestCase):
             )
 
     async def test_switch_without_cancellation_completes_normally(self):
+        self.manager.restore_error = 'Saved share was offline'
         with _RuntimeGuard(self, self.manager, self.scanner, self.player), \
                 patch("library.sources.os.path.ismount", return_value=True):
             response = await main.select_music_library(_FakeRequest({"id": SMB_LIBRARY_ID}))
             self.assertEqual(response["active_id"], SMB_LIBRARY_ID)
             self.assertEqual(response["active_type"], "smb")
+            self.assertEqual(response['restore_error'], '')
             self.assertEqual(main.runtime.music_library.scanner.music_root, self.smb_root)
             await self._drain_pending_scan()
 
@@ -597,6 +610,7 @@ class LibrarySwitchCancellationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_restore_does_not_stop_playback_that_starts_during_refresh_drain(self):
         self.manager.saved_active_id = SMB_LIBRARY_ID
+        self.manager.restore_error = 'Saved share was offline'
         player = _FakePlayer(running=False)
         gate = asyncio.Event()
         blocker = asyncio.create_task(gate.wait())
@@ -606,13 +620,14 @@ class LibrarySwitchCancellationTests(unittest.IsolatedAsyncioTestCase):
             main.playback_queue.queue.tracks = [{'id': 'local_a', 'source': 'local'}]
             task = asyncio.create_task(main._restore_saved_music_library(self.manager, retry_delay=0.001))
             try:
-                await _wait_until(lambda: self.scanner.cancelled)
+                await _wait_until(lambda: self.manager.active_id == SMB_LIBRARY_ID)
                 player._running = True
                 gate.set()
                 await _wait_until(lambda: task.done() or self.manager.active_id == 'local')
                 self.assertEqual(player.stop_calls, 0, 'Background restore must not stop new playback')
                 self.assertEqual(self.manager.active_id, 'local')
                 self.assertEqual(self.manager.saved_active_id, SMB_LIBRARY_ID, 'Restore should remain retryable')
+                self.assertEqual(self.manager.restore_error, 'Saved share was offline')
                 self.assertIs(main.runtime.music_library.scanner, self.scanner)
                 self.assertEqual(main.playback_queue.queue.tracks, [{'id': 'local_a', 'source': 'local'}])
             finally:
@@ -650,7 +665,7 @@ class LibrarySwitchCancellationTests(unittest.IsolatedAsyncioTestCase):
                 patch.object(LibraryMetadataStore, '_request_json', _no_network):
             task = asyncio.create_task(main._restore_saved_music_library(self.manager, retry_delay=0.001))
             try:
-                await _wait_until(lambda: scanner._scan_token > 0)
+                await _wait_until(lambda: self.manager.active_id == SMB_LIBRARY_ID)
                 player._running = True
                 gate.set()
                 await _wait_until(lambda: task.done() or self.manager.active_id == 'local')
@@ -662,6 +677,40 @@ class LibrarySwitchCancellationTests(unittest.IsolatedAsyncioTestCase):
                 gate.set()
                 task.cancel()
                 await asyncio.gather(task, blocker, return_exceptions=True)
+
+    async def test_aborted_restore_preserves_results_of_the_running_scan(self):
+        self.manager.saved_active_id = SMB_LIBRARY_ID
+        (self.local_root / 'current.mp3').write_bytes(GARBAGE_AUDIO)
+        gate = _FirstFileGate()
+        store = gate.instrument(_metadata_store(self.base, 'running-abort'))
+        scanner = LibraryScanner(self.local_root, metadata_store=store)
+        player = _FakePlayer(running=False)
+        commit_entered = asyncio.Event()
+        commit = main._commit_music_library_switch
+        async def committing(*args, **kwargs):
+            commit_entered.set()
+            return await commit(*args, **kwargs)
+        with _RuntimeGuard(self, self.manager, scanner, player), \
+                patch('library.sources.os.path.ismount', return_value=True), \
+                patch.object(main, '_commit_music_library_switch', side_effect=committing), \
+                patch.object(LibraryMetadataStore, '_request_json', _no_network):
+            scan = main._create_library_refresh_task(scanner, name='running-before-restore')
+            await _wait_thread_event(gate.entered)
+            restore = asyncio.create_task(main._restore_saved_music_library(self.manager, retry_delay=0.001))
+            try:
+                await asyncio.wait_for(commit_entered.wait(), 5)
+                player._running = True
+                gate.release.set()
+                await scan
+                await _wait_until(lambda: self.manager.active_id == 'local')
+                self.assertIs(main.runtime.music_library.scanner, scanner)
+                self.assertIsNotNone(scanner.last_scan, 'The existing scan must publish without a manual refresh')
+                self.assertEqual([Path(track.path).name for track in scanner._track_cache], ['current.mp3'])
+                self.assertEqual(player.stop_calls, 0)
+            finally:
+                gate.release.set()
+                restore.cancel()
+                await asyncio.gather(restore, scan, return_exceptions=True)
 
     async def test_successful_restore_retires_a_scanner_captured_by_a_delayed_request(self):
         self.manager.saved_active_id = SMB_LIBRARY_ID
