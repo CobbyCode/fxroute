@@ -4773,6 +4773,23 @@ function toggleMeasurementPanel(forceOpen = null) {
                 }
                 toggleMeasurementPanel(false);
             },
+            // Remote Home: back to the assistant's main screen, not out of it.
+            onCollapse: () => {
+                let collapsed = false;
+                if (elements.measurementCalibrationMenu && !elements.measurementCalibrationMenu.classList.contains('hidden')) {
+                    setMeasurementCalibrationMenuOpen(false);
+                    collapsed = true;
+                }
+                if (elements.measurementSweepMenu && !elements.measurementSweepMenu.classList.contains('hidden')) {
+                    setMeasurementSweepMenuOpen(false);
+                    collapsed = true;
+                }
+                if (state.measurement.setupOpen) {
+                    setMeasurementSetupOpen(false);
+                    collapsed = true;
+                }
+                return collapsed;
+            },
         });
     } else {
         stopMeasurementWindowHeartbeat();

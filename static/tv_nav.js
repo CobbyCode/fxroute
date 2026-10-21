@@ -10,10 +10,11 @@
  *   PageUp/Down   next/previous tab of the tab strip that owns the focus
  *                 (Up goes right, Down goes left)
  *   Backspace     close the top dialog, else return within the current view
- *   BrowserBack   the remote's Home key: back to the main view of the tab
- *                 (closes dialogs and detail views), else the settings open;
- *                 may also arrive as Alt+ArrowLeft. A history guard keeps the
- *                 browser from leaving the app on it.
+ *   BrowserBack   the remote's Home key, one tier per press: dialogs
+ *                 collapse/close, then the page's open panels and detail
+ *                 views, else the settings open; may also arrive as
+ *                 Alt+ArrowLeft. A history guard keeps the browser from
+ *                 leaving the app on it.
  *   ContextMenu   audio-input picker open/close. A remote's menu key often
  *                 arrives as Compose/Unidentified; Firefox then emits a
  *                 contextmenu event with button 0, which is handled too.
@@ -189,17 +190,37 @@
         return primary + secondary * 1.6 - overlapRatio * Math.min(primary, 160) * 0.45;
     }
 
-    /** Pick the best candidate ({ element, rect }) in a direction. */
+    /** True when two rectangles share a row (half of the smaller height overlaps). */
+    function sharesRow(a, b) {
+        const overlap = Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top);
+        return overlap >= Math.min(a.bottom - a.top, b.bottom - b.top) * 0.5;
+    }
+
+    /**
+     * Pick the best candidate ({ element, rect }) in a direction. Left and
+     * Right stay in the row while it has a neighbour; the nearest control of
+     * another row only wins when the row is empty in that direction.
+     */
     function pickSpatial(from, candidates, direction) {
+        const horizontal = direction === 'left' || direction === 'right';
         let best = null;
         let bestScore = Infinity;
+        let bestInRow = null;
+        let bestInRowScore = Infinity;
         for (const candidate of candidates || []) {
             const score = spatialScore(from, candidate.rect, direction);
-            if (score === null || score >= bestScore) continue;
-            best = candidate;
-            bestScore = score;
+            if (score === null) continue;
+            if (score < bestScore) {
+                best = candidate;
+                bestScore = score;
+            }
+            if (horizontal && score < bestInRowScore && sharesRow(from, candidate.rect)) {
+                bestInRow = candidate;
+                bestInRowScore = score;
+            }
         }
-        return best ? best.element : null;
+        const picked = bestInRow || best;
+        return picked ? picked.element : null;
     }
 
     /** Next tab index in a strip, wrapping around. */
@@ -848,21 +869,38 @@
         return false;
     }
 
-    // Home (the remote sends it as BrowserBack) returns to the main view of
-    // the current tab: every dialog and menu closes and detail views return to
-    // their list. With nothing left to close it opens the Technical settings,
-    // so the next press closes them again.
+    // An inline panel opened by a toggle (Library/DSP Import).
+    function openPanelToggle(doc) {
+        for (const toggle of doc.querySelectorAll('button[aria-expanded="true"][aria-controls]')) {
+            if (toggle.hasAttribute('aria-haspopup') || toggle.closest('[role="dialog"], [role="menu"]')) continue;
+            const panel = doc.getElementById(toggle.getAttribute('aria-controls'));
+            if (isVisible(toggle) && panel && isVisible(panel)) return toggle;
+        }
+        return null;
+    }
+
+    // Home (the remote sends it as BrowserBack) steps back one tier per press:
+    //  1. in a dialog: dialogs stacked over the first one close together, else
+    //     the first dialog collapses to its main view (measurement setup,
+    //     menus), else it closes;
+    //  2. on the page: the power menu, open panels and detail views close;
+    //  3. with nothing left to close the Technical settings open, and the
+    //     next press closes them again.
     function homeAction(doc) {
-        let closed = false;
-        for (let guard = 0; guard < 8 && closeTopDialog(doc); guard++) closed = true;
-        if (closePowerMenu(doc)) closed = true;
-        let back = findBackControl(doc);
-        for (let guard = 0; back && guard < 4; guard++) {
-            back.click();
+        const modal = root.FXRouteModal;
+        if (modal?.topRoot?.()) {
+            if (modal.depth?.() > 1) {
+                for (let guard = 0; guard < 8 && modal.depth() > 1 && closeTopDialog(doc); guard++);
+                return true;
+            }
+            return modal.collapseTop?.() || closeTopDialog(doc);
+        }
+        let closed = closePowerMenu(doc);
+        for (let guard = 0; guard < 4; guard++) {
+            const control = openPanelToggle(doc) || findBackControl(doc);
+            if (!control) break;
+            control.click();
             closed = true;
-            const next = findBackControl(doc);
-            if (next === back) break;
-            back = next;
         }
         if (closed) return true;
         const open = doc.getElementById('open-settings');

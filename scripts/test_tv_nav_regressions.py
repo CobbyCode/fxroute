@@ -253,8 +253,7 @@ def run():
                 assert page.locator('#tv-select-picker').is_visible()
 
             def home_closes_layers(page):
-                # Home arrives as BrowserBack: it closes every dialog (a select
-                # picker inside Settings too) and returns to the tab's main view.
+                # Home arrives as BrowserBack and steps back one tier per press.
                 _browser_back(page)
                 page.wait_for_function("!document.getElementById('settings-source-select').disabled")
                 assert page.locator('#settings-panel').is_visible(), 'Home did not open the settings'
@@ -263,6 +262,8 @@ def run():
                 assert page.locator('#tv-select-picker').is_visible()
                 _browser_back(page)
                 assert page.locator('#tv-select-picker').count() == 0, 'Home left the select picker open'
+                assert page.locator('#settings-panel').is_visible(), 'Home skipped the settings main view'
+                _browser_back(page)
                 assert not page.locator('#settings-panel').is_visible(), 'Home left the settings open'
                 assert page.get_attribute('#tab-btn-radio', 'aria-selected') == 'true', 'Home changed the tab'
                 page.evaluate('''() => {
@@ -277,6 +278,52 @@ def run():
                 assert not page.locator('#settings-panel').is_visible(), 'Home opened the settings from a detail view'
                 _browser_back(page)
                 assert page.locator('#settings-panel').is_visible(), 'Home with nothing to close did not open the settings'
+
+            def home_in_measurement(page):
+                # Inside the assistant Home collapses the setup, then closes the assistant.
+                page.click('#tab-btn-effects')
+                page.click('#effects-measure-open')
+                page.wait_for_selector('#measurement-panel', state='visible')
+                page.click('#measurement-setup-toggle')
+                assert page.locator('#measurement-setup-card').is_visible(), 'setup did not open'
+                _browser_back(page)
+                assert page.locator('#measurement-panel').is_visible(), 'Home left the assistant from its setup'
+                assert not page.locator('#measurement-setup-card').is_visible(), 'Home kept the setup open'
+                page.click('#measurement-sweep-toggle')
+                assert page.locator('#measurement-sweep-menu').is_visible()
+                _browser_back(page)
+                assert page.locator('#measurement-panel').is_visible(), 'Home left the assistant from its menu'
+                assert not page.locator('#measurement-sweep-menu').is_visible()
+                _browser_back(page)
+                assert not page.locator('#measurement-panel').is_visible(), 'Home did not leave the assistant'
+                assert page.get_attribute('#tab-btn-effects', 'aria-selected') == 'true'
+                assert not page.locator('#settings-panel').is_visible()
+
+            def home_closes_import(page):
+                # The stub answers /api/tracks with an object; the Library close path needs a list.
+                page.evaluate('state.library.tracks = []')
+                for tab, toggle, panel in (('library', '#toggle-import', '#library-import-panel'),
+                                           ('effects', '#effects-toggle-import', '#effects-import-panel')):
+                    # The offline banner of the stubbed page can cover the tab strip.
+                    page.evaluate(f"document.querySelector('#tab-btn-{tab}').click()")
+                    page.evaluate(f"document.querySelector('{toggle}').click()")
+                    assert page.locator(panel).is_visible(), f'{tab} import did not open'
+                    _browser_back(page)
+                    assert not page.locator(panel).is_visible(), f'Home left the {tab} import open'
+                    assert not page.locator('#settings-panel').is_visible(), f'Home opened the settings over the {tab} import'
+                    assert page.get_attribute(toggle, 'aria-expanded') == 'false'
+
+            def library_search_row(page):
+                page.click('#tab-btn-library')
+                page.wait_for_selector('#library-view-favorites')
+                page.focus('#tab-btn-library')
+                page.keyboard.press('ArrowDown')
+                page.focus('#library-view-favorites')
+                page.keyboard.press('ArrowRight')
+                assert page.evaluate('document.activeElement.id') == 'library-search', (
+                    f"Right from the view tabs left the row for {page.evaluate('document.activeElement.id')}")
+                page.keyboard.press('ArrowLeft')
+                assert page.evaluate('document.activeElement.id') == 'library-view-favorites'
 
             def home_stays_on_tab(page):
                 page.click('#tab-btn-library')
@@ -305,6 +352,9 @@ def run():
 
             for name, test in [
                 ('Home closes dialogs and detail views, then opens settings', home_closes_layers),
+                ('Home collapses the measurement assistant in steps', home_in_measurement),
+                ('Home closes the open Import panels', home_closes_import),
+                ('Right from the Library tabs reaches the search field', library_search_row),
                 ('Home stays on the current tab', home_stays_on_tab),
                 ('history guard keeps Back inside the app', history_guard),
                 ('search exit and native typing', search_exit),

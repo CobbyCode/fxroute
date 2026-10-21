@@ -122,6 +122,7 @@
                 initialFocus: options.initialFocus || null,
                 siblingRoots: options.siblingRoots || [],
                 onEscape: options.onEscape,
+                onCollapse: options.onCollapse,
             };
             stack.push(entry);
             applyBackgroundInert(entry);
@@ -167,6 +168,20 @@
             return true;
         }
 
+        // Remote Home: step the top entry back to its main view without
+        // closing it (menus, sub-views). The owner returns true when it
+        // collapsed something; false means the entry is already at its main
+        // view and the caller closes it instead.
+        function collapseTop() {
+            const entry = stack[stack.length - 1];
+            if (!entry || typeof entry.onCollapse !== 'function') return false;
+            return entry.onCollapse() === true;
+        }
+
+        function depth() {
+            return stack.length;
+        }
+
         document.addEventListener('keydown', event => {
             const entry = stack[stack.length - 1];
             if (!entry) return;
@@ -204,7 +219,7 @@
             }
         }, true);
 
-        return { open, close, isOpen, topRoot, closeTop };
+        return { open, close, isOpen, topRoot, closeTop, collapseTop, depth };
     }
 
     function open(root, options) {
@@ -237,6 +252,18 @@
         return closeTop.shared.closeTop();
     }
 
+    function collapseTop() {
+        if (typeof document === 'undefined') return false;
+        if (!collapseTop.shared) collapseTop.shared = createFxrouteModalManager();
+        return collapseTop.shared.collapseTop();
+    }
+
+    function depth() {
+        if (typeof document === 'undefined') return 0;
+        if (!depth.shared) depth.shared = createFxrouteModalManager();
+        return depth.shared.depth();
+    }
+
     return {
         createFxrouteModalManager,
         open,
@@ -244,5 +271,7 @@
         isOpen,
         topRoot,
         closeTop,
+        collapseTop,
+        depth,
     };
 });

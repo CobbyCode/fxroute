@@ -107,11 +107,19 @@ assert.equal(TvNav.pickSpatial(null, candidates, 'right'), null);
     const nearDiagonal = { element: 'diag', rect: rect(160, 60) };
     assert.equal(TvNav.pickSpatial(from, [nearDiagonal, rowMate], 'right'), 'row');
 }
-// A much closer diagonal target still beats a far same-row element.
+// Left/Right stay in the row: a far same-row element beats a much closer
+// control of another row (Library tabs -> search field, not the header).
 {
     const farRowMate = { element: 'far-row', rect: rect(420, 2) };
     const nearDiagonal = { element: 'diag', rect: rect(160, 60) };
-    assert.equal(TvNav.pickSpatial(from, [farRowMate, nearDiagonal], 'right'), 'diag');
+    assert.equal(TvNav.pickSpatial(from, [farRowMate, nearDiagonal], 'right'), 'far-row');
+    assert.equal(TvNav.pickSpatial(from, [nearDiagonal], 'right'), 'diag',
+        'an empty row falls back to the nearest control of another row');
+    const behind = { element: 'behind', rect: rect(-420, 2) };
+    assert.equal(TvNav.pickSpatial(from, [behind, nearDiagonal], 'right'), 'diag',
+        'a row mate behind the focus is not a candidate');
+    const aboveRow = { element: 'above', rect: rect(260, -50) };
+    assert.equal(TvNav.pickSpatial(from, [aboveRow, farRowMate], 'right'), 'far-row');
 }
 // The nearest element in the direction wins over a far one.
 {
