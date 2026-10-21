@@ -3,6 +3,7 @@
 """File PCM positions, exclusive DSP ingress and playback graph recovery."""
 
 import asyncio
+from contextlib import asynccontextmanager
 from dataclasses import replace
 import sys
 from pathlib import Path
@@ -148,7 +149,40 @@ class IngressTests(unittest.IsolatedAsyncioTestCase):
         await engine.reclean_direct_dsp_links()
         self.assertTrue(await engine.verify())
         self.assertEqual({target for source, target in graph.links if source.startswith("mpv:")},
-                         {f"fxroute_dsp:input_{index}" for index in range(1, 9)})
+                          {f"fxroute_dsp:input_{index}" for index in range(1, 9)})
+
+    async def test_output_commit_does_not_veto_a_playlist_ingress_change(self):
+        for output_missing in (False, True):
+            with self.subTest(output_missing=output_missing):
+                graph = Graph()
+                engine = native(graph)
+                graph.ports = {'mpv:output_FL', 'mpv:output_FR'}
+                await engine.set_mapped_ingress(mapped_ingress_edges(
+                    'mpv', {'FL': 'FL', 'FR': 'FR'}, port_kind='output'))
+                await engine._reconcile_output_links(engine._config)
+                completed = []
+
+                @asynccontextmanager
+                async def scope(*keys):
+                    yield
+                    completed.append(True)
+
+                async def commit(*args, **kwargs):
+                    graph.ports = {f'mpv:output_{suffix}' for suffix in ALL.values()}
+                    if output_missing:
+                        graph.links.discard(('fxroute_dsp:output_1', 'hardware:playback_FL'))
+
+                engine.configure_output_level_tracking(scope)
+                with patch.object(engine, '_apply_sync', side_effect=commit):
+                    if output_missing:
+                        with self.assertRaisesRegex(RuntimeError, 'output links did not verify'):
+                            await engine._run_sync(engine._config, '')
+                        self.assertFalse(completed)
+                    else:
+                        await engine._run_sync(engine._config, '')
+                        self.assertEqual(completed, [True])
+                        self.assertTrue(engine.snapshot()['active'])
+                        self.assertFalse(await engine.verify(), 'Full verification must still see ingress drift')
 
 
 class PlayerTests(unittest.TestCase):

@@ -1370,7 +1370,7 @@ class DSPRuntime:
             async with scope(previous_key, config.output_key) if scope else nullcontext():
                 await self._apply_sync(config, text, initial_output_gain_db=initial_output_gain_db,
                                        validate_current=validate_current)
-                if scope and not await self.verify():
+                if scope and not await self.verify_output_links():
                     raise RuntimeError('Native DSP output links did not verify after sync')
         except BaseException as exc:
             if scope:
@@ -1804,6 +1804,19 @@ class DSPRuntime:
         self._output_mask = 0
         self._input_mask = 0
         self._config_text = None
+
+    async def verify_output_links(self) -> bool:
+        """Confirm the hardware boundary without vetoing a changing source layout."""
+        if self._config is None:
+            return False
+        desired = {PipeWireLink(f'{DSP_NODE_NAME}:output_{signal}',
+                               hardware_link_target(self._config.output_key, port))
+                   for signal, port in config_route_pairs(self._config)}
+        result = await self._run(('pw-link', '-l'))
+        live = {PipeWireLink(source, target) for source, target in iter_pw_links(result.stdout)}
+        return (bool(desired) and result.returncode == 0
+                and not (self._direct_source_link_candidates() & live)
+                and physical_output_links(result.stdout) == desired)
 
     async def verify(self) -> bool:
         if not self._links:
