@@ -494,9 +494,11 @@
         return Math.min(20, Math.max(0.1, Number(value) || 1));
     }
 
-    function getMeasurementPeqFilterMagnitude(filter = {}, frequencyHz = 1000, sampleRate = 48000) {
+    // Biquad coefficients of one measurement PEQ filter; null for the flat
+    // 'gain' type. Shared by the graph preview and the Auto fit.
+    function getMeasurementPeqBiquadCoefficients(filter = {}, sampleRate = 48000) {
         const type = String(filter.type || 'bell');
-        if (type === 'gain') return clampMeasurementPeqGain(filter.gainDb || 0);
+        if (type === 'gain') return null;
 
         const freq = clampMeasurementPeqFrequency(filter.freqHz || 1000);
         const q = clampMeasurementPeqQ(filter.q || 1);
@@ -556,7 +558,13 @@
             a1 = -2 * cos;
             a2 = 1 - alpha;
         }
+        return { b0, b1, b2, a0, a1, a2 };
+    }
 
+    function getMeasurementPeqFilterMagnitude(filter = {}, frequencyHz = 1000, sampleRate = 48000) {
+        const coefficients = getMeasurementPeqBiquadCoefficients(filter, sampleRate);
+        if (!coefficients) return clampMeasurementPeqGain(filter.gainDb || 0);
+        const { b0, b1, b2, a0, a1, a2 } = coefficients;
         const omega = (2 * Math.PI * clampMeasurementPeqFrequency(frequencyHz)) / sampleRate;
         const z1r = Math.cos(-omega);
         const z1i = Math.sin(-omega);
@@ -601,6 +609,7 @@
         clampMeasurementPeqFrequency,
         clampMeasurementPeqGain,
         clampMeasurementPeqQ,
+        getMeasurementPeqBiquadCoefficients,
         getMeasurementPeqFilterMagnitude,
     };
 });

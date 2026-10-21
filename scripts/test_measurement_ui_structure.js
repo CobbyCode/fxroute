@@ -26,6 +26,10 @@ assert.ok(index.indexOf('measurement_editors_ui.js?v=') < index.indexOf('measure
 assert.ok(index.indexOf('measurement_setup.js?v=') < index.indexOf('app.js?v='));
 assert.ok(index.indexOf('measurement_setup.js?v=') < index.indexOf('measurement_calibration.js?v='));
 assert.ok(index.indexOf('measurement_calibration.js?v=') < index.indexOf('measurement_peq_editor.js?v='));
+// The PEQ editor captures the Auto fit, which captures the DSP helpers, at load.
+assert.ok(index.indexOf('measurement_dsp.js?v=') < index.indexOf('measurement_peq_auto.js?v='));
+assert.ok(index.indexOf('measurement_peq_auto.js?v=') < index.indexOf('measurement_peq_editor.js?v='));
+assert.match(app, /runMeasurementPeqAuto: \(\) => window\.FXRouteMeasurementPeqEditor\.runMeasurementPeqAuto\(\)/);
 assert.ok(index.indexOf('measurement_peq_editor.js?v=') < index.indexOf('measurement_convolver_editor.js?v='));
 assert.ok(index.indexOf('measurement_convolver_editor.js?v=') < index.indexOf('measurement_capture.js?v='));
 assert.ok(index.indexOf('measurement_capture.js?v=') < index.indexOf('measurement_job.js?v='));

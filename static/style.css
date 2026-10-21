@@ -5294,6 +5294,37 @@ label.effects-delete-item {
     opacity: 0.72;
 }
 
+/* Auto is an action next to the slots, not a slot: accent outline, own width. */
+.measurement-peq-auto-chip {
+    flex: 0 0 auto;
+    min-height: 32px;
+    padding: 0.35rem 0.85rem;
+    border-radius: 999px;
+    border: 1px solid var(--accent);
+    background: var(--accent-dim);
+    color: var(--accent);
+    font-size: 0.8rem;
+    font-weight: 700;
+    line-height: 1.2;
+}
+
+.measurement-peq-auto-chip:hover:not(:disabled) {
+    background: var(--accent);
+    color: var(--accent-ink);
+}
+
+.measurement-peq-auto-chip:disabled {
+    border-color: rgba(255,255,255,0.12);
+    background: rgba(255,255,255,0.04);
+    color: var(--text-secondary);
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+.measurement-peq-auto-chip.is-busy {
+    cursor: progress;
+}
+
 .measurement-peq-editor {
     display: grid;
     gap: 0.8rem;
@@ -9247,7 +9278,8 @@ input[type="number"]::-webkit-outer-spin-button {
     .stepper-btn,
     .measurement-chip,
     .measurement-slot-chip,
-    .measurement-peq-chip {
+    .measurement-peq-chip,
+    .measurement-peq-auto-chip {
         position: relative;
     }
     /* Cover favorites are already absolutely positioned. Keep that anchor:
@@ -9263,7 +9295,8 @@ input[type="number"]::-webkit-outer-spin-button {
     .stepper-btn::before,
     .measurement-chip::before,
     .measurement-slot-chip::before,
-    .measurement-peq-chip::before {
+    .measurement-peq-chip::before,
+    .measurement-peq-auto-chip::before {
         content: '';
         position: absolute;
         inset: -8px;
@@ -9998,7 +10031,8 @@ input[type="number"]::-webkit-outer-spin-button {
     .measurement-chip { min-height: 44px; }
     .measurement-view-toggle .measurement-chip { min-height: 44px; }
     .measurement-slot-chip,
-    .measurement-peq-chip { min-height: 44px; }
+    .measurement-peq-chip,
+    .measurement-peq-auto-chip { min-height: 44px; }
 
     /* iOS auto-zoom guard: text inputs stay at 16px on phones. */
     .station-search-input,

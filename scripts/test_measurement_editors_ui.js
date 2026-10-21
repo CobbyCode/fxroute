@@ -99,6 +99,20 @@ assert.equal(elements.measurementPeqCreateBtn.disabled, true);
 assert.match(elements.measurementCustomHouseCurveChips.innerHTML, /data-custom-house-curve-slot="7"/);
 assert.equal(elements.measurementCustomHouseCurvePanel.classList.contains('hidden'), true);
 
+// Auto follows F12 as an action chip: disabled with its reason until a
+// source exists, busy while fitting.
+let autoState = { available: false, busy: false, reason: 'Auto needs a measurement: run a sweep or show a saved one.' };
+editors.init({ getMeasurementPeqAutoAvailability: () => autoState });
+editors.renderMeasurementPanelEditorsSection(ctx);
+assert.match(elements.measurementPeqChips.innerHTML,
+    /data-measurement-peq-slot="11"[^]*<button type="button" class="measurement-peq-auto-chip" data-measurement-peq-auto disabled title="Auto needs a measurement[^"]*"[^>]*>Auto<\/button>$/);
+autoState = { available: true, busy: false, reason: '' };
+editors.renderMeasurementPanelEditorsSection(ctx);
+assert.match(elements.measurementPeqChips.innerHTML, /class="measurement-peq-auto-chip" data-measurement-peq-auto title="Suggest up to 12 filters[^"]*"[^>]*>Auto</);
+autoState = { available: false, busy: true, reason: 'Auto is fitting filters…' };
+editors.renderMeasurementPanelEditorsSection(ctx);
+assert.match(elements.measurementPeqChips.innerHTML, /measurement-peq-auto-chip is-busy" data-measurement-peq-auto disabled[^>]*>Auto…</);
+
 // Initial empty PEQ state and Convolver mode directly show the matching assistant.
 const defaultPeq = ui.getDefaultMeasurementPeqState();
 assert.equal(defaultPeq.enabled, true);
@@ -198,6 +212,8 @@ editors.init({
     renderMeasurementPanel: () => eventCalls.push('render'),
     scheduleMeasurementGraphRender: () => eventCalls.push('graph'),
     focusMeasurementPeqPanelContext: () => eventCalls.push('focus'),
+    runMeasurementPeqAuto: () => eventCalls.push('auto'),
+    addMeasurementPeqFilter: () => eventCalls.push('add'),
 });
 editors.bindMeasurementEditorDelegation();
 editors.bindMeasurementEditorDelegation();
@@ -220,5 +236,10 @@ listeners.measurementPeqEditor.click[0]({ target: {
 } });
 assert.equal(gainInput.value, '2.7');
 assert.deepEqual(eventCalls.slice(-3), [['step', 'filter-1', 1, 0.1], 'graph', 'focus']);
+// The Auto chip runs Auto only; it is not an empty slot.
+listeners.measurementPeqChips.click[0]({ target: {
+    closest: (selector) => (selector === '[data-measurement-peq-auto]' ? {} : null),
+} });
+assert.deepEqual(eventCalls.slice(-1), ['auto']);
 
 console.log('measurement editor/convolver rendering: ok');

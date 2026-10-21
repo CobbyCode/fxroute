@@ -696,7 +696,8 @@
     .stepper-btn,
     .measurement-chip,
     .measurement-slot-chip,
-    .measurement-peq-chip {
+    .measurement-peq-chip,
+    .measurement-peq-auto-chip {
         position: relative;
     }
     /* Cover favorites are already absolutely positioned. Keep that anchor:
@@ -712,7 +713,8 @@
     .stepper-btn::before,
     .measurement-chip::before,
     .measurement-slot-chip::before,
-    .measurement-peq-chip::before {
+    .measurement-peq-chip::before,
+    .measurement-peq-auto-chip::before {
         content: '';
         position: absolute;
         inset: -8px;
@@ -1447,7 +1449,8 @@
     .measurement-chip { min-height: 44px; }
     .measurement-view-toggle .measurement-chip { min-height: 44px; }
     .measurement-slot-chip,
-    .measurement-peq-chip { min-height: 44px; }
+    .measurement-peq-chip,
+    .measurement-peq-auto-chip { min-height: 44px; }
 
     /* iOS auto-zoom guard: text inputs stay at 16px on phones. */
     .station-search-input,

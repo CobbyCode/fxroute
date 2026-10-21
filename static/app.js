@@ -472,6 +472,8 @@ window.FXRouteMeasurementEditorsUI?.init({
     deleteMeasurementPeqFilter: (id) => window.FXRouteMeasurementPeqEditor.deleteMeasurementPeqFilter(id),
     handleMeasurementPeqNumberInputArrowKey: (event) => window.FXRouteMeasurementPeqEditor.handleMeasurementPeqNumberInputArrowKey(event),
     focusMeasurementPeqPanelContext: () => window.FXRouteMeasurementPeqEditor.focusMeasurementPeqPanelContext(),
+    getMeasurementPeqAutoAvailability: () => window.FXRouteMeasurementPeqEditor.getMeasurementPeqAutoAvailability(),
+    runMeasurementPeqAuto: () => window.FXRouteMeasurementPeqEditor.runMeasurementPeqAuto(),
     renderMeasurementPanel: () => renderMeasurementPanel(),
     scheduleMeasurementGraphRender: () => MeasurementGraph.scheduleMeasurementGraphRender(),
 });
@@ -525,6 +527,10 @@ window.FXRouteMeasurementPeqEditor?.init({
     getPeqHandleHitRadiusPx: () => MEASUREMENT_PEQ_HANDLE_HIT_RADIUS_PX,
     getPeqTouchHandleHitRadiusPx: () => MEASUREMENT_PEQ_TOUCH_HANDLE_HIT_RADIUS_PX,
     getPeqTouchCreateCooldownMs: () => MEASUREMENT_PEQ_TOUCH_CREATE_COOLDOWN_MS,
+    getMeasurementSourceEntries: () => window.FXRouteMeasurementConvolverEditor.getMeasurementConvolverSelectedSourceEntries(),
+    getMeasurementDisplayTraces: (measurement) => getMeasurementDisplayTraces(measurement),
+    getMeasurementTargetCurve: () => getMeasurementTargetCurvePreview(),
+    confirm: (message) => window.confirm(message),
 });
 window.FXRouteMeasurementConvolverEditor?.init({
     getState: () => state,
