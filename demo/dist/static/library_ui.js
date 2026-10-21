@@ -82,6 +82,11 @@ function tidalItemSearchText(kind, item) {
     return [item.name];
 }
 
+// `query` is already trimmed and lower-cased (libraryQuery()).
+function tidalEntryMatchesQuery(item, query, kind = 'tracks') {
+    return tidalItemSearchText(kind, item).filter(Boolean).join(' ').toLowerCase().includes(query);
+}
+
 // TIDAL favorites of one kind (albums/tracks/playlists) for the Library:
 // only items that are still favorited, so an un-hearted item leaves at once,
 // filtered by the current search.
@@ -91,8 +96,7 @@ function tidalLibraryFavorites(kind, options = {}) {
     const query = options.ignoreQuery ? '' : libraryQuery();
     return tidal.items(kind).filter(item => {
         if (!item || item.id == null || !tidal.isFavorite(kind, item.id)) return false;
-        if (!query) return true;
-        return tidalItemSearchText(kind, item).filter(Boolean).join(' ').toLowerCase().includes(query);
+        return !query || tidalEntryMatchesQuery(item, query, kind);
     });
 }
 
@@ -2092,7 +2096,7 @@ function renderAlbumDetailTracks() {
     // Favorite Tracks also lists TIDAL favorites (TIDAL rows after local).
     const allTidalTracks = detail.tidalTracks || [];
     const tidalTracks = query
-        ? allTidalTracks.filter(item => tidalItemSearchText('tracks', item).filter(Boolean).join(' ').toLowerCase().includes(query))
+        ? allTidalTracks.filter(item => tidalEntryMatchesQuery(item, query))
         : allTidalTracks;
     const total = (detail.tracks || []).length + allTidalTracks.length;
     const trackCount = query
@@ -2408,10 +2412,6 @@ function openPlaylistDetail(playlistId) {
     scrollLibraryDetailToTop();
 }
 
-function tidalEntryMatchesQuery(item, query) {
-    return tidalItemSearchText('tracks', item).filter(Boolean).join(' ').toLowerCase().includes(query);
-}
-
 // A TIDAL entry of a saved playlist when the TIDAL module is not installed:
 // listed from its saved data, not playable.
 function unavailableTidalRowEl(entry, index) {
@@ -2654,6 +2654,16 @@ const PLAYLIST_SAVE_MODES = {
     },
 };
 
+// A save request owns the Save button until it settles; row re-renders
+// during that time must not re-enable it.
+let playlistSaveInFlight = false;
+
+function setPlaylistSaveInFlight(active) {
+    playlistSaveInFlight = active;
+    const button = deps.getElements().savePlaylistBtn;
+    if (button) button.disabled = active;
+}
+
 function applyPlaylistSaveMode(mode) {
     const els = deps.getElements();
     const config = PLAYLIST_SAVE_MODES[mode] || PLAYLIST_SAVE_MODES.local;
@@ -2661,7 +2671,7 @@ function applyPlaylistSaveMode(mode) {
     if (els.playlistName) els.playlistName.placeholder = config.placeholder;
     if (els.savePlaylistBtn) {
         els.savePlaylistBtn.textContent = config.save;
-        els.savePlaylistBtn.disabled = false;
+        els.savePlaylistBtn.disabled = playlistSaveInFlight;
     }
     const tidalMode = mode === 'tidal';
     if (els.playlistTidalTarget) {
@@ -2702,7 +2712,7 @@ async function saveTidalPlaylistFromSelection() {
         deps.showToast('Select at least 1 track', 'error');
         return;
     }
-    els.savePlaylistBtn.disabled = true;
+    setPlaylistSaveInFlight(true);
     try {
         const data = await tidal.createPlaylist(name, trackIds);
         if (els.playlistName) els.playlistName.value = '';
@@ -2710,7 +2720,7 @@ async function saveTidalPlaylistFromSelection() {
     } catch (e) {
         deps.showToast(tidal.friendlyError(e?.message || e), 'error');
     } finally {
-        els.savePlaylistBtn.disabled = false;
+        setPlaylistSaveInFlight(false);
         updatePlaylistSaveRowVisibility();
     }
 }
@@ -3355,6 +3365,7 @@ function uploadTrackFile() {
 }
 
 async function savePlaylist() {
+    if (playlistSaveInFlight) return;
     const mode = deps.getElements().playlistSaveRow?.dataset.saveMode || 'local';
     if (mode === 'tidal') {
         await saveTidalPlaylistFromSelection();
@@ -3380,7 +3391,7 @@ async function savePlaylist() {
         body.track_meta = {};
         Object.keys(meta).forEach(id => { body.track_meta[TIDAL_REF_PREFIX + id] = meta[id]; });
     }
-    deps.getElements().savePlaylistBtn.disabled = true;
+    setPlaylistSaveInFlight(true);
     try {
         const resp = await fetch('/api/playlists', {
             method: 'POST',
@@ -3399,7 +3410,7 @@ async function savePlaylist() {
     } catch (e) {
         deps.showToast(e.message || 'Failed to save playlist', 'error');
     } finally {
-        deps.getElements().savePlaylistBtn.disabled = false;
+        setPlaylistSaveInFlight(false);
         updatePlaylistSaveRowVisibility();
     }
 }
