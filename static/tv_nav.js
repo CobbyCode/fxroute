@@ -7,13 +7,19 @@
  *   Arrow keys    move focus to the nearest control in that direction
  *   Enter/Space   activate the focused control (native handling first)
  *   Escape        leave a text field or dropdown that owns the arrow keys
- *   PageUp/Down   previous/next tab of the tab strip that owns the focus
+ *   PageUp/Down   next/previous tab of the tab strip that owns the focus
+ *                 (Up goes right, Down goes left)
  *   Backspace     close the top dialog, else return within the current view
  *   BrowserBack   settings open/close (closes an open dialog first); the
  *                 menu back button may also arrive as Alt+ArrowLeft
  *   ContextMenu   audio-input picker open/close. A remote's menu key often
  *                 arrives as Compose/Unidentified; Firefox then emits a
  *                 contextmenu event with button 0, which is handled too.
+ *
+ * Sliders reached by the remote are navigation stops: OK arms them, then
+ * Left/Right change the value; OK again, Back or Up/Down ends the adjustment.
+ * The footer is its own zone: Left/Right/Down never leave it, Up leaves it
+ * from the top row.
  *
  * No device-specific mapping is used: the remote just sends normal keyboard
  * events. Pointer-opened dropdowns and text editing keep native handling.
@@ -27,6 +33,10 @@
     'use strict';
 
     const FOCUS_CLASS = 'tv-nav-focus';
+    const EDITING_CLASS = 'tv-nav-editing';
+    const FOOTER_SELECTOR = '.playback-bar';
+    // The seek slider sits in its own row below the transport controls.
+    const FOOTER_SEEK_SELECTOR = '.seek-row';
     const CARD_SELECTOR = '.album-card, .station-card';
     const CARD_FAVORITE_SELECTOR = '.album-card-fav, .station-card-fav, .streaming-fav';
     // Rows with a round Play button (album/playlist details, track,
@@ -98,8 +108,9 @@
         if (event.altKey && key === 'ArrowLeft') return 'browser-back';
         if (key === 'ContextMenu' || key === 'Compose' || event.keyCode === 93) return 'source-picker';
         if (NAV_KEYS[key]) return 'nav-' + NAV_KEYS[key];
-        if (key === 'PageUp') return 'tabs-previous';
-        if (key === 'PageDown') return 'tabs-next';
+        // Up goes right to the next page, Down goes left to the previous one.
+        if (key === 'PageUp') return 'tabs-next';
+        if (key === 'PageDown') return 'tabs-previous';
         if (key === 'Backspace') return 'back';
         if (key === 'Enter' || key === ' ') return 'activate';
         return null;
@@ -113,6 +124,24 @@
         if (tag !== 'INPUT') return false;
         const type = String(element.getAttribute('type') || 'text').toLowerCase();
         return TEXT_ENTRY_TYPES.has(type);
+    }
+
+    function isRangeInput(element) {
+        if (!element || element.nodeType !== 1 || element.tagName !== 'INPUT') return false;
+        return String(element.getAttribute('type') || 'text').toLowerCase() === 'range';
+    }
+
+    // One control at a time is being edited by the remote: a text field after
+    // OK, or a slider armed with OK. A slider also shows it with a class.
+    function setEditing(ctx, element) {
+        if (ctx.editing === element) return;
+        ctx.editing?.classList?.remove(EDITING_CLASS);
+        ctx.editing = element;
+        if (isRangeInput(element)) element.classList.add(EDITING_CLASS);
+    }
+
+    function isArmedSlider(ctx, element) {
+        return isRangeInput(element) && ctx.editing === element && ctx.navFocus === element;
     }
 
     // Controls whose native arrow handling must win. Text entry owns all
@@ -253,6 +282,13 @@
         } : null;
         if (ctx.observer && ctx.doc.body) {
             ctx.observer.observe(ctx.doc.body, { childList: true, subtree: true });
+            // Footer controls hide and disable themselves by attribute.
+            const footer = element.closest?.(FOOTER_SELECTOR);
+            if (footer) {
+                ctx.observer.observe(footer, {
+                    attributes: true, attributeFilter: ['class', 'hidden', 'disabled'], subtree: true,
+                });
+            }
         }
     }
 
@@ -286,6 +322,15 @@
         return best;
     }
 
+    // A footer control that vanishes (cleared queue) or stays disabled hands
+    // the focus to its nearest enabled neighbour; dropped into the page, the
+    // next key would jump into the main view.
+    function footerFallback(ctx, control) {
+        const footer = control?.closest?.(FOOTER_SELECTOR);
+        if (!footer || !footer.isConnected) return null;
+        return nearestToRect(ctx.navRect, footer, control);
+    }
+
     // Status polls re-render lists (settings providers, sources) while the
     // remote stays on one of their buttons. When that button disappears, the
     // browser drops the focus to <body>; continue on the nearest control of
@@ -305,6 +350,17 @@
                     focusElement(control, doc);
                 } finally {
                     ctx.restoring = false;
+                }
+            } else if (lost && !isVisible(control) && resolveScope(doc) === doc.body) {
+                const neighbour = footerFallback(ctx, control);
+                if (neighbour) {
+                    clearNavFocus(ctx);
+                    ctx.restoring = true;
+                    try {
+                        focusElement(neighbour, doc);
+                    } finally {
+                        ctx.restoring = false;
+                    }
                 }
             }
             return;
@@ -535,6 +591,27 @@
         return target;
     }
 
+    function centerY(rect) {
+        return (rect.top + rect.bottom) / 2;
+    }
+
+    // The footer is one zone with the same rules for every source: Left and
+    // Right stay in the row, Up and Down stay in the column (the seek slider
+    // is a row of its own), and a missing neighbour is an edge, not a jump
+    // into the page.
+    function footerStep(footer, current, direction) {
+        const from = rectOf(current);
+        if (!from) return null;
+        const horizontal = direction === 'left' || direction === 'right';
+        const inSeekRow = !!current.closest(FOOTER_SEEK_SELECTOR);
+        const candidates = focusablesIn(footer)
+            .filter(element => element !== current && !element.contains(current)
+                && (!horizontal || !!element.closest(FOOTER_SEEK_SELECTOR) === inSeekRow))
+            .map(element => ({ element, rect: rectOf(element) }))
+            .filter(candidate => candidate.rect && overlapsAxis(from, candidate.rect, direction));
+        return pickSpatial(from, candidates, direction);
+    }
+
     function moveFocus(doc, direction) {
         const scope = resolveScope(doc);
         const active = doc.activeElement;
@@ -550,8 +627,16 @@
         }
         if (ctx) ctx.effectsTrail = [];
         if (!current) {
-            const initial = (scope === doc.body && detailTrackEntry(doc)) || firstVisibleCandidate(scope, doc);
+            const stray = scope === doc.body && ctx?.navFocus ? footerFallback(ctx, ctx.navFocus) : null;
+            const initial = stray || (scope === doc.body && detailTrackEntry(doc)) || firstVisibleCandidate(scope, doc);
             return initial ? focusElement(initial, doc) : false;
+        }
+        const footer = scope === doc.body ? current.closest(FOOTER_SELECTOR) : null;
+        if (footer) {
+            const stop = footerStep(footer, current, direction);
+            if (stop) return focusElement(stop, doc);
+            // Only Up leaves the footer, and only into the page above it.
+            if (direction !== 'up') return false;
         }
         const row = trackRow(current);
         if (row && (direction === 'left' || direction === 'right')) {
@@ -580,13 +665,23 @@
         // Track lists are left and entered vertically only (e.g. Left from
         // a detail's Back button must reach the header, not a track).
         const horizontal = direction === 'left' || direction === 'right';
-        const candidates = focusablesIn(scope)
+        // Page content behind the fixed footer is not "above" it.
+        const footerTop = footer ? rectOf(footer)?.top : null;
+        let candidates = focusablesIn(scope)
             .filter(element => element !== origin && !element.contains(current) && !isCardFavorite(element)
                 && !(row && row.parentElement.contains(element))
                 && !(horizontal && element.closest(TRACK_ROW_SELECTOR))
+                && !(footer && footer.contains(element))
                 && !inIndependentScrollport(element, current, doc))
             .map(element => ({ element, rect: rectOf(element) }))
-            .filter(candidate => candidate.rect);
+            .filter(candidate => candidate.rect
+                && !(footerTop !== null && centerY(candidate.rect) >= footerTop));
+        if (footerTop !== null) {
+            // Up from the footer lands on what is visible above it, not on a
+            // control far up the page that merely shares its column.
+            const visible = candidates.filter(candidate => centerY(candidate.rect) > 0);
+            if (visible.length) candidates = visible;
+        }
         // A detail view keeps its header (favorite, Back) and list together.
         const tile = current.closest(DETAIL_VIEW_SELECTOR
             + ', .effects-card, .radio-panel, .library-panel, .streaming-panel, .manage-dialog');
@@ -953,7 +1048,7 @@
         if (event.defaultPrevented || event.isComposing) return;
         if (event.key === 'Tab') {
             ctx.remote = false;
-            ctx.editing = null;
+            setEditing(ctx, null);
             ctx.effectsTrail = [];
             ctx.navFocus?.classList?.remove(FOCUS_CLASS);
             clearNavFocus(ctx);
@@ -961,11 +1056,16 @@
         }
         const action = keyAction(event);
         if (!action) {
-            if (event.key?.length === 1 && isTextEntry(event.target)) ctx.editing = event.target;
+            if (event.key?.length === 1 && isTextEntry(event.target)) setEditing(ctx, event.target);
             // Escape is the only way out of a control that owns all arrows.
             // An open dialog keeps Escape for the modal manager.
             if (event.key === 'Escape' && !root.FXRouteModal?.topRoot?.()) {
-                if (releaseNativeFocus(ctx.doc)) event.preventDefault();
+                if (isArmedSlider(ctx, event.target)) {
+                    setEditing(ctx, null);
+                    event.preventDefault();
+                } else if (releaseNativeFocus(ctx.doc)) {
+                    event.preventDefault();
+                }
             }
             return;
         }
@@ -989,7 +1089,9 @@
             event.preventDefault();
             event.stopPropagation();
             if (event.repeat) return;
-            toggleSettings(doc);
+            // Back first ends a slider adjustment, like Backspace does.
+            if (isArmedSlider(ctx, target)) setEditing(ctx, null);
+            else toggleSettings(doc);
             return;
         }
         if (action === 'source-picker') {
@@ -1005,6 +1107,8 @@
         // A text field reached by D-pad is a navigation stop until OK enters
         // editing. Up/Down can always leave a single-line remote editor.
         const remoteText = isTextEntry(target) && ctx.navFocus === target;
+        const remoteSlider = isRangeInput(target) && ctx.navFocus === target;
+        const adjusting = remoteSlider && ctx.editing === target;
         if (isTextEntry(target) && action === 'back') return;
         if (isTextEntry(target) && !remoteText) return;
         if (remoteText && ctx.editing === target
@@ -1012,14 +1116,18 @@
                 || action === 'nav-left' || action === 'nav-right' || action === 'back')) return;
         if (action === 'back') {
             event.preventDefault();
-            goBack(doc);
+            if (adjusting) setEditing(ctx, null);
+            else goBack(doc);
             return;
         }
         if (action.startsWith('nav-')) {
             const direction = action.slice(4);
-            if (!remoteText && isNativeArrowOwner(target, direction)) return;
+            // A text field or slider reached by D-pad is a navigation stop;
+            // a slider owns Left/Right only after OK armed it.
+            const remoteStop = remoteText || (remoteSlider && !adjusting);
+            if (!remoteStop && isNativeArrowOwner(target, direction)) return;
             event.preventDefault();
-            ctx.editing = null;
+            setEditing(ctx, null);
             moveFocus(doc, direction);
         }
     }
@@ -1039,7 +1147,15 @@
         }
         if (isTextEntry(target)) {
             if (ctx.navFocus === target && event.key === 'Enter') {
-                ctx.editing = ctx.editing === target ? null : target;
+                setEditing(ctx, ctx.editing === target ? null : target);
+            }
+            return;
+        }
+        // OK arms a slider reached by the remote; OK again releases it.
+        if (isRangeInput(target) && ctx.navFocus === target) {
+            if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault();
+                setEditing(ctx, ctx.editing === target ? null : target);
             }
             return;
         }
@@ -1105,16 +1221,17 @@
         }, true);
         doc.addEventListener('pointerdown', () => {
             ctx.remote = false;
-            ctx.editing = null;
+            setEditing(ctx, null);
             ctx.effectsTrail = [];
             ctx.navFocus?.classList?.remove(FOCUS_CLASS);
             clearNavFocus(ctx);
         }, true);
         doc.addEventListener('input', event => {
-            if (isTextEntry(event.target)) ctx.editing = event.target;
+            if (isTextEntry(event.target)) setEditing(ctx, event.target);
         }, true);
         doc.addEventListener('focusout', event => {
             event.target?.classList?.remove(FOCUS_CLASS);
+            if (event.target === ctx.editing && isRangeInput(event.target)) setEditing(ctx, null);
         }, true);
         doc.getElementById('source-picker-close')
             ?.addEventListener('click', () => closeSourcePicker(doc));

@@ -4,8 +4,8 @@
 
 Boots the real page (static server + API stub, page JS active) in headless
 Chromium and drives it with real keyboard events: spatial focus movement,
-PageUp/PageDown tab switching, Backspace dialog handling, BrowserBack for
-settings, ContextMenu for the input picker and the native text/slider
+PageUp (next tab) / PageDown (previous tab) switching, Backspace dialog
+handling, BrowserBack for settings, ContextMenu for the input picker and the native text/slider
 exceptions.
 
 Run directly:
@@ -120,22 +120,22 @@ def _run():
             check("radio tab starts active",
                   page.evaluate("document.getElementById('tab-btn-radio').getAttribute('aria-selected')") == "true")
 
-            # PageDown / PageUp switch the main tab strip.
-            page.keyboard.press("PageDown")
+            # PageUp goes right to the next tab, PageDown left to the previous.
+            page.keyboard.press("PageUp")
             page.wait_for_timeout(120)
-            check("PageDown activates the next tab",
+            check("PageUp activates the next tab",
                   page.evaluate("document.getElementById('tab-btn-library').getAttribute('aria-selected')") == "true")
-            check("PageDown focuses the new tab",
+            check("PageUp focuses the new tab",
                   page.evaluate("document.activeElement.id") == "tab-btn-library")
             check("focus ring class is applied", _focus(page)["ring"])
             check("focus ring is visible",
                   page.evaluate("getComputedStyle(document.activeElement).outlineWidth") == "2px")
 
-            page.keyboard.press("PageUp")
+            page.keyboard.press("PageDown")
             page.wait_for_timeout(120)
-            check("PageUp returns to the previous tab",
+            check("PageDown returns to the previous tab",
                   page.evaluate("document.getElementById('tab-btn-radio').getAttribute('aria-selected')") == "true")
-            check("PageUp focuses the previous tab",
+            check("PageDown focuses the previous tab",
                   page.evaluate("document.activeElement.id") == "tab-btn-radio")
 
             # Arrow keys keep the existing tab-strip handling (Left/Right)
@@ -292,21 +292,54 @@ def _run():
             check("Escape keeps the typed value",
                   page.input_value("#station-search") == "ab")
 
-            # Sliders keep their left/right adjustment; up/down leaves them
-            # (a TV remote has no Tab key to escape a focused slider).
+            # A slider reached by the remote is a navigation stop until OK
+            # arms it; then Left/Right adjust, and OK, Back or Up/Down end it.
             page.focus("#volume-slider")
             page.evaluate("document.getElementById('volume-slider').value = 50")
             before = page.input_value("#volume-slider")
             page.keyboard.press("ArrowRight")
             page.wait_for_timeout(120)
-            check("ArrowRight adjusts the volume slider", page.input_value("#volume-slider") != before)
+            check("ArrowRight leaves an unarmed slider unchanged", page.input_value("#volume-slider") == before)
+            check("ArrowRight stops at the footer edge instead of adjusting",
+                  page.evaluate("document.activeElement.id") == "volume-slider"
+                  and not page.evaluate("document.getElementById('volume-slider').classList.contains('tv-nav-editing')"))
+            page.focus("#volume-slider")
+            page.keyboard.press("Enter")
+            check("OK arms the slider",
+                  page.evaluate("document.getElementById('volume-slider').classList.contains('tv-nav-editing')"))
+            page.keyboard.press("ArrowRight")
+            page.wait_for_timeout(120)
+            check("ArrowRight adjusts the armed slider", page.input_value("#volume-slider") != before)
             check("slider keeps focus while adjusting",
                   page.evaluate("document.activeElement.id") == "volume-slider")
+            page.keyboard.press("Enter")
+            check("OK again releases the slider",
+                  not page.evaluate("document.getElementById('volume-slider').classList.contains('tv-nav-editing')"))
+            held = page.input_value("#volume-slider")
+            page.keyboard.press("ArrowLeft")
+            page.wait_for_timeout(120)
+            check("a released slider no longer changes", page.input_value("#volume-slider") == held)
+            page.focus("#volume-slider")
+            page.keyboard.press("Enter")
+            page.keyboard.press("Backspace")
+            check("Back releases the slider and keeps the focus on it",
+                  page.evaluate("document.activeElement.id") == "volume-slider"
+                  and not page.evaluate("document.getElementById('volume-slider').classList.contains('tv-nav-editing')"))
+            page.keyboard.press("Enter")
             page.keyboard.press("ArrowUp")
             page.wait_for_timeout(120)
-            check("ArrowUp moves the focus off the slider",
+            check("ArrowUp moves the focus off the armed slider",
                   page.evaluate("document.activeElement.id") != "volume-slider")
+            check("an armed slider is released when the focus leaves it",
+                  not page.evaluate("document.getElementById('volume-slider').classList.contains('tv-nav-editing')"))
             check("the control reached from the slider has the ring", _focus(page)["ring"])
+            # Tab focus and the mouse keep native slider keys.
+            page.keyboard.press("Tab")
+            page.focus("#volume-slider")
+            page.evaluate("document.getElementById('volume-slider').value = 50")
+            page.keyboard.press("ArrowRight")
+            check("a Tab-focused slider keeps native Left/Right",
+                  page.input_value("#volume-slider") != "50")
 
             # BrowserBack opens Settings, Backspace closes it.
             _browser_back(page)

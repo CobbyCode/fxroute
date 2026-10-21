@@ -147,9 +147,9 @@ def run():
                 page.click('#tab-btn-effects')
                 page.focus('#effects-combine-preset-3')
                 page.keyboard.press('ArrowDown')
-                page.keyboard.press('PageUp')
-                assert page.get_attribute('#tab-btn-library', 'aria-selected') == 'true', 'text focus swallowed PageUp'
                 page.keyboard.press('PageDown')
+                assert page.get_attribute('#tab-btn-library', 'aria-selected') == 'true', 'text focus swallowed PageDown'
+                page.keyboard.press('PageUp')
                 assert page.get_attribute('#tab-btn-effects', 'aria-selected') == 'true'
 
             def settings_select(page):
@@ -175,8 +175,8 @@ def run():
                 assert page.evaluate('document.activeElement !== document.body'), 'input picker lost opener focus'
 
             def keyboard_tab(page):
-                page.keyboard.press('PageDown')
                 page.keyboard.press('PageUp')
+                page.keyboard.press('PageDown')
                 page.keyboard.press('Tab')
                 page.keyboard.press('Tab')
                 page.keyboard.press('Tab')

@@ -24,8 +24,9 @@ const intents = {
     ArrowDown: 'nav-down',
     ArrowLeft: 'nav-left',
     ArrowRight: 'nav-right',
-    PageUp: 'tabs-previous',
-    PageDown: 'tabs-next',
+    // Page Up goes right to the next page, Page Down left to the previous.
+    PageUp: 'tabs-next',
+    PageDown: 'tabs-previous',
     Backspace: 'back',
     BrowserBack: 'browser-back',
     ContextMenu: 'source-picker',
@@ -46,6 +47,8 @@ assert.equal(TvNav.keyAction({ key: 'Escape' }), null, 'Escape stays with the mo
 // remotes/older engines may only provide the legacy code.
 assert.equal(TvNav.keyAction({ key: 'Unidentified', keyCode: 166 }), 'browser-back');
 assert.equal(TvNav.keyAction({ key: 'Unidentified', keyCode: 93 }), 'source-picker');
+assert.equal(TvNav.keyAction({ key: 'Home' }), null,
+    'the keyboard Home key keeps scrolling, caret and slider handling');
 
 // ---------------------------------------------------------------------------
 // Native key owners

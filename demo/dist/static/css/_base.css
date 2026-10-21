@@ -474,6 +474,18 @@ select.url-input {
     scroll-margin: 6px;
 }
 
+/* A slider armed with OK (tv_nav.js): Left/Right now change the value, so
+   the ring turns accent and the thumb gets a halo. */
+input[type="range"].tv-nav-editing.tv-nav-focus:focus {
+    outline-color: var(--accent);
+}
+input[type="range"].tv-nav-editing::-webkit-slider-thumb {
+    box-shadow: 0 0 0 6px rgba(110, 231, 183, 0.5);
+}
+input[type="range"].tv-nav-editing::-moz-range-thumb {
+    box-shadow: 0 0 0 6px rgba(110, 231, 183, 0.5);
+}
+
 /* The unpadded wordmark needs its frame outside the lettering. */
 .brand-lockup-button.tv-nav-focus:focus {
     outline-offset: 3px;
