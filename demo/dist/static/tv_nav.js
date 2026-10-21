@@ -52,6 +52,8 @@
     // Protection rows): Left/Right follow the group's control order.
     const EFFECTS_CARD_SELECTOR = '.effects-card';
     const EFFECT_GROUP_SELECTOR = '.effects-effect, .effects-extras-row';
+    // Set by rows that handle Left/Right themselves (see app.js, measurement_panel_ui.js).
+    const OWN_ARROWS_SELECTOR = '[data-own-arrows]';
 
     // Anything a remote can land on. tabIndex >= 0 is checked separately so
     // inactive tab stops and click-only decoration stay out of the path.
@@ -156,6 +158,9 @@
     function isNativeArrowOwner(element, direction) {
         if (!element || element.nodeType !== 1) return false;
         if (isTextEntry(element)) return true;
+        // A row that binds its own Left/Right (tab strip, chip rows) marks
+        // itself so the focus is not moved twice for one key press.
+        if ((direction === 'left' || direction === 'right') && element.closest?.(OWN_ARROWS_SELECTOR)) return true;
         if (element.tagName !== 'INPUT') return false;
         const type = String(element.getAttribute('type') || 'text').toLowerCase();
         return type === 'range' && (direction === 'left' || direction === 'right');
@@ -1078,6 +1083,8 @@
     function activateFocused(element, event) {
         if (!element || element.nodeType !== 1) return false;
         const tag = element.tagName;
+        // Nothing focused: Space must keep scrolling the page.
+        if (tag === 'BODY' || tag === 'HTML') return false;
         if (isTextEntry(element) || tag === 'SELECT' || tag === 'TEXTAREA') return false;
         const space = event.key === ' ';
         if (tag === 'BUTTON' || tag === 'SUMMARY') return false;
@@ -1102,6 +1109,17 @@
         event.preventDefault();
         element.click();
         return true;
+    }
+
+    // A text field the user types into keeps the keys it uses natively:
+    // Option/Alt+Left (word jump) and PageUp/PageDown. A field the remote only
+    // rests on (D-pad focus, OK not pressed yet) hands them to navigation, and
+    // the real BrowserBack key always navigates.
+    function typedTextOwnsKey(ctx, target, action, event) {
+        if (!isTextEntry(target)) return false;
+        if (ctx.navFocus === target && ctx.editing !== target) return false;
+        if (action === 'tabs-previous' || action === 'tabs-next') return true;
+        return action === 'browser-back' && event.altKey === true;
     }
 
     function handleKeyDown(event, ctx) {
@@ -1136,6 +1154,7 @@
         if (action === 'activate') return;
         const doc = ctx.doc;
         const target = event.target && event.target.nodeType === 1 ? event.target : doc.activeElement;
+        if (typedTextOwnsKey(ctx, target, action, event)) return;
         ctx.remote = true;
 
         if (action === 'tabs-previous' || action === 'tabs-next') {

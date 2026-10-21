@@ -121,7 +121,9 @@ const chips = Array.from({ length: 3 }, () => ({
     focus(options) { navigationDocument.activeElement = this; assert.deepEqual(options, { preventScroll: true }); },
 }));
 chips[1].disabled = true;
+const chipRowAttributes = {};
 const chipRow = {
+    setAttribute: (name, value) => { chipRowAttributes[name] = value; },
     addEventListener: (type, handler) => { assert.equal(type, 'keydown'); navigationListeners.push(handler); },
     querySelectorAll: (selector) => { assert.equal(selector, '[data-measurement-view]'); return chips; },
 };
@@ -129,6 +131,7 @@ panel.init({ getDocument: () => navigationDocument });
 panel.bindChipArrowKeyNavigation(chipRow, '[data-measurement-view]');
 panel.bindChipArrowKeyNavigation(chipRow, '[data-measurement-view]');
 assert.equal(navigationListeners.length, 1);
+assert.deepEqual(chipRowAttributes, { 'data-own-arrows': '' }, 'the chip row tells tv_nav it owns Left/Right');
 navigationDocument.activeElement = chips[2];
 let prevented = 0;
 navigationListeners[0]({ key: 'ArrowRight', preventDefault: () => prevented++ });

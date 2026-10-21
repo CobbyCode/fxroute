@@ -332,10 +332,12 @@
 
     const chipNavigationBound = new WeakSet();
     /* Arrow keys walk a horizontal chip group with wrap-around; disabled chips
-       are skipped and Enter/Space keep working via the browser defaults. */
+       are skipped and Enter/Space keep working via the browser defaults. The
+       group tells the remote navigation (tv_nav.js) that it owns Left/Right. */
     function bindChipArrowKeyNavigation(container, chipSelector) {
         if (!container || chipNavigationBound.has(container)) return;
         chipNavigationBound.add(container);
+        container.setAttribute('data-own-arrows', '');
         container.addEventListener('keydown', (event) => {
             if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
             const chips = Array.from(container.querySelectorAll(chipSelector))

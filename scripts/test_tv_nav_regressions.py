@@ -206,6 +206,75 @@ def run():
                 page.keyboard.press('Alt+ArrowLeft')
                 assert page.locator('#settings-panel').is_visible(), 'text focus leaks browser Back shortcut'
 
+            def typed_text_keeps_keys(page):
+                # A field the user types into keeps Option/Alt+Left and PageUp/PageDown.
+                page.focus('#station-search')
+                page.keyboard.type('ab')
+                page.keyboard.press('Alt+ArrowLeft')
+                page.keyboard.press('PageUp')
+                page.keyboard.press('PageDown')
+                assert page.locator('#settings-panel').is_hidden(), 'Alt+Left in typed text opened settings'
+                assert page.get_attribute('#tab-btn-radio', 'aria-selected') == 'true', 'PageUp/PageDown in typed text switched the tab'
+                assert page.evaluate('document.activeElement.id') == 'station-search'
+                # Once the remote armed the field with OK it is typed text too.
+                page.focus('#tab-btn-radio')
+                page.keyboard.press('ArrowDown')
+                assert page.evaluate('document.activeElement.id') == 'station-search'
+                page.keyboard.press('Enter')
+                page.keyboard.press('PageUp')
+                assert page.get_attribute('#tab-btn-radio', 'aria-selected') == 'true', 'PageUp while editing switched the tab'
+                # The remote's own BrowserBack key still navigates from a field.
+                _browser_back(page)
+                assert page.locator('#settings-panel').is_visible(), 'BrowserBack from a text field stopped navigating'
+
+            def space_without_focus(page):
+                page.evaluate("document.activeElement.blur()")
+                scrolled_by_default = page.evaluate("""() => {
+                    const event = new KeyboardEvent('keydown', { key: ' ', bubbles: true, cancelable: true });
+                    document.body.dispatchEvent(event);
+                    return !event.defaultPrevented;
+                }""")
+                assert scrolled_by_default, 'Space on the bare page was swallowed'
+                # A focused click-only row still activates with Space.
+                page.evaluate("""() => {
+                    const row = document.createElement('div');
+                    row.id = 'space-row';
+                    row.tabIndex = 0;
+                    row.addEventListener('click', () => { window.__rowClicks = (window.__rowClicks || 0) + 1; });
+                    document.getElementById('tab-radio').appendChild(row);
+                }""")
+                page.focus('#space-row')
+                page.keyboard.press(' ')
+                assert page.evaluate('window.__rowClicks') == 1, 'Space no longer activates a focused row'
+
+            def own_arrow_rows(page):
+                # The tab strip handles Left/Right itself: no second move off the strip.
+                first = page.evaluate("Array.from(document.querySelectorAll('.tab-btn')).find(b => !b.hidden && b.offsetParent).id")
+                page.focus('#' + first)
+                page.keyboard.press('ArrowLeft')
+                assert page.evaluate('document.activeElement.id') == first, 'Left on the first tab left the strip'
+                page.keyboard.press('ArrowRight')
+                second = page.evaluate('document.activeElement.id')
+                assert second != first and page.evaluate('document.activeElement.classList.contains("tab-btn")')
+                assert page.get_attribute('#' + second, 'aria-selected') == 'true'
+                # A chip row bound by the panel UI moves one chip per key press.
+                page.evaluate("""() => {
+                    const row = document.createElement('div');
+                    row.id = 'chip-row';
+                    row.innerHTML = [0, 1, 2, 3].map(i => `<button id="chip-${i}" type="button">${i}</button>`).join('');
+                    document.body.appendChild(row);
+                    window.FXRouteMeasurementPanelUI.bindChipArrowKeyNavigation(row, 'button');
+                }""")
+                page.focus('#chip-0')
+                page.keyboard.press('ArrowRight')
+                assert page.evaluate('document.activeElement.id') == 'chip-1', 'chip row skipped a chip'
+                page.keyboard.press('ArrowLeft')
+                page.keyboard.press('ArrowLeft')
+                assert page.evaluate('document.activeElement.id') == 'chip-3', 'chip row lost its wrap-around'
+                # Up/Down still belong to the spatial navigation.
+                page.keyboard.press('ArrowUp')
+                assert page.evaluate('document.activeElement.id') != 'chip-3'
+
             def initial_context_focus(page):
                 page.evaluate("""() => {
                     document.querySelector('#source-switcher').classList.remove('hidden');
@@ -358,6 +427,9 @@ def run():
                 ('Home stays on the current tab', home_stays_on_tab),
                 ('history guard keeps Back inside the app', history_guard),
                 ('search exit and native typing', search_exit),
+                ('typed text keeps Alt+Left and page keys', typed_text_keeps_keys),
+                ('Space on the bare page keeps scrolling', space_without_focus),
+                ('rows with their own arrow keys move once', own_arrow_rows),
                 ('combine name exit', combine_exit),
                 ('catalog D-pad access', catalog),
                 ('select choose and cancel', select_interaction),

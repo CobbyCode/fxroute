@@ -1928,6 +1928,8 @@ function handleWebSocketMessage(msg) {
 }
 // Tab navigation
 function setupTabNavigation() {
+    // The strip handles Left/Right itself; tv_nav.js must not move the focus too.
+    elements.tabs[0]?.closest('[role="tablist"]')?.setAttribute('data-own-arrows', '');
     elements.tabs.forEach(tab => {
         tab.addEventListener('click', () => {
             const tabId = tab.dataset.tab;

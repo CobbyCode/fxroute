@@ -57,6 +57,15 @@ function fakeInput(type, tagName = 'INPUT') {
     return { nodeType: 1, tagName, isContentEditable: false,
         getAttribute: (name) => (name === 'type' ? type : null) };
 }
+// A row that binds its own Left/Right (tab strip, chip rows) is marked and
+// keeps those two arrows; Up/Down stay with the spatial navigation.
+const ownArrowsButton = { nodeType: 1, tagName: 'BUTTON', closest: (selector) => (selector === '[data-own-arrows]' ? {} : null) };
+const plainButton = { nodeType: 1, tagName: 'BUTTON', closest: () => null };
+assert.equal(TvNav.isNativeArrowOwner(ownArrowsButton, 'left'), true);
+assert.equal(TvNav.isNativeArrowOwner(ownArrowsButton, 'right'), true);
+assert.equal(TvNav.isNativeArrowOwner(ownArrowsButton, 'up'), false);
+assert.equal(TvNav.isNativeArrowOwner(ownArrowsButton, 'down'), false);
+assert.equal(TvNav.isNativeArrowOwner(plainButton, 'left'), false);
 assert.equal(TvNav.isTextEntry(fakeInput('text')), true);
 assert.equal(TvNav.isTextEntry(fakeInput('search')), true);
 assert.equal(TvNav.isTextEntry(fakeInput(null, 'TEXTAREA')), true);
