@@ -39,6 +39,11 @@ class _OutputGateMixin:
         """Invalidate level observations spanning a gate ownership change."""
         return getattr(self, '_gate_generation', 0)
 
+    @property
+    def startup_gate_restored(self) -> bool:
+        """Whether startup restored a persisted coordinator-owned hardware mute."""
+        return getattr(self, '_startup_gate_restored', False)
+
     def _persist_gate_state(self) -> None:
         """Persist ownership before muting so a restart can resolve stale state."""
         if self.gate_state_path is None:
@@ -142,6 +147,7 @@ class _OutputGateMixin:
                 pass
             return False
 
+        self._startup_gate_restored = True
         self.gate = OutputGateState()
         self._clear_gate_state()
         self._startup_gate_error = None
@@ -225,7 +231,9 @@ class _OutputGateMixin:
         if audible_output:
             self.gate.original_user_muted = False
         else:
-            observed_muted = await self.runtime.read_hardware_mute()
+            reader = (getattr(self.runtime, 'read_user_hardware_mute', self.runtime.read_hardware_mute)
+                      if not self.gate.closed else self.runtime.read_hardware_mute)
+            observed_muted = await reader()
             # A mute left behind by an earlier FXRoute failure is owned by the
             # coordinator, not evidence of a newly user-muted sink.
             if not self.gate.closed:

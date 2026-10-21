@@ -103,3 +103,4 @@ class PlaybackRuntimeDependencies:
     graph_write_lock: Callable[[], Any] | None = None
     refresh_output_state_transition: Callable[[TransitionRequest], None] | None = None
     ensure_player_running: Callable[[], bool] | None = None
+    output_switch_user_mute: Callable[[str], bool | None] | None = None

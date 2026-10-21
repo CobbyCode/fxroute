@@ -1277,6 +1277,7 @@ def make_playback_runtime_deps() -> PlaybackRuntimeDependencies:
         queue=lambda: playback_queue.queue,
         player_is_running=lambda *a, **k: _player_is_running(*a, **k),
         ensure_player_running=lambda: _ensure_player_running(),
+        output_switch_user_mute=lambda key: _output_levels.user_mute_for(key),
         load_player_paused=lambda *a, **k: _load_player_paused(*a, **k),
         wait_for_player_current_file=lambda *a, **k: media_readiness.wait_for_player_current_file(*a, get_player=lambda: runtime.player_instance, **k),
         wait_for_player_audio_samplerate=lambda *a, **k: media_readiness.wait_for_player_audio_samplerate(*a, get_player=lambda: runtime.player_instance, drain_worker=_drain_worker, **k),
@@ -3139,6 +3140,8 @@ async def lifespan(app: FastAPI):
             get_output_hold=lambda: spl_calibration.output_hold(),
         )
         startup_gate_reconciled = await playback_transition_coordinator.reconcile_startup_gate()
+        await asyncio.to_thread(_output_levels.recover_pending,
+            mute_restored=playback_transition_coordinator.startup_gate_restored)
         logger.info(
             "Playback transition startup gate reconciled: success=%s status=%s",
             startup_gate_reconciled,
@@ -6160,7 +6163,8 @@ def _deterministic_input_latency_ms() -> float:
 _src_latency_reader = SrcLatencyReader()
 _output_levels = OutputLevels(selected_key=lambda: _observed_output_key(),
                               mute_held=lambda: _output_mute_held(),
-                              observation_owner=lambda: _output_mute_owner())
+                              observation_owner=lambda: _output_mute_owner(),
+                              state_path=lambda: _playback_gate_state_path().with_suffix('.output-switch.json'))
 
 
 def _observed_output_key() -> str | None:

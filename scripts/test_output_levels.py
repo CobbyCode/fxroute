@@ -7,6 +7,7 @@ import sys
 import unittest
 import asyncio
 import threading
+import tempfile
 from unittest import mock
 from pathlib import Path
 
@@ -30,8 +31,18 @@ class OutputLevelsTests(unittest.IsolatedAsyncioTestCase):
         self.sinks = {OLD: sink(OLD, 10, [17039, 16000], True)}
         self.writes = []
         self.levels = OutputLevels(command_runner=self.command, selected_key=lambda: OLD)
+        self.cookie = 'test-server'
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.state_path = Path(self.directory.name) / 'output-switch.json'
+
+    def persistent_levels(self):
+        return OutputLevels(command_runner=self.command, selected_key=lambda: OLD,
+                            state_path=self.state_path)
 
     def command(self, args):
+        if args == ['pactl', '-f', 'json', 'info']:
+            return json.dumps({'cookie': self.cookie})
         if args == ['pactl', '-f', 'json', 'list', 'sinks']:
             return json.dumps(list(self.sinks.values()))
         self.writes.append(args)
@@ -44,6 +55,158 @@ class OutputLevelsTests(unittest.IsolatedAsyncioTestCase):
         else:
             self.fail(f'Unexpected command: {args}')
         return ''
+
+    async def test_crashed_switch_restores_only_its_own_mute_after_graph_success(self):
+        for user_muted in (False, True):
+            with self.subTest(user_muted=user_muted):
+                self.sinks = {OLD: sink(OLD, 10, [17039, 16000], user_muted)}
+                levels = self.persistent_levels()
+                levels.observe_selected()
+                self.sinks = {NEW: sink(NEW, 11, [65536] * 6, False)}
+                original = levels._run
+                def recorded(args):
+                    if args[1] == 'set-sink-mute':
+                        self.assertTrue(self.state_path.exists(), 'Ownership must precede mute')
+                    return original(args)
+                levels._run = recorded
+                levels._begin(OLD, NEW)
+                self.assertTrue(self.sinks[NEW]['mute'])
+                restarted = self.persistent_levels()
+                restarted.recover_pending()
+                self.assertTrue(self.sinks[NEW]['mute'], 'Startup must not unmute before graph verification')
+                with self.assertRaisesRegex(RuntimeError, 'Graph failed'):
+                    async with restarted.switch(NEW, NEW):
+                        raise RuntimeError('Graph failed')
+                self.assertTrue(self.state_path.exists())
+                async with restarted.switch(NEW, NEW):
+                    self.assertTrue(self.sinks[NEW]['mute'])
+                self.assertEqual(self.sinks[NEW]['mute'], user_muted)
+                self.assertFalse(self.state_path.exists())
+
+    async def test_restart_never_claims_unowned_or_replaced_hardware_mute(self):
+        for change in ('no-marker', 'node', 'server', 'user-unmute', 'coordinator'):
+            with self.subTest(change=change):
+                self.sinks = {OLD: sink(OLD, 10, [17039, 16000], False)}
+                levels = self.persistent_levels()
+                levels.observe_selected()
+                self.sinks = {NEW: sink(NEW, 11, [65536] * 6, False)}
+                levels._begin(OLD, NEW)
+                if change == 'no-marker':
+                    self.state_path.unlink()
+                elif change == 'node':
+                    self.sinks[NEW]['index'] = 12
+                elif change == 'server':
+                    self.cookie += '-new'
+                elif change == 'user-unmute':
+                    self.sinks[NEW]['mute'] = False
+                restarted = self.persistent_levels()
+                restarted.recover_pending(mute_restored=change == 'coordinator')
+                async with restarted.switch(NEW, NEW):
+                    pass
+                self.assertEqual(self.sinks[NEW]['mute'], change != 'user-unmute')
+
+    async def test_marker_write_failure_prevents_temporary_mute(self):
+        levels = self.persistent_levels()
+        self.sinks[OTHER] = sink(OTHER, 20, [22222, 22222], False)
+        with mock.patch('audio.output_levels.atomic_write_text', side_effect=OSError('Disk full')):
+            with self.assertRaisesRegex(OSError, 'Disk full'):
+                async with levels.switch(OLD, OTHER):
+                    self.fail('Unrecorded mute must not enter graph scope')
+        self.assertFalse(self.sinks[OTHER]['mute'])
+        self.assertFalse(levels._switching)
+
+    async def test_server_restart_invalidates_pending_ownership_without_blocking_new_sync(self):
+        self.sinks[OLD]['mute'] = False
+        levels = self.persistent_levels()
+        levels.observe_selected()
+        self.sinks = {NEW: sink(NEW, 11, [65536] * 6, False)}
+        levels._begin(OLD, NEW)
+        self.cookie = 'replacement-server'
+        self.sinks = {NEW: sink(NEW, 11, [22222] * 6, True)}
+        for _ in range(2):
+            async with levels.switch(NEW, NEW):
+                pass
+        self.assertTrue(self.sinks[NEW]['mute'], 'New-server hardware mute belongs to the user')
+        self.assertEqual(self.sinks[NEW]['volume']['front-left']['value'], 22222)
+        self.assertFalse(self.state_path.exists())
+
+    async def test_malformed_marker_cannot_abort_startup_or_claim_hardware_mute(self):
+        levels = self.persistent_levels()
+        self.state_path.write_text(json.dumps({'version': 1, 'owner': 'fxroute-output-switch',
+                                               'server_cookie': self.cookie, 'sinks': []}))
+        levels.recover_pending()
+        self.assertFalse(self.state_path.exists())
+        self.assertTrue(self.sinks[OLD]['mute'])
+        self.assertFalse(self.writes)
+
+    async def test_recovered_switch_must_not_open_a_new_safety_hold(self):
+        levels = self.persistent_levels()
+        self.sinks[OTHER] = sink(OTHER, 20, [22222, 22222], False)
+        levels._begin(OLD, OTHER)
+        restarted = self.persistent_levels()
+        restarted.recover_pending()
+        restarted._mute_held = lambda: True
+        async with restarted.switch(OTHER, OTHER):
+            pass
+        self.assertTrue(self.sinks[OTHER]['mute'])
+
+    async def test_owned_user_intent_is_not_transferred_to_a_replaced_node(self):
+        levels = self.persistent_levels()
+        self.sinks[OTHER] = sink(OTHER, 20, [22222, 22222], False)
+        levels._begin(OLD, OTHER)
+        self.assertFalse(levels.user_mute_for(OTHER))
+        self.assertIsNone(levels.user_mute_for(NEW))
+        self.sinks[OTHER]['index'] = 21
+        self.assertIsNone(levels.user_mute_for(OTHER))
+
+    async def test_fixed_policy_startup_gate_adopts_recovered_user_mute_not_temporary_mute(self):
+        import main
+        from playback.runtime import FxrouteTransitionRuntime
+        from playback.transition import PlaybackTransitionCoordinator, TransitionRequest
+        from test_playback_transition_coordinator import FakeRuntime
+        self.sinks[OLD]['mute'] = False
+        levels = self.persistent_levels()
+        levels.observe_selected()
+        self.sinks = {NEW: sink(NEW, 11, [65536] * 6, False)}
+        levels._begin(OLD, NEW)
+        restarted = self.persistent_levels()
+        restarted.recover_pending()
+        sinks = self.sinks
+        adapter = FxrouteTransitionRuntime(main.make_playback_runtime_deps())
+        adapter._resolved_gate_sink = NEW
+
+        class StartupRuntime(FakeRuntime):
+            async def read_hardware_mute(self):
+                return sinks[NEW]['mute']
+            async def read_user_hardware_mute(self):
+                return await adapter.read_user_hardware_mute()
+            async def set_hardware_mute(self, muted, transition_id):
+                sinks[NEW]['mute'] = muted
+            async def establish_effects_and_helper(self, request):
+                async with restarted.switch(NEW, NEW):
+                    pass
+                return {'helper_rebuilt': True}
+            async def restore_output_mode_transport(self, *args):
+                pass
+            async def reconcile_post_start_graph(self, *args):
+                return {'graph_complete': True}
+            async def verify_output_mode_runtime(self, *args):
+                return {'committed': True}
+            async def commit_sample_rate_policy(self, *args):
+                return {'policy': {'mode': 'fixed', 'rate': 48000}}
+
+        coordinator = PlaybackTransitionCoordinator(StartupRuntime(), gate_settle_seconds=0,
+            gate_state_path=Path(self.directory.name) / 'coordinator-gate.json')
+        restarted._mute_held = lambda: coordinator.gate.closed
+        with mock.patch.object(main, '_output_levels', restarted), \
+                mock.patch('playback.runtime.mute._read_hardware_sink_mute', side_effect=lambda key: sinks[key]['mute']):
+            self.assertTrue(await coordinator.reconcile_startup_gate())
+            result = await coordinator.execute(TransitionRequest(operation='sample-rate-policy', source='local',
+                target_rate=48000, should_play=False, rate_change=True, reload_source=False))
+        self.assertTrue(result.committed)
+        self.assertFalse(self.sinks[NEW]['mute'], 'Temporary mute must not become the coordinator user mute')
+        self.assertFalse(restarted._pending)
+        self.assertFalse(self.state_path.exists())
 
     async def test_vanished_sink_transfers_raw_levels_before_linking(self):
         self.levels.observe_selected()

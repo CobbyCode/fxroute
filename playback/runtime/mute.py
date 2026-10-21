@@ -43,6 +43,15 @@ class _RuntimeMuteMixin:
             _read_hardware_sink_mute, self._resolved_gate_sink
         )
 
+    async def read_user_hardware_mute(self) -> bool:
+        """Read user intent without capturing a temporary output-switch mute."""
+        observed = await self.read_hardware_mute()
+        reader = self._deps.output_switch_user_mute
+        if reader is None:
+            return observed
+        owned = await asyncio.to_thread(reader, self._resolved_gate_sink)
+        return observed if owned is None else owned
+
     async def set_hardware_mute(self, muted: bool, transition_id: str) -> None:
         if self._resolved_gate_sink is None:
             self._resolved_gate_sink = await asyncio.to_thread(
