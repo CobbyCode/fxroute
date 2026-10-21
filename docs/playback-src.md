@@ -98,6 +98,16 @@ Rebuilds publish immutable `runtime-<generation>` directories through an atomic
 generations remain available to their existing hosts until those hosts restart.
 Do not delete them under running audio processes.
 
+`native_src/build` is machine-local build output. Never copy it to another
+machine: the `current` and top-level links would point at a generation
+directory that does not exist there. Because the client rules bind every output
+stream to the converter, such a dangling link fails the audio output of all
+playback, not only SRC changes: new PipeWire clients cannot load the plugin and
+MPV cannot open its output. A playback start is then refused before the output
+gate moves, with `Common SRC runtime is missing; run native_src/build.py`
+(HTTP 503). Repair it with `python3 native_src/build.py`, or re-point the links
+at an existing complete generation through `activate_runtime()` in that file.
+
 SPA library names are relative to the plugin search directories, not absolute
 paths. The installer creates an owned symlink in the standard SPA directory so
 ordinary native/ALSA clients can find the converter without an injected

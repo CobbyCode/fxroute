@@ -22,6 +22,7 @@ import playback.source_policy as source_policy
 from .models import (
     OutputGateState,
     OutputHeldFailure,
+    PlaybackPreflightError,
     PlaybackTransitionFailure,
     RecoveryExecutor,
     RecoveryValidator,
@@ -1048,6 +1049,24 @@ class PlaybackTransitionCoordinator(_TransitionCleanupMixin, _OutputGateMixin):
                 return await self._abort_source_changed(
                     stages, active_request, exc.checkpoint
                 )
+            except PlaybackPreflightError as exc:
+                # Refused in the snapshot, before the gate or any source was
+                # touched: report the cause, run no failure-restore cleanup.
+                logger.warning(
+                    "Playback transition refused before any mutation: "
+                    "operation=%s source=%s transition_id=%s reason=%s",
+                    active_request.operation,
+                    active_request.source,
+                    transition_id,
+                    exc,
+                )
+                raise PlaybackTransitionFailure(
+                    str(exc),
+                    transition_id=transition_id,
+                    stage="preflight",
+                    failure_latched=False,
+                    transient=True,
+                ) from exc
             except asyncio.CancelledError as exc:
                 raise await self._fail_transition(
                     stages,

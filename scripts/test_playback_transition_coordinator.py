@@ -12,6 +12,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 from playback.transition import (
     OutputHeldFailure,
+    PlaybackPreflightError,
     PlaybackTransitionCoordinator,
     PlaybackTransitionFailure,
     TransitionRequest,
@@ -1204,6 +1205,47 @@ class PlayerLoadContractTests(unittest.TestCase):
         player.loadfile("/music/next.flac", start_paused=False)
         self.assertFalse(player.state["paused"])
         self.assertTrue(player.state["playing"])
+
+
+class PreflightRefusalTests(unittest.IsolatedAsyncioTestCase):
+    """A start the system cannot play is refused before the gate or a source moves."""
+
+    REASON = "Common SRC runtime is missing; run native_src/build.py"
+
+    def refusing_runtime(self, refusal):
+        class Runtime(FakeRuntime):
+            async def read_transition_snapshot(self, req):
+                await self._stage("snapshot")
+                if refusal["reason"]:
+                    raise PlaybackPreflightError(refusal["reason"])
+                return {"active_rate": self.rate}
+
+        return Runtime(muted=False)
+
+    async def test_refusal_names_the_cause_and_leaves_gate_and_source_untouched(self):
+        refusal = {"reason": self.REASON}
+        runtime = self.refusing_runtime(refusal)
+        coordinator = PlaybackTransitionCoordinator(runtime, gate_settle_seconds=0)
+
+        with self.assertRaises(PlaybackTransitionFailure) as refused:
+            await coordinator.execute(request())
+        failure = refused.exception
+        self.assertEqual(str(failure), self.REASON)
+        self.assertEqual(failure.stage, "preflight")
+        self.assertTrue(failure.transient, "mapped to HTTP 503, not an internal 500")
+        self.assertFalse(failure.failure_latched)
+        # No mute, quieting, pause or restore ran: only the snapshot was read.
+        self.assertEqual(runtime.events, ["snapshot"])
+        self.assertFalse(runtime.muted)
+        self.assertFalse(coordinator.gate.closed)
+        self.assertFalse(coordinator.gate.failure_latched)
+        self.assertIsNone(coordinator.last_error)
+
+        # Once the cause is repaired the same start commits; nothing was latched.
+        refusal["reason"] = None
+        result = await coordinator.execute(request())
+        self.assertTrue(result.committed)
+        self.assertFalse(runtime.muted)
 
 
 class OutputHoldTests(unittest.IsolatedAsyncioTestCase):

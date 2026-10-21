@@ -172,6 +172,20 @@ def runtime_error() -> str | None:
     return None
 
 
+def playback_error() -> str | None:
+    """Why new playback streams cannot load the SRC converter, else None.
+
+    The client rules bind every output stream to the converter, so an
+    unloadable plugin fails the audio output of all playback, not only SRC
+    changes.  Without the binding a missing runtime is harmless.
+    """
+    binding = config_root() / "pipewire/client.conf.d/80-fxroute-src.conf"
+    # is_file() follows symlinks: a dangling build/current counts as missing.
+    if binding.is_file() and not (RUNTIME / "libspa-fxroute-src.so").is_file():
+        return "Common SRC runtime is missing; run native_src/build.py"
+    return None
+
+
 def nodes() -> list[dict]:
     result = subprocess.run(["pw-dump"], capture_output=True, text=True,
                             timeout=5, check=True, env=c_locale_env())

@@ -278,6 +278,27 @@ class SrcPolicyTests(unittest.TestCase):
         self.assertTrue(status["available"])
         self.assertEqual(len(status["effective_nodes"]),1)
 
+    def test_playback_error_flags_a_bound_runtime_that_new_streams_cannot_load(self):
+        binding = self.root / "pipewire/client.conf.d/80-fxroute-src.conf"
+        runtime = self.root / "native_src/build"
+        # Without the client binding a missing runtime cannot break playback.
+        self.assertIsNone(self.policy.playback_error())
+        binding.parent.mkdir(parents=True)
+        binding.write_text("stream.rules = []\n")
+        self.assertRegex(self.policy.playback_error(), "runtime is missing")
+        # Deploy accident: the stable links point at an empty generation.
+        runtime.mkdir(parents=True)
+        (runtime / "runtime-empty").mkdir()
+        (runtime / "current").symlink_to("runtime-empty")
+        (runtime / "libspa-fxroute-src.so").symlink_to("current/libspa-fxroute-src.so")
+        self.assertRegex(self.policy.playback_error(), "runtime is missing")
+        # Repointed at a complete generation.
+        (runtime / "runtime-built").mkdir()
+        (runtime / "runtime-built/libspa-fxroute-src.so").write_bytes(b"plugin")
+        (runtime / "current").unlink()
+        (runtime / "current").symlink_to("runtime-built")
+        self.assertIsNone(self.policy.playback_error())
+
 
 if __name__ == "__main__":
     unittest.main()

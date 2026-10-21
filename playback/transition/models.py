@@ -31,6 +31,15 @@ class SourceNotReady(RuntimeError):
     """
 
 
+class PlaybackPreflightError(RuntimeError):
+    """A playback start cannot work on this system; found before any mutation.
+
+    Raised by the runtime snapshot.  The coordinator turns it into a transient
+    PlaybackTransitionFailure (HTTP 503) without the failure-restore
+    machinery, so the output gate and a playing source stay untouched.
+    """
+
+
 class PlaybackTransitionFailure(RuntimeError):
     """A transition failed before its readback contract was committed."""
 

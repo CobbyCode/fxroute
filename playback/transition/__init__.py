@@ -30,6 +30,7 @@ from playback.transition.models import (
     DSP_TRANSPORT_SINK,
     OutputGateState,
     OutputHeldFailure,
+    PlaybackPreflightError,
     PlaybackTransitionFailure,
     RecoveryExecutor,
     RecoveryValidator,
@@ -44,6 +45,7 @@ from playback.transition.stages import _TransitionStages
 __all__ = [
     "OutputGateState",
     "OutputHeldFailure",
+    "PlaybackPreflightError",
     "PlaybackTransitionCoordinator",
     "PlaybackTransitionFailure",
     "TransitionRequest",

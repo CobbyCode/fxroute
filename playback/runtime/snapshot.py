@@ -17,7 +17,7 @@ import audio.samplerate as samplerate
 from audio import src_policy
 from audio.samplerate import OUTPUT_MODE_STEREO, OUTPUT_MODE_SUBWOOFER_MODES
 import playback.source_policy as source_policy
-from playback.transition import TransitionRequest
+from playback.transition import PlaybackPreflightError, TransitionRequest
 
 from .deps import PlaybackRuntimeDependencies
 
@@ -69,6 +69,18 @@ class _RuntimeSnapshotMixin:
             error = await asyncio.to_thread(src_policy.runtime_error)
             if error:
                 raise RuntimeError(error)
+        opens_mpv_stream = (
+            request.should_play
+            and request.reload_source
+            and not request.graph_only
+            and source_policy.is_mpv_source(request.source)
+        )
+        if opens_mpv_stream:
+            # Name an unloadable SRC plugin now: MPV's audio output would fail
+            # after the gate closed and surface only as a settle timeout.
+            error = await asyncio.to_thread(src_policy.playback_error)
+            if error:
+                raise PlaybackPreflightError(error)
         self._staged_target_url = None
         self._quieted_external_source = None
         self._staged_qobuz_track_id = None
