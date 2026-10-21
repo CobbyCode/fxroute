@@ -6997,16 +6997,18 @@ async def _restore_saved_music_library(manager: MusicLibraryManager, *, retry_de
                 return False
             previous = manager.active_snapshot()
             try:
-                root = await asyncio.to_thread(manager.activate, library_id)
+                root = await asyncio.to_thread(manager.activate, library_id, mount_if_needed=False)
             except (ValueError, OSError) as exc:
                 note_unavailable(exc)
                 return False
             try:
                 scanner = runtime.music_library.scanner
                 if root != scanner.music_root:
-                    await _commit_music_library_switch(scanner, root=root, library_id=library_id)
+                    if not await _commit_music_library_switch(scanner, root=root, library_id=library_id, restore_only=True):
+                        await asyncio.to_thread(manager.restore_active, *previous, remember_selection=False)
+                        return False
             except BaseException:
-                await asyncio.to_thread(manager.restore_active, *previous)
+                await asyncio.to_thread(manager.restore_active, *previous, remember_selection=False)
                 raise
             return True
 
@@ -7021,29 +7023,41 @@ async def _commit_music_library_switch(
     *,
     root: Path,
     library_id: str,
-) -> None:
+    restore_only: bool = False,
+) -> bool:
     """Complete a switch whose manager state is already published.
 
     Runs as one section: a cancellation between its steps would leave the
     manager on the new library while the scanner, the queue and the player
     still describe the previous one.
     """
-    scanner.cancel_refresh()
+    if restore_only:
+        scanner.cancel_refresh(retire=False)
+    else:
+        scanner.cancel_refresh()
     # A reconcile posted by the retired scanner must not prune the queue
     # the switch is about to reset and refill.
     _invalidate_pending_queue_reconcile()
     active_refreshes = [task for task in runtime.library_refresh_tasks if not task.done()]
     if active_refreshes:
         await asyncio.gather(*active_refreshes, return_exceptions=True)
-    if _player_is_running():
+    if restore_only and _music_library_restore_must_wait():
+        return False
+    # Background restore must not yield between its final admission check and
+    # queue/scanner publication. An idle MPV needs no stop command.
+    if not restore_only and _player_is_running():
         _mark_playback_intent_changed()
         await _drain_worker(runtime.player_instance.stop_playback)
         playback_state.current_track_info = None
         playback_state.last_track_info = None
+    if restore_only:
+        scanner.cancel_refresh()
+        _invalidate_pending_queue_reconcile()
     playback_queue.queue.reset()
     runtime.music_library.scanner = _library_scanner_for(root, library_id)
     runtime.music_library.scanner.prepare_scan_status()
     runtime.library_scan_task = _create_library_refresh_task(runtime.music_library.scanner, name="selected-library-scan")
+    return True
 
 
 @app.post("/api/music-libraries/select")

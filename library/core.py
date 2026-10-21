@@ -563,14 +563,16 @@ class LibraryScanner:
 
         return self._track_cache
 
-    def cancel_refresh(self) -> None:
+    def cancel_refresh(self, *, retire: bool = True) -> None:
         """Invalidate any in-flight scan (library switch, shutdown, reset).
 
         Bumps the scan token so a worker that is still walking the tree
         discards its results instead of publishing them over the current
-        state once it finishes.
+        state once it finishes. Non-retiring invalidation permits reuse when
+        a background restore yields to playback instead of switching.
         """
-        self._refresh_cancel.set()
+        if retire:
+            self._refresh_cancel.set()
         with self._scan_state_lock:
             self._scan_token += 1
 

@@ -350,6 +350,8 @@ class MusicLibraryManager:
         self.saved_active_id = "local"
         self.restore_error = ""
         self._hidden: set[str] = set()
+        self._removing: set[str] = set()
+        self._mounting: dict[str, int] = {}
         self._gvfs_paths: dict[str, Path] = {}
         self._owned_gvfs: set[str] = set()
         self._load_state()
@@ -429,7 +431,7 @@ class MusicLibraryManager:
         with self._generation_lock:
             return (self.active_id, self.active_type, self.active_root)
 
-    def restore_active(self, library_id: str, library_type: str, root: Path) -> None:
+    def restore_active(self, library_id: str, library_type: str, root: Path, *, remember_selection: bool = True) -> None:
         """Re-publish a previously active library without re-resolving it.
 
         Used to roll a failed switch back so the manager, scanner, queue and
@@ -441,7 +443,8 @@ class MusicLibraryManager:
             self.active_id = library_id
             self.active_type = library_type
             self.active_root = root
-        self._remember_selection(library_id)
+        if remember_selection:
+            self._remember_selection(library_id)
 
     def _resolve_discovery_hosts(self) -> list[str]:
         if self._configured_hosts is not None:
@@ -552,11 +555,29 @@ class MusicLibraryManager:
         return entry
 
     def remove_library(self, library_id: str) -> None:
-        if library_id in {"local", self.active_id}:
-            raise ValueError("Select the local library before removing this share")
-        entry = next((entry for entry in self._list_cached() if entry["id"] == library_id and entry["type"] in {"smb", "nfs"}), None)
-        if entry is None:
-            raise ValueError("Unknown music library")
+        with self._state_lock:
+            if library_id in {"local", self.active_id}:
+                raise ValueError("Select the local library before removing this share")
+            entry = self._network_entry(library_id)
+            self._removing.add(library_id)
+        try:
+            self._remove_mount(entry)
+            with self._state_lock:
+                self._manual.pop(library_id, None)
+                self._hidden.add(library_id)
+                if not self._mounting.get(library_id):
+                    self._gvfs_paths.pop(library_id, None)
+                    self._owned_gvfs.discard(library_id)
+                if self.saved_active_id == library_id:
+                    self.saved_active_id = "local"
+                    self.restore_error = ""
+                self._save_state()
+        finally:
+            with self._state_lock:
+                self._removing.discard(library_id)
+
+    def _remove_mount(self, entry: dict[str, str]) -> None:
+        library_id = entry['id']
         try:
             result = subprocess.run(
                 ["sudo", "-n", nfs.MOUNT_HELPER, "--remove", entry["type"], entry["server"], entry["share"]],
@@ -566,25 +587,21 @@ class MusicLibraryManager:
             raise ValueError("Could not remove network mount") from exc
         if result.returncode:
             raise ValueError(result.stderr.strip() or "Could not remove network mount")
-        if library_id in self._owned_gvfs:
+        with self._state_lock:
+            owned_gvfs = library_id in self._owned_gvfs
+            self._owned_gvfs.discard(library_id)
+        if owned_gvfs:
             try:
                 result = subprocess.run(
                     ["gio", "mount", "-u", f"smb://{entry['server']}/{entry['share']}"],
                     stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=10, check=False,
                 )
-            except (OSError, subprocess.TimeoutExpired) as exc:
+                if result.returncode:
+                    raise ValueError(result.stderr.strip() or "Could not remove GVFS mount")
+            except (OSError, subprocess.TimeoutExpired, ValueError) as exc:
+                with self._state_lock:
+                    self._owned_gvfs.add(library_id)
                 raise ValueError("Could not remove GVFS mount") from exc
-            if result.returncode:
-                raise ValueError(result.stderr.strip() or "Could not remove GVFS mount")
-        with self._state_lock:
-            self._manual.pop(library_id, None)
-            self._hidden.add(library_id)
-            self._gvfs_paths.pop(library_id, None)
-            self._owned_gvfs.discard(library_id)
-            if self.saved_active_id == library_id:
-                self.saved_active_id = "local"
-                self.restore_error = ""
-            self._save_state()
 
     def _mounted_nfs_path(self, server: str, export: str) -> Path | None:
         return nfs.mounted_path(self.mount_root, server, export)
@@ -646,7 +663,7 @@ class MusicLibraryManager:
         if not library_id.startswith(("smb:", "nfs:")):
             raise ValueError("Unsupported music library type")
         entries = {entry["id"]: entry for entry in self._list_cached() if entry["type"] in {"smb", "nfs"}}
-        if library_id not in entries:
+        if library_id not in entries or library_id in self._removing:
             raise ValueError("Unknown music library")
         return entries[library_id]
 
@@ -657,20 +674,50 @@ class MusicLibraryManager:
         mounts first without it: ``activate`` then finds the share mounted and
         only publishes it.
         """
-        return self._mount(self._network_entry(library_id))
+        with self._state_lock:
+            entry = self._network_entry(library_id)
+            self._mounting[library_id] = self._mounting.get(library_id, 0) + 1
+        try:
+            root = self._mount(entry)
+            try:
+                with self._state_lock:
+                    self._network_entry(library_id)
+            except ValueError as error:
+                try:
+                    self._remove_mount(entry)
+                except Exception as cleanup_error:
+                    logger.exception('Could not clean up a removed library mount')
+                    error.add_note(f'Mount cleanup also failed: {cleanup_error}')
+                raise
+            return root
+        finally:
+            with self._state_lock:
+                self._mounting[library_id] -= 1
+                if not self._mounting[library_id]:
+                    self._mounting.pop(library_id)
+                    if library_id in self._hidden:
+                        self._gvfs_paths.pop(library_id, None)
 
     def _mount(self, entry: dict[str, str]) -> Path:
         return self._mount_nfs(entry) if entry["type"] == "nfs" else self._mount_smb(entry)
 
-    def activate(self, library_id: str) -> Path:
+    def activate(self, library_id: str, *, mount_if_needed: bool = True) -> Path:
         if library_id == "local":
             self._remember_selection("local")
             self._publish_active("local", "local", self.local_root)
             return self.active_root
         entry = self._network_entry(library_id)
-        root = self._mount(entry)
-        self._remember_selection(library_id, entry)
-        self._publish_active(library_id, entry["type"], root)
+        if mount_if_needed:
+            root = self.mount(library_id)
+        else:
+            root = (self._mounted_nfs_path(entry['server'], entry['share']) if entry['type'] == 'nfs'
+                    else self._mounted_share_path(entry['server'], entry['share']))
+            if root is None:
+                raise FileNotFoundError('Music library mount disappeared before activation')
+        with self._state_lock:
+            entry = self._network_entry(library_id)
+            self._remember_selection(library_id, entry)
+            self._publish_active(library_id, entry["type"], root)
         return root
 
     def _mount_smb(self, entry: dict[str, str]) -> Path:
@@ -731,9 +778,10 @@ class MusicLibraryManager:
             raise FileNotFoundError(detail)
         gvfs = Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")) / "gvfs"
         if root.is_relative_to(gvfs):
-            self._gvfs_paths[library_id] = root
-            if mounted_by_gio:
-                self._owned_gvfs.add(library_id)
+            with self._state_lock:
+                self._gvfs_paths[library_id] = root
+                if mounted_by_gio:
+                    self._owned_gvfs.add(library_id)
         return root
 
     def status(self) -> dict:

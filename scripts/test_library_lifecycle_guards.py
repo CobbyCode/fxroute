@@ -93,7 +93,7 @@ class _FakeScanner:
         self.cancel_calls = 0
         self.prepared = 0
 
-    def cancel_refresh(self) -> None:
+    def cancel_refresh(self, *, retire=True) -> None:
         self.cancel_calls += 1
 
     def prepare_scan_status(self) -> None:
@@ -594,6 +594,170 @@ class LibrarySwitchCancellationTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.wait_for(task, 5)
             self.assertEqual(self.manager.active_id, SMB_LIBRARY_ID)
             await self._drain_pending_scan()
+
+    async def test_restore_does_not_stop_playback_that_starts_during_refresh_drain(self):
+        self.manager.saved_active_id = SMB_LIBRARY_ID
+        player = _FakePlayer(running=False)
+        gate = asyncio.Event()
+        blocker = asyncio.create_task(gate.wait())
+        main.runtime.library_refresh_tasks.add(blocker)
+        with _RuntimeGuard(self, self.manager, self.scanner, player), \
+                patch('library.sources.os.path.ismount', return_value=True):
+            main.playback_queue.queue.tracks = [{'id': 'local_a', 'source': 'local'}]
+            task = asyncio.create_task(main._restore_saved_music_library(self.manager, retry_delay=0.001))
+            try:
+                await _wait_until(lambda: self.scanner.cancelled)
+                player._running = True
+                gate.set()
+                await _wait_until(lambda: task.done() or self.manager.active_id == 'local')
+                self.assertEqual(player.stop_calls, 0, 'Background restore must not stop new playback')
+                self.assertEqual(self.manager.active_id, 'local')
+                self.assertEqual(self.manager.saved_active_id, SMB_LIBRARY_ID, 'Restore should remain retryable')
+                self.assertIs(main.runtime.music_library.scanner, self.scanner)
+                self.assertEqual(main.playback_queue.queue.tracks, [{'id': 'local_a', 'source': 'local'}])
+            finally:
+                gate.set()
+                task.cancel()
+                await asyncio.gather(task, blocker, return_exceptions=True)
+                await self._drain_pending_scan()
+
+    async def test_restore_never_mounts_again_under_the_switch_lock(self):
+        self.manager.saved_active_id = SMB_LIBRARY_ID
+        player = _FakePlayer(running=False)
+        with _RuntimeGuard(self, self.manager, self.scanner, player), \
+                patch.object(self.manager, 'mount', return_value=self.smb_root), \
+                patch.object(self.manager, '_mounted_share_path', return_value=None), \
+                patch.object(self.manager, '_mount', side_effect=AssertionError('Unexpected blocking remount')):
+            task = await self._run_restore_for(0.03)
+            try:
+                self.assertFalse(task.done(), 'A lost mount should defer restore without remounting under the lock')
+                response = await asyncio.wait_for(main.select_music_library(_FakeRequest({'id': 'local'})), 1)
+                self.assertEqual(response['active_id'], 'local')
+                self.assertEqual(player.stop_calls, 0)
+            finally:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+
+    async def test_aborted_restore_keeps_the_real_scanner_refreshable(self):
+        self.manager.saved_active_id = SMB_LIBRARY_ID
+        scanner = LibraryScanner(self.local_root, metadata_store=_metadata_store(self.base, 'aborted-restore'))
+        player = _FakePlayer(running=False)
+        gate = asyncio.Event()
+        blocker = asyncio.create_task(gate.wait())
+        main.runtime.library_refresh_tasks.add(blocker)
+        with _RuntimeGuard(self, self.manager, scanner, player), \
+                patch('library.sources.os.path.ismount', return_value=True), \
+                patch.object(LibraryMetadataStore, '_request_json', _no_network):
+            task = asyncio.create_task(main._restore_saved_music_library(self.manager, retry_delay=0.001))
+            try:
+                await _wait_until(lambda: scanner._scan_token > 0)
+                player._running = True
+                gate.set()
+                await _wait_until(lambda: task.done() or self.manager.active_id == 'local')
+                (self.local_root / 'after-abort.mp3').write_bytes(GARBAGE_AUDIO)
+                tracks = await asyncio.to_thread(scanner.refresh, True)
+                self.assertEqual([Path(track.path).name for track in tracks], ['after-abort.mp3'])
+                self.assertIs(main.runtime.music_library.scanner, scanner)
+            finally:
+                gate.set()
+                task.cancel()
+                await asyncio.gather(task, blocker, return_exceptions=True)
+
+    async def test_successful_restore_retires_a_scanner_captured_by_a_delayed_request(self):
+        self.manager.saved_active_id = SMB_LIBRARY_ID
+        scanner = LibraryScanner(self.local_root, metadata_store=_metadata_store(self.base, 'retired-restore'))
+        published = []
+        def after_scan(ids):
+            published.append(ids)
+            main._prune_queue_after_scan(ids)
+        scanner.set_scan_published_hook(after_scan)
+        with _RuntimeGuard(self, self.manager, scanner, _FakePlayer(running=False)), \
+                patch('library.sources.os.path.ismount', return_value=True), \
+                patch.object(main, '_scan_queue_owner_loop', asyncio.get_running_loop()), \
+                patch.object(LibraryMetadataStore, '_request_json', _no_network):
+            await main._restore_saved_music_library(self.manager, retry_delay=0.001)
+            await self._drain_pending_scan()
+            main.playback_queue.queue.tracks = [{'id': 'remote-track', 'source': 'local'}]
+            (self.local_root / 'old.mp3').write_bytes(GARBAGE_AUDIO)
+            await asyncio.to_thread(scanner.refresh, True)
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+            self.assertEqual(main.playback_queue.queue.tracks, [{'id': 'remote-track', 'source': 'local'}])
+            self.assertEqual(published, [], 'A retired request-held scanner must never publish')
+
+    async def test_share_removed_during_mount_stays_removed_and_is_unmounted(self):
+        self.manager.saved_active_id = SMB_LIBRARY_ID
+        player = _FakePlayer(running=False)
+        entered, release = threading.Event(), threading.Event()
+        mounted = [False]
+        def mount(entry):
+            entered.set()
+            if not release.wait(3):
+                raise RuntimeError('Mount was not released')
+            mounted[0] = True
+            return self.smb_root
+        def unmount(*args, **kwargs):
+            mounted[0] = False
+            return subprocess.CompletedProcess([], 0, '', '')
+        with _RuntimeGuard(self, self.manager, self.scanner, player), \
+                patch.object(self.manager, '_mount', side_effect=mount), \
+                patch('library.sources.subprocess.run', side_effect=unmount):
+            task = await self._run_restore_for(0)
+            try:
+                await _wait_thread_event(entered)
+                await main.remove_music_library(_FakeRequest({'id': SMB_LIBRARY_ID}))
+                release.set()
+                await asyncio.wait_for(task, 3)
+                self.assertFalse(mounted[0], 'An in-flight mount must be cleaned up after removal')
+                self.assertEqual(self.manager.active_id, 'local')
+                self.assertEqual(self.manager.saved_active_id, 'local')
+                self.assertNotIn(SMB_LIBRARY_ID, [row['id'] for row in self.manager.status_cached()['libraries']])
+            finally:
+                release.set()
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+
+    async def test_late_gvfs_mount_keeps_ownership_until_removal_cleanup(self):
+        self.manager.saved_active_id = SMB_LIBRARY_ID
+        player = _FakePlayer(running=False)
+        entered, checked, owned, release = (threading.Event() for _ in range(4))
+        mounted = [False]
+        remove_mount = self.manager._remove_mount
+        def mount(entry):
+            entered.set()
+            if not checked.wait(3):
+                raise RuntimeError('Removal did not inspect GVFS ownership')
+            self.manager._owned_gvfs.add(SMB_LIBRARY_ID)
+            mounted[0] = True
+            owned.set()
+            if not release.wait(3):
+                raise RuntimeError('Mount was not released')
+            return self.smb_root
+        def remove(entry):
+            remove_mount(entry)
+            checked.set()
+            if not owned.wait(3):
+                raise RuntimeError('Late mount did not record ownership')
+        def command(args, **kwargs):
+            if args[:3] == ['gio', 'mount', '-u']:
+                mounted[0] = False
+            return subprocess.CompletedProcess(args, 0, '', '')
+        with _RuntimeGuard(self, self.manager, self.scanner, player), \
+                patch.object(self.manager, '_mount', side_effect=mount), \
+                patch.object(self.manager, '_remove_mount', side_effect=remove), \
+                patch('library.sources.subprocess.run', side_effect=command):
+            task = await self._run_restore_for(0)
+            try:
+                await _wait_thread_event(entered)
+                await main.remove_music_library(_FakeRequest({'id': SMB_LIBRARY_ID}))
+                release.set()
+                await asyncio.wait_for(task, 3)
+                self.assertFalse(mounted[0], 'Late GVFS ownership must survive until cleanup unmounts it')
+                self.assertEqual(self.manager.active_id, 'local')
+            finally:
+                release.set()
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
 
     async def test_remove_active_library_is_rejected_without_unmounting(self):
         with _RuntimeGuard(self, self.manager, self.scanner, self.player), \
