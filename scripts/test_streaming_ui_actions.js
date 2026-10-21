@@ -247,8 +247,13 @@ function runStreaming(options = {}) {
             } else if (u === '/api/streaming/tidal/albums/al1/tracks') {
                 body = [{ id: 's1', title: 'Found Song', artist: 'Found Artist', album: 'Found Album', art_url: '', duration: 10 }];
             } else if (u === '/api/streaming/tidal/favorites/ids') {
+                if (options.idsFetch) return options.idsFetch(u);
                 body = { tracks: [], albums: [], artists: [], playlists: [] };
             } else if (u.startsWith('/api/streaming/tidal/favorites?type=')) {
+                if (options.favoritesFetch) {
+                    const held = options.favoritesFetch(u);
+                    if (held) return held;
+                }
                 if (options.delayFavorites) {
                     await new Promise((resolve) => setTimeout(resolve, options.delayFavorites));
                 }
@@ -676,6 +681,126 @@ async function main() {
     assert.ok(!adapter.items('albums').some((item) => item.title === 'Old Account Album'),
         'account B must never see account A cached library');
     assert.deepEqual([...adapter.items('albums')], [], 'account B without a cache starts from its own live favorites');
+}
+
+// --- 13b. a favorites read never overwrites hearts toggled while it ran ----
+
+{
+    // Held responses: the test decides when (and in which order) they land.
+    const heldReads = [];
+    const hold = (body) => new Promise((resolve) => {
+        heldReads.push({ release: () => resolve({ ok: true, json: async () => body }) });
+    });
+    const album = (id) => ({ id, title: 'Album ' + id, artist: 'Artist', art_url: '' });
+
+    // An un-heart during the Library walk survives the older list.
+    {
+        const snapshot = { user_id: '42', ids: { tracks: [], albums: ['x1'], artists: [], playlists: [] }, tracks: [], albums: [album('x1')], artists: [], playlists: [] };
+        const albumReads = [];
+        const { sandbox } = runStreaming({
+            tidalSnapshot: snapshot,
+            tidalUser: '42',
+            favoritesFetch: (u) => {
+                if (!u.includes('type=albums')) return null;
+                return hold([album('x1')]).then((r) => { albumReads.push(u); return r; });
+            },
+        });
+        await tick();
+        const adapter = sandbox.window.FXRouteStreaming.tidal;
+        const loading = adapter.ensureLibrary();
+        await tick(5);
+        assert.equal(adapter.isFavorite('albums', 'x1'), true, 'the cached heart is there while the walk is out');
+        await adapter.toggleFavorite('albums', 'x1');
+        assert.equal(adapter.isFavorite('albums', 'x1'), false, 'the un-heart applies at once');
+        heldReads.splice(0).forEach((read) => read.release());
+        await loading;
+        assert.equal(adapter.isFavorite('albums', 'x1'), false,
+            'a list read before the un-heart must not bring the favorite back');
+    }
+
+    // A heart added during a walk stays, and an older walk cannot drop it from the list.
+    {
+        const snapshot = { user_id: '42', ids: { tracks: [], albums: [], artists: [], playlists: [] }, tracks: [], albums: [], artists: [], playlists: [] };
+        const albumWalks = [];
+        const { sandbox } = runStreaming({
+            tidalSnapshot: snapshot,
+            tidalUser: '42',
+            favoritesFetch: (u) => {
+                if (!u.includes('type=albums')) return null;
+                return new Promise((resolve) => {
+                    albumWalks.push((items) => resolve({ ok: true, json: async () => items }));
+                });
+            },
+        });
+        await tick();
+        const adapter = sandbox.window.FXRouteStreaming.tidal;
+        const loading = adapter.ensureLibrary();
+        await tick(5);
+        assert.equal(albumWalks.length, 1, 'the Library load starts one albums walk');
+        await adapter.toggleFavorite('albums', 'y1');
+        assert.equal(adapter.isFavorite('albums', 'y1'), true);
+        await tick(5);
+        assert.equal(albumWalks.length, 2, 'a heart added during the load starts a fresh albums walk');
+
+        // The fresh walk (has y1) lands first, the older one (without y1) after.
+        albumWalks[1]([album('y1')]);
+        await tick(5);
+        albumWalks[0]([]);
+        await loading;
+        await tick(5);
+        assert.deepEqual([...adapter.items('albums').map((item) => item.id)], ['y1'],
+            'an older walk must not replace the newer list');
+        assert.equal(adapter.isFavorite('albums', 'y1'), true, 'the new heart survives the older walk');
+    }
+
+    // The favorite-ids read follows the same rule.
+    {
+        let release;
+        const { sandbox } = runStreaming({
+            tidalUser: '42',
+            idsFetch: () => new Promise((resolve) => {
+                release = () => resolve({ ok: true, json: async () => ({ tracks: [], albums: ['x1'], artists: [], playlists: [] }) });
+            }),
+        });
+        await tick();
+        const adapter = sandbox.window.FXRouteStreaming.tidal;
+        const streaming = sandbox.window.FXRouteStreaming;
+        await adapter.toggleFavorite('albums', 'x1');          // hearted before the read starts
+        const reading = streaming.ensureTidalFavoritesLoaded(true);
+        await tick(5);
+        await adapter.toggleFavorite('albums', 'x1');          // un-hearted while it runs
+        await adapter.toggleFavorite('albums', 'y1');          // hearted while it runs
+        assert.equal(adapter.isFavorite('albums', 'x1'), false);
+        release();
+        assert.equal(await reading, true);
+        assert.equal(adapter.isFavorite('albums', 'x1'), false, 'the ids read must not restore an un-hearted item');
+        assert.equal(adapter.isFavorite('albums', 'y1'), true, 'the ids read must not drop a newly hearted item');
+    }
+}
+
+// --- 13c. tracks in the + selection keep their display data -----------------
+
+{
+    const { sandbox } = runStreaming({ tidalUser: '42' });
+    await tick();
+    const adapter = sandbox.window.FXRouteStreaming.tidal;
+    const song = (id) => ({ id, title: 'Song ' + id, artist: 'Artist', album: 'Album', art_url: '', duration: 10 });
+    adapter.buildTrackRow(song('keep'), { tag: 'div', queueIds: ['keep'] });
+    adapter.buildTrackRow(song('plain'), { tag: 'div', queueIds: ['plain'] });
+    adapter.selectTracks(['keep']);
+    // More distinct rows than the cache holds (a large favorites list).
+    for (let i = 0; i < 2100; i += 1) adapter.buildTrackRow(song('fill' + i), { tag: 'div', queueIds: ['fill' + i] });
+    const meta = JSON.parse(JSON.stringify(adapter.trackMeta(['keep', 'plain', 'fill0', 'fill2099'])));
+    assert.equal(meta.keep && meta.keep.title, 'Song keep', 'a selected track keeps its display data');
+    assert.equal(meta.plain, undefined, 'an unselected old track is evicted (the cache stays bounded)');
+    assert.equal(meta.fill0, undefined, 'the oldest unselected rows are the ones that go');
+    assert.equal(meta.fill2099 && meta.fill2099.title, 'Song fill2099', 'recent rows stay');
+
+    // Once deselected, the track is an ordinary cache entry again.
+    adapter.deselectTracks(['keep']);
+    adapter.buildTrackRow(song('more'), { tag: 'div', queueIds: ['more'] });
+    assert.equal(JSON.parse(JSON.stringify(adapter.trackMeta(['keep']))).keep, undefined,
+        'a deselected track becomes evictable again');
 }
 
 // --- 14. + selection persists across surfaces; play/favorite never touch it -

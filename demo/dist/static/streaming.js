@@ -132,6 +132,11 @@
             favoriteIds: { tracks: new Set(), albums: new Set(), artists: new Set(), playlists: new Set() },
             favoriteIdsPromise: null,
             favoritesLoaded: false,   // true after at least one successful favorites/ids load
+            // Hearts toggled by the user win over any favorites read that
+            // started before the toggle (see applyFavoriteEdits).
+            favoriteSeq: 0,
+            favoriteEdits: new Map(),   // "<type>:<id>" -> { type, id, favorite, seq }
+            collectionWalks: {},        // kind -> newest collection walk; older walks drop their result
             // Persistent browse cache (server-side SQLite snapshot of the last
             // successful library load, keyed by TIDAL account). Rendered first
             // on open; a background refresh then replaces it in place.
@@ -1048,6 +1053,7 @@
         state.tidal.favoriteIds = { tracks: new Set(), albums: new Set(), artists: new Set(), playlists: new Set() };
         state.tidal.favoritesLoaded = false;
         state.tidal.favoriteIdsPromise = null;
+        state.tidal.favoriteEdits = new Map();
         state.tidal.libraryLoadedAt = 0;
         state.tidal.cacheUser = userId;
         notifyFavoritesChanged();
@@ -1063,6 +1069,7 @@
         if (state.tidal.cache) return Promise.resolve(state.tidal.cache);
         if (state.tidal.snapshotPromise) return state.tidal.snapshotPromise;
         state.tidal.snapshotPromise = (async () => {
+            const sinceSeq = state.tidal.favoriteSeq;
             try {
                 const resp = await fetch('/api/streaming/tidal/library/snapshot?user=' + encodeURIComponent(userId));
                 if (!resp.ok) return null;
@@ -1081,6 +1088,7 @@
                     artists: new Set((data.ids.artists || []).map(String)),
                     playlists: new Set((data.ids.playlists || []).map(String)),
                 };
+                applyFavoriteEdits(sinceSeq);
                 state.tidal.favoritesLoaded = true;
                 notifyFavoritesChanged();
                 return data;
@@ -1092,6 +1100,28 @@
     }
 
     // -- favorites (authoritative TIDAL state; no FXRoute shadow) -------------
+    const FAVORITE_EDITS_MAX = 200;
+
+    function recordFavoriteEdit(type, idStr, favorite) {
+        const key = type + ':' + idStr;
+        const edits = state.tidal.favoriteEdits;
+        edits.delete(key);
+        edits.set(key, { type: type, id: idStr, favorite: favorite, seq: ++state.tidal.favoriteSeq });
+        while (edits.size > FAVORITE_EDITS_MAX) edits.delete(edits.keys().next().value);
+    }
+
+    // A favorites read that began at `sinceSeq` can predate hearts the user
+    // toggled while it was running; those toggles are replayed over it.
+    function applyFavoriteEdits(sinceSeq, kind) {
+        state.tidal.favoriteEdits.forEach((edit) => {
+            if (edit.seq <= sinceSeq || (kind && edit.type !== kind)) return;
+            const set = state.tidal.favoriteIds[edit.type];
+            if (!set) return;
+            if (edit.favorite) set.add(edit.id);
+            else set.delete(edit.id);
+        });
+    }
+
     function notifyFavoritesChanged() {
         if (typeof window.dispatchEvent !== 'function') return;
         window.dispatchEvent(new CustomEvent('fxroute:tidal-favorites', { detail: state.tidal.favoriteIds }));
@@ -1127,6 +1157,7 @@
         }
         if (!state.tidal.favoriteIdsPromise || force) {
             state.tidal.favoriteIdsPromise = (async () => {
+                const sinceSeq = state.tidal.favoriteSeq;
                 const resp = await fetch('/api/streaming/tidal/favorites/ids');
                 if (!resp.ok) throw new Error(await errorDetail(resp));
                 const data = await resp.json();
@@ -1136,6 +1167,7 @@
                     artists: new Set((data.artists || []).map(String)),
                     playlists: new Set((data.playlists || []).map(String)),
                 };
+                applyFavoriteEdits(sinceSeq);
                 state.tidal.favoritesLoaded = true;
                 notifyFavoritesChanged();
                 return state.tidal.favoriteIds;
@@ -1240,13 +1272,14 @@
             if (!resp.ok) throw new Error(formatTransitionErrorDetail(data.detail, 'Failed to update favorite'));
             if (data.favorite) state.tidal.favoriteIds[type].add(idStr);
             else state.tidal.favoriteIds[type].delete(idStr);
+            recordFavoriteEdit(type, idStr, !!data.favorite);
             syncTidalFavoriteButtons(type, idStr);
             syncFavoriteDetailButtons(type, idStr);
             notifyFavoritesChanged();
             showToast(data.favorite ? 'Added to favorites' : 'Removed from favorites', 'success');
             // A newly favorited item joins the Library grids; a removed one
             // already left through the favorites event above.
-            if (data.favorite && state.tidal.libraryLoadedAt && TIDAL_LIBRARY_KINDS.includes(type)) {
+            if (data.favorite && (state.tidal.libraryLoadedAt || state.tidal.libraryPromise) && TIDAL_LIBRARY_KINDS.includes(type)) {
                 void refreshTidalLibraryCollection(type);
             }
         } catch (err) {
@@ -1942,7 +1975,8 @@
     }
 
     // Display data of the TIDAL tracks shown so far, so a saved playlist can
-    // list them later without TIDAL (see trackMeta). Bounded; oldest first out.
+    // list them later without TIDAL (see trackMeta). Bounded; oldest first
+    // out, except tracks still in the + selection (they may be saved later).
     const TIDAL_TRACK_META_MAX = 2000;
     const tidalTrackMeta = new Map();
 
@@ -1957,8 +1991,9 @@
             duration: Number(item.duration) > 0 ? Number(item.duration) : 0,
             art_url: item.art_url || '',
         });
-        while (tidalTrackMeta.size > TIDAL_TRACK_META_MAX) {
-            tidalTrackMeta.delete(tidalTrackMeta.keys().next().value);
+        for (const knownId of tidalTrackMeta.keys()) {
+            if (tidalTrackMeta.size <= TIDAL_TRACK_META_MAX) break;
+            if (!state.tidal.selectedTrackIds.has(knownId)) tidalTrackMeta.delete(knownId);
         }
     }
 
@@ -2125,7 +2160,8 @@
 
     // Adopt a collection for the current account. A complete list is the
     // authoritative favorite state of its kind; a first page only adds.
-    function adoptTidalCollection(userId, kind, items, complete) {
+    // `sinceSeq` is the heart sequence when the collection read began.
+    function adoptTidalCollection(userId, kind, items, complete, sinceSeq) {
         if (state.tidal.cacheUser !== userId) return;
         const list = Array.isArray(items) ? items : [];
         state.tidal.lastItems[kind] = list;
@@ -2134,16 +2170,25 @@
         if (set) {
             if (complete) state.tidal.favoriteIds[kind] = new Set(ids);
             else ids.forEach((id) => set.add(id));
+            applyFavoriteEdits(sinceSeq, kind);
             notifyFavoritesChanged();
         }
         notifyTidalLibrary(kind);
     }
 
+    // Only the newest walk of a kind adopts: an older one may predate a heart
+    // the user added and would take the new item out of the list again.
     async function refreshTidalLibraryCollection(kind) {
         const userId = tidalUserId();
+        const sinceSeq = state.tidal.favoriteSeq;
+        const walk = (state.tidal.collectionWalks[kind] || 0) + 1;
+        state.tidal.collectionWalks[kind] = walk;
+        const isNewest = () => state.tidal.collectionWalks[kind] === walk;
         try {
-            const items = await fetchTidalCollection(kind, (page) => adoptTidalCollection(userId, kind, page, false));
-            adoptTidalCollection(userId, kind, items, true);
+            const items = await fetchTidalCollection(kind, (page) => {
+                if (isNewest()) adoptTidalCollection(userId, kind, page, false, sinceSeq);
+            });
+            if (isNewest()) adoptTidalCollection(userId, kind, items, true, sinceSeq);
         } catch (err) {
             // A failed refresh keeps the last-known collection visible.
         }
