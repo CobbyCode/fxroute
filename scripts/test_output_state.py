@@ -163,6 +163,22 @@ class OutputStateTests(unittest.TestCase):
         self.assertEqual(routing_for_device(restored, "stereo-sub", "A"),
                          ["left_low", "left_high", "right_low", "right_high", "sub1", "off"])
 
+    def test_dormant_ways_survive_a_routing_edit_on_a_suffixed_device_key(self):
+        """The edit finds the stored routing under the normalized device identity."""
+        state = switch_mode(set_mode_routing(default_output_state(), "stereo-sub", USB, STEREO_SUB),
+                            "stereo-sub")
+        state = set_crossover(state, "stereo-sub", True)
+        state = set_mode_routing(state, "stereo-sub", USB, WAYS + ["sub1", "off"])
+        state = set_crossover(state, "stereo-sub", False)
+        plain = copy.deepcopy(state["modes"]["stereo-sub"]["routing"])
+        self.assertEqual(list(plain.values())[0],
+                         ["main_l", "left_high", "main_r", "right_high", "sub1", "off"])
+        saved = set_mode_routing(state, "stereo-sub", USB, ["main_l", "off", "main_r", "off", "sub1", "off"])
+        self.assertEqual(saved["modes"]["stereo-sub"]["routing"], plain)
+        replaced = set_mode_routing(state, "stereo-sub", PRO, ["main_l", "off", "main_r", "off", "sub2", "off"])
+        self.assertEqual(list(replaced["modes"]["stereo-sub"]["routing"].values())[0],
+                         ["main_l", "left_high", "main_r", "right_high", "sub2", "off"])
+
     def test_crossover_off_keeps_written_routing_that_holds_dormant_ways(self):
         """A stored plain routing may carry dormant ways; validation accepts it."""
         state = switch_mode(set_mode_routing(default_output_state(), "stereo-sub", "A", STEREO_SUB),

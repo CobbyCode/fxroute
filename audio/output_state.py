@@ -391,7 +391,7 @@ def set_mode_routing(state: dict, mode: str, output_key: str, assignments: objec
     key = hdmi.routing_key(_device_identity(output_key))
     config = result["modes"][mode]
     config["device_crossovers"][key] = enabled
-    stored = hdmi.stored_routing(config["routing"], output_key) or []
+    stored = hdmi.stored_routing(config["routing"], _device_identity(output_key)) or []
     dormant = set(dormant_roles(mode, crossover_enabled=enabled))
     values = [stored[index] if (value == "off" and index < len(stored) and stored[index] in dormant)
               else value for index, value in enumerate(values)]
