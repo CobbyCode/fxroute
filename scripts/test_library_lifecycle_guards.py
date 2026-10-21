@@ -487,7 +487,7 @@ class LibrarySwitchCancellationTests(unittest.IsolatedAsyncioTestCase):
             attempts.append((server, export))
             return self.smb_root if len(attempts) >= 3 else None
 
-        with _RuntimeGuard(self, self.manager, self.scanner, self.player), \
+        with _RuntimeGuard(self, self.manager, self.scanner, _FakePlayer(running=False)), \
                 patch.object(self.manager, "_mounted_nfs_path", side_effect=mounted), \
                 patch("library.sources.subprocess.run", return_value=subprocess.CompletedProcess([], 1, "", "offline")):
             await main._restore_saved_music_library(self.manager, retry_delay=0.001)
@@ -495,7 +495,104 @@ class LibrarySwitchCancellationTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(self.manager.active_type, "nfs")
             self.assertEqual(main.runtime.music_library.scanner.music_root, self.smb_root)
             self.assertEqual(self.manager.restore_error, "")
-            self.assertEqual(len(attempts), 3)
+            # Two lookups of the failed attempt, one of the mount that succeeds,
+            # one of the publish under the lock.
+            self.assertEqual(len(attempts), 4)
+            await self._drain_pending_scan()
+
+    async def _run_restore_for(self, seconds: float) -> asyncio.Task:
+        task = asyncio.create_task(main._restore_saved_music_library(self.manager, retry_delay=0.001))
+        await asyncio.sleep(seconds)
+        return task
+
+    async def test_restore_never_mounts_or_stops_while_a_track_is_loaded(self):
+        main.playback_queue.queue.tracks = [{"id": "local_a", "url": "/music/a.mp3", "source": "local"}]
+        self.manager.saved_active_id = SMB_LIBRARY_ID
+        mounts = []
+        with _RuntimeGuard(self, self.manager, self.scanner, self.player), \
+                patch("library.sources.os.path.ismount", return_value=True), \
+                patch.object(self.manager, "mount", side_effect=lambda library_id: mounts.append(library_id)):
+            task = await self._run_restore_for(0.05)
+            self.assertFalse(task.done())
+            self.assertEqual(mounts, [], "no mount attempt while a track is loaded")
+            self.assertEqual(self.player.stop_calls, 0)
+            self.assertEqual(self.manager.active_id, "local")
+            self.assertEqual([track["id"] for track in main.playback_queue.queue.tracks], ["local_a"])
+            self.player._running = False
+            await asyncio.wait_for(task, 5)
+            self.assertEqual(self.manager.active_id, SMB_LIBRARY_ID)
+            self.assertEqual(self.player.stop_calls, 0)
+            await self._drain_pending_scan()
+
+    async def test_restore_mounts_outside_the_switch_lock(self):
+        self.manager.saved_active_id = SMB_LIBRARY_ID
+        entered = threading.Event()
+        release = threading.Event()
+        player = _FakePlayer(running=False)
+
+        def slow_mount(library_id):
+            entered.set()
+            release.wait(timeout=5)
+            raise FileNotFoundError("share still offline")
+
+        with _RuntimeGuard(self, self.manager, self.scanner, player), \
+                patch.object(self.manager, "mount", side_effect=slow_mount):
+            task = await self._run_restore_for(0)
+            await _wait_thread_event(entered)
+            self.assertFalse(main._music_library_lock().locked(), "the mount must not hold the switch lock")
+            response = await asyncio.wait_for(main.select_music_library(_FakeRequest({"id": "local"})), 2)
+            self.assertEqual(response["active_id"], "local")
+            release.set()
+            await asyncio.wait_for(task, 5)
+            self.assertEqual(self.manager.active_id, "local", "a selection made during the mount stands")
+            self.assertEqual(player.stop_calls, 0)
+
+    async def test_restore_does_not_override_a_selection_made_during_the_mount(self):
+        self.manager.saved_active_id = SMB_LIBRARY_ID
+        player = _FakePlayer(running=False)
+
+        def mount_while_user_picks_another(library_id):
+            # The user's selection lands before the restore takes the lock.
+            self.manager.saved_active_id = "nfs:other:/music"
+            return self.smb_root
+
+        with _RuntimeGuard(self, self.manager, self.scanner, player), \
+                patch.object(self.manager, "mount", side_effect=mount_while_user_picks_another), \
+                patch.object(self.manager, "activate", side_effect=ValueError("not under test")) as activate:
+            task = await self._run_restore_for(0.05)
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        published = [call.args[0] for call in activate.call_args_list]
+        self.assertNotIn(SMB_LIBRARY_ID, published, "the stale saved library must not be published")
+        self.assertEqual(self.manager.active_id, "local")
+
+    async def test_restore_skips_the_switch_when_playback_starts_during_the_mount(self):
+        main.playback_queue.queue.tracks = [{"id": "local_a", "url": "/music/a.mp3", "source": "local"}]
+        self.manager.saved_active_id = SMB_LIBRARY_ID
+        player = _FakePlayer(running=False)
+        entered = threading.Event()
+        release = threading.Event()
+
+        def slow_mount(library_id):
+            entered.set()
+            release.wait(timeout=5)
+            return self.smb_root
+
+        with _RuntimeGuard(self, self.manager, self.scanner, player), \
+                patch("library.sources.os.path.ismount", return_value=True), \
+                patch.object(self.manager, "mount", side_effect=slow_mount):
+            task = await self._run_restore_for(0)
+            await _wait_thread_event(entered)
+            player._running = True
+            release.set()
+            await asyncio.sleep(0.05)
+            self.assertFalse(task.done())
+            self.assertEqual(player.stop_calls, 0, "playback that started during the mount must not be stopped")
+            self.assertEqual(self.manager.active_id, "local")
+            self.assertEqual([track["id"] for track in main.playback_queue.queue.tracks], ["local_a"])
+            player._running = False
+            await asyncio.wait_for(task, 5)
+            self.assertEqual(self.manager.active_id, SMB_LIBRARY_ID)
             await self._drain_pending_scan()
 
     async def test_remove_active_library_is_rejected_without_unmounting(self):

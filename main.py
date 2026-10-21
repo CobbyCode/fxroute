@@ -6916,23 +6916,49 @@ async def remove_music_library(request: Request):
         return manager.status_cached()
 
 
+def _music_library_restore_must_wait() -> bool:
+    """A loaded track or a running transition owns the player; a switch would stop it."""
+    player = runtime.player_instance
+    state = player.state if player is not None else {}
+    return _playback_transition_is_active() or bool(state.get("current_file") and not state.get("ended"))
+
+
 async def _restore_saved_music_library(manager: MusicLibraryManager, *, retry_delay: float = 15.0) -> None:
-    """Retry only the saved selection after an offline start; never rescan the LAN."""
+    """Retry only the saved selection after an offline start; never rescan the LAN.
+
+    The mount runs outside the switch lock and only while nothing is loaded.
+    The lock is taken for the switch itself, which re-checks playback and the
+    saved selection, so the restore neither stops a track nor overrides a
+    selection made while it was mounting.
+    """
+    def note_unavailable(exc: Exception) -> None:
+        detail = str(exc)
+        if manager.restore_error != detail:
+            logger.warning("Saved music library unavailable; retrying: %s", detail)
+        manager.restore_error = detail
+
     async def attempt() -> bool:
+        library_id = manager.saved_active_id
+        if library_id == "local" or library_id == manager.active_id:
+            return True
+        if _music_library_restore_must_wait():
+            return False
+        try:
+            await asyncio.to_thread(manager.mount, library_id)
+        except (ValueError, OSError) as exc:
+            note_unavailable(exc)
+            return False
         async with _music_library_lock():
-            library_id = manager.saved_active_id
-            if library_id == "local" or library_id == manager.active_id:
+            selected = manager.saved_active_id
+            if selected == "local" or selected == manager.active_id:
                 return True
-            if _playback_transition_is_active():
+            if selected != library_id or _music_library_restore_must_wait():
                 return False
             previous = manager.active_snapshot()
             try:
                 root = await asyncio.to_thread(manager.activate, library_id)
             except (ValueError, OSError) as exc:
-                detail = str(exc)
-                if manager.restore_error != detail:
-                    logger.warning("Saved music library unavailable; retrying: %s", detail)
-                manager.restore_error = detail
+                note_unavailable(exc)
                 return False
             try:
                 scanner = runtime.music_library.scanner

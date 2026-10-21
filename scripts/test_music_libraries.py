@@ -140,6 +140,38 @@ class MusicLibraryManagerTests(unittest.TestCase):
             self.assertEqual(helper_call.args[0][:4], ["sudo", "-n", "/usr/local/sbin/fxroute-cifs-mount", "server"])
             self.assertEqual(root, mounted.resolve())
 
+    def test_mount_resolves_the_share_without_publishing_it(self):
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            mounted = base / "mounts" / "server" / "Music"
+            manager = MusicLibraryManager(base / "Music", mount_root=base / "mounts", discovery_hosts=[])
+            manager.add_manual_share("server", "Music")
+            generation = manager.capture_context().generation
+
+            def run(command, **kwargs):
+                if command[0] == "sudo":
+                    mounted.mkdir(parents=True)
+                return subprocess.CompletedProcess(command, 0, "", "")
+
+            with patch("library.sources.subprocess.run", side_effect=run), patch(
+                "library.sources.os.path.ismount", side_effect=lambda path: Path(path) == mounted
+            ):
+                self.assertEqual(manager.mount("smb:server:Music"), mounted.resolve())
+                self.assertEqual((manager.active_id, manager.saved_active_id), ("local", "local"))
+                self.assertEqual(manager.capture_context().generation, generation)
+            with patch("library.sources.subprocess.run", side_effect=AssertionError("already mounted")), patch(
+                "library.sources.os.path.ismount", side_effect=lambda path: Path(path) == mounted
+            ):
+                self.assertEqual(manager.activate("smb:server:Music"), mounted.resolve())
+            self.assertEqual((manager.active_id, manager.saved_active_id), ("smb:server:Music",) * 2)
+
+    def test_mount_rejects_local_and_unknown_libraries(self):
+        with tempfile.TemporaryDirectory() as td:
+            manager = MusicLibraryManager(Path(td), discovery_hosts=[])
+            for library_id in ("local", "ftp:server:music", "smb:server:missing"):
+                with self.subTest(library_id=library_id), self.assertRaises(ValueError):
+                    manager.mount(library_id)
+
     def test_plain_empty_mount_directory_is_not_accepted(self):
         with tempfile.TemporaryDirectory() as td:
             base = Path(td)

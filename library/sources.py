@@ -589,7 +589,7 @@ class MusicLibraryManager:
     def _mounted_nfs_path(self, server: str, export: str) -> Path | None:
         return nfs.mounted_path(self.mount_root, server, export)
 
-    def _activate_nfs(self, entry: dict[str, str]) -> Path:
+    def _mount_nfs(self, entry: dict[str, str]) -> Path:
         server, export = entry["server"], entry["share"]
         root = self._mounted_nfs_path(server, export)
         detail = ""
@@ -605,8 +605,6 @@ class MusicLibraryManager:
             root = self._mounted_nfs_path(server, export)
         if root is None:
             raise FileNotFoundError(f"NFS share is not mounted: {server}:{export} ({detail or 'mount unavailable'})")
-        self._remember_selection(entry["id"], entry)
-        self._publish_active(entry["id"], "nfs", root)
         return root
 
     def _mounted_share_path(self, server: str, share: str) -> Path | None:
@@ -644,18 +642,39 @@ class MusicLibraryManager:
                 self._generation += 1
             return self._generation
 
-    def activate(self, library_id: str) -> Path:
-        if library_id == "local":
-            self._remember_selection("local")
-            self._publish_active("local", "local", self.local_root)
-            return self.active_root
+    def _network_entry(self, library_id: str) -> dict[str, str]:
         if not library_id.startswith(("smb:", "nfs:")):
             raise ValueError("Unsupported music library type")
         entries = {entry["id"]: entry for entry in self._list_cached() if entry["type"] in {"smb", "nfs"}}
         if library_id not in entries:
             raise ValueError("Unknown music library")
-        if entries[library_id]["type"] == "nfs":
-            return self._activate_nfs(entries[library_id])
+        return entries[library_id]
+
+    def mount(self, library_id: str) -> Path:
+        """Mount a network library and return its root without publishing it.
+
+        The mount can take tens of seconds. A caller that holds a switch lock
+        mounts first without it: ``activate`` then finds the share mounted and
+        only publishes it.
+        """
+        return self._mount(self._network_entry(library_id))
+
+    def _mount(self, entry: dict[str, str]) -> Path:
+        return self._mount_nfs(entry) if entry["type"] == "nfs" else self._mount_smb(entry)
+
+    def activate(self, library_id: str) -> Path:
+        if library_id == "local":
+            self._remember_selection("local")
+            self._publish_active("local", "local", self.local_root)
+            return self.active_root
+        entry = self._network_entry(library_id)
+        root = self._mount(entry)
+        self._remember_selection(library_id, entry)
+        self._publish_active(library_id, entry["type"], root)
+        return root
+
+    def _mount_smb(self, entry: dict[str, str]) -> Path:
+        library_id = entry["id"]
         _kind, server, share = library_id.split(":", 2)
         root = self._mounted_share_path(server, share)
         mount_diagnostics: list[str] = []
@@ -715,8 +734,6 @@ class MusicLibraryManager:
             self._gvfs_paths[library_id] = root
             if mounted_by_gio:
                 self._owned_gvfs.add(library_id)
-        self._remember_selection(library_id, entries[library_id])
-        self._publish_active(library_id, "smb", root)
         return root
 
     def status(self) -> dict:
