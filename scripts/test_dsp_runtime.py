@@ -572,7 +572,7 @@ class DSPRuntimeConfigTests(unittest.TestCase):
     def test_committed_graph_survives_unavailable_src_latency_and_recovers(self):
         from audio.src_latency import SrcGraphSettling
 
-        async def exercise(kind, failure):
+        async def exercise(kind, failure, transient):
             with tempfile.TemporaryDirectory() as directory:
                 binary = Path(directory) / 'fxroute-dsp'
                 binary.touch()
@@ -618,6 +618,10 @@ class DSPRuntimeConfigTests(unittest.TestCase):
                 runtime._stop_orphan_helpers = runtime._wait_for_ports = complete
                 runtime.configure_latency_tracking(input_latency_provider=latency)
                 try:
+                    if not transient:
+                        with self.assertRaisesRegex(RuntimeError, str(failure)):
+                            await runtime.sync_rendered(target)
+                        return
                     await runtime.sync_rendered(target)
                     self.assertTrue(runtime.snapshot()['active'])
                     self.assertTrue(await runtime.verify())
@@ -634,13 +638,116 @@ class DSPRuntimeConfigTests(unittest.TestCase):
                 finally:
                     await runtime.stop()
 
+        from audio.src_latency import graph_src_latency
+        from test_av_sync_src import graph
+        try:
+            graph_src_latency(graph()[:8])
+        except RuntimeError as exc:
+            missing_path = exc
         for kind in ('cold', 'swap', 'live'):
-            for failure in (SrcGraphSettling('Output is negotiating', path='output'),
-                            RuntimeError('Owned SRC output path is unavailable')):
+            for failure, transient in ((SrcGraphSettling('Output is negotiating', path='output'), True),
+                                       (missing_path, True),
+                                       (RuntimeError('SRC latency adapter is unavailable'), False),
+                                       (RuntimeError('SRC latency adapter evidence is unavailable'), False),
+                                       (RuntimeError('Linked audio paths have different SRC latency'), False)):
                 with self.subTest(kind=kind, failure=failure):
-                    asyncio.run(exercise(kind, failure))
+                    asyncio.run(exercise(kind, failure, transient))
 
-    def test_hot_update_failure_keeps_config_for_fallback_rebuild(self):
+    def test_pending_latency_is_visible_times_out_with_backoff_and_recovers(self):
+        from audio.src_latency import SrcLatencyReader
+        from test_av_sync_src import graph
+        clock, reads, timed_out = [0.0], [], []
+        runtime = DSPRuntime(self.manager)
+        runtime._process = FakeProcess()
+        runtime._config = self.config()
+        runtime._links = [PipeWireLink('fxroute_dsp:output_1', 'hw:playback_FL')]
+        reader = SrcLatencyReader()
+        def dump():
+            reads.append(clock[0])
+            return graph() if clock[0] >= 14 else graph()[:8]
+        async def control(command, **kwargs):
+            if command == 'latency get':
+                return json.dumps({'ready': True, 'rate': 48000, 'input': 36000, 'target': 0,
+                    'minimum': 0, 'maximum': 0, 'common': 0, 'actual': 0,
+                    'outputs': [{key: 0 for key in ('dsp', 'intentional', 'align', 'balance', 'sync', 'total')}] * 2})
+            return 'ok'
+        async def sleep(delay):
+            clock[0] += delay
+            if 10 <= clock[0] < 14:
+                timed_out.append(runtime.snapshot())
+            if clock[0] > 20:
+                raise AssertionError('Latency watcher never recovered')
+        async def ready(value):
+            raise asyncio.CancelledError
+        runtime._control_unlocked = control
+        runtime.configure_latency_tracking(input_latency_provider=reader.read)
+        async def exercise():
+            await runtime.update_input_latency(defer_unavailable=True)
+            with self.assertRaises(asyncio.CancelledError):
+                await runtime.latency_watch_loop(on_ready=ready)
+        with unittest.mock.patch('dsp.runtime.time.monotonic', side_effect=lambda: clock[0]), \
+                unittest.mock.patch('dsp.runtime.asyncio.sleep', side_effect=sleep), \
+                unittest.mock.patch.object(reader, '_dump', side_effect=dump), \
+                self.assertLogs('dsp.runtime', level='WARNING') as logs:
+            asyncio.run(exercise())
+        self.assertLessEqual(len(reads), 16, 'Unavailable evidence must not run pw-dump at 10 Hz')
+        self.assertLessEqual(len(logs.output), 4, 'Unavailable evidence warnings must be throttled')
+        self.assertTrue(any(row.get('ingress_latency_pending') and row['last_error'] for row in timed_out))
+        self.assertFalse(runtime.snapshot().get('ingress_latency_pending'))
+        self.assertIsNone(runtime.snapshot()['last_error'])
+        self.assertTrue(runtime.snapshot()['active'])
+        self.assertEqual(runtime._last_input_latency_ms, 750)
+
+    def test_late_missing_latency_does_not_poison_a_new_graph(self):
+        from audio.src_latency import SrcGraphSettling
+        async def exercise():
+            runtime = DSPRuntime(self.manager)
+            runtime._process = FakeProcess()
+            runtime._config = self.config()
+            entered, release = asyncio.Event(), asyncio.Event()
+            async def latency():
+                entered.set()
+                await release.wait()
+                raise SrcGraphSettling('Old output negotiating', path='output')
+            runtime.configure_latency_tracking(input_latency_provider=latency)
+            task = asyncio.create_task(runtime.update_input_latency(defer_unavailable=True))
+            await entered.wait()
+            runtime._config = self.config(output_key='new')
+            release.set()
+            await task
+            self.assertFalse(runtime._ingress_latency_pending)
+        asyncio.run(exercise())
+
+    def test_rejected_preflight_preserves_pending_latency_deadline(self):
+        from audio.src_latency import SrcGraphSettling
+        clock = [0.0]
+        async def exercise():
+            with tempfile.TemporaryDirectory() as directory:
+                binary = Path(directory) / 'fxroute-dsp'
+                binary.touch()
+                async def run(args):
+                    return CommandResult(1, '', 'Invalid candidate')
+                runtime = DSPRuntime(self.manager, binary=binary, command_runner=run)
+                runtime._process = FakeProcess()
+                target = self.target()
+                runtime._config = target.config
+                runtime._config_text = target.text
+                def unavailable():
+                    raise SrcGraphSettling('Output negotiating', path='output')
+                runtime.configure_latency_tracking(input_latency_provider=unavailable)
+                await runtime.update_input_latency(defer_unavailable=True)
+                with self.assertRaisesRegex(RuntimeError, 'Invalid candidate'):
+                    await runtime.sync_rendered(target)
+                clock[0] = 13
+                await runtime.update_input_latency(defer_unavailable=runtime._ingress_latency_pending)
+                snapshot = runtime.snapshot()
+                self.assertTrue(snapshot['ingress_latency_pending'])
+                self.assertEqual(snapshot['ingress_latency_pending_seconds'], 13)
+                self.assertIn('13.0s', snapshot['last_error'])
+        with unittest.mock.patch('dsp.runtime.time.monotonic', side_effect=lambda: clock[0]):
+            asyncio.run(exercise())
+
+    def test_hot_update_fallback_excludes_fatal_latency_evidence(self):
         events = []
 
         async def exercise(fail_stage):
@@ -694,7 +801,11 @@ class DSPRuntimeConfigTests(unittest.TestCase):
                     runtime.configure_latency_tracking(input_latency_provider=latency)
 
                 runtime._reconcile_output_links = fail_once
-                await runtime.sync_rendered(self.target())
+                if fail_stage == 'latency':
+                    with self.assertRaisesRegex(RuntimeError, 'SRC adapter is unavailable'):
+                        await runtime.sync_rendered(self.target())
+                else:
+                    await runtime.sync_rendered(self.target())
                 await runtime.stop()
 
         async def complete():

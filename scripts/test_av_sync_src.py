@@ -109,6 +109,16 @@ class SrcLatencyTests(unittest.TestCase):
             with self.subTest(key=key, value=val), self.assertRaises(RuntimeError):
                 src.graph_src_latency(value)
 
+    def test_missing_path_is_typed_separately_from_a_broken_adapter(self):
+        with self.assertRaises(RuntimeError) as missing:
+            src.graph_src_latency(graph()[:8])
+        self.assertEqual(type(missing.exception).__name__, 'SrcPathUnavailable')
+        broken = graph()
+        broken[0]['info']['params']['Props'][0]['params']['fxroute.src.error'] = 32
+        with self.assertRaises(RuntimeError) as adapter:
+            src.graph_src_latency(broken)
+        self.assertNotEqual(type(adapter.exception), type(missing.exception))
+
     def test_reader_uses_fresh_graph_after_cache_expires_and_never_hides_failure(self):
         equal = graph(); equal[0] = node(1, 'mpv', 'Stream/Output/Audio', 0, bypass=True)
         outputs = [subprocess.CompletedProcess([], 0, json.dumps(graph()), ''),

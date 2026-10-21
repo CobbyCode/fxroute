@@ -176,6 +176,34 @@ class DeviceSwitchTests(unittest.IsolatedAsyncioTestCase):
     async def select(self, key):
         return await main.save_audio_output_selection_route(SimpleNamespace(json=lambda: self.body(key)))
 
+    async def test_broken_src_adapter_rolls_back_output_selection(self):
+        from audio.src_latency import graph_src_latency
+        from dsp.runtime import DSPRuntime
+        from test_av_sync_src import graph
+        native = DSPRuntime(self.manager)
+        native._process = SimpleNamespace(returncode=None)
+        def latency():
+            if native._config.output_key == HDMI:
+                broken = graph()
+                broken[0]['info']['params']['Props'][0]['params']['fxroute.src.error'] = 32
+                return graph_src_latency(broken)
+            return 0
+        async def control(*args, **kwargs):
+            return 'ok'
+        async def sync(target):
+            native._config = target.config
+            await native.update_input_latency(defer_unavailable=True)
+            await self.sync(target)
+        native._control_unlocked = control
+        native.configure_latency_tracking(input_latency_provider=latency)
+        before = self.service.load()
+        with mock.patch.object(self.native, 'sync_rendered', side_effect=sync):
+            with self.assertRaises(main.HTTPException) as raised:
+                await self.select(HDMI)
+        self.assertEqual(raised.exception.status_code, 500)
+        self.assertIn('SRC latency adapter is unavailable', str(raised.exception.detail))
+        self.assert_restored(before)
+
     async def body(self, key):
         return {"key": key}
 

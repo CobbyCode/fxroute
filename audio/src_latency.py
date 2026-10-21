@@ -15,16 +15,19 @@ SETTLE_READS = 6
 SETTLE_PAUSE_SECONDS = 0.05
 
 
-class SrcGraphSettling(RuntimeError):
-    """The owned path is linked, but its links are still being negotiated.
-
-    ``path`` names the settling side, ``ingress`` or ``output``.
-    """
+class SrcPathUnavailable(RuntimeError):
+    """The owned ingress or output path has no readable latency yet."""
 
     def __init__(self, message: str, *, path: str):
         super().__init__(message)
         self.path = path
 
+
+class SrcGraphSettling(SrcPathUnavailable):
+    """The owned path is linked, but its links are still being negotiated.
+
+    ``path`` names the settling side, ``ingress`` or ``output``.
+    """
 
 def graph_src_latency(graph: list[dict], *, include_ingress: bool = True,
                       ingress_nodes: tuple[str, ...] | None = None) -> float:
@@ -101,12 +104,12 @@ def graph_src_latency(graph: list[dict], *, include_ingress: bool = True,
     if include_ingress and not source_delays:
         if any(ingress_nodes is None or names.get(source) in ingress_nodes for source in settling_sources):
             raise SrcGraphSettling('Owned SRC ingress path is settling', path='ingress')
-        raise RuntimeError('Owned SRC ingress path is unavailable')
+        raise SrcPathUnavailable('Owned SRC ingress path is unavailable', path='ingress')
     if not output_delays:
         if any(((nodes.get(target) or {}).get('props') or {}).get('media.class') != 'Stream/Input/Audio'
                for target in settling_targets):
             raise SrcGraphSettling('Owned SRC output path is settling', path='output')
-        raise RuntimeError('Owned SRC output path is unavailable')
+        raise SrcPathUnavailable('Owned SRC output path is unavailable', path='output')
     if len(source_delays) > 1 or len(output_delays) > 1:
         raise RuntimeError('Linked audio paths have different SRC latency')
     return (next(iter(source_delays), 0) + next(iter(output_delays), 0)) / 1000000

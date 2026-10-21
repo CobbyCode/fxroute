@@ -26,7 +26,7 @@ from typing import Any, Awaitable, Callable, Iterator, Mapping, Sequence
 from audio.output_topology import SURROUND_POSITIONS
 from audio.output_ports import HARDWARE_CHANNEL_ORDER, hardware_link_target
 from audio.pw_link import stop_command_child_cancellation_safe
-from audio.src_latency import SrcGraphSettling
+from audio.src_latency import SrcGraphSettling, SrcPathUnavailable
 from common.run_to_completion import restore_after, run_to_completion
 from dsp.latency import latency_signature
 from playback.source_policy import GRAPH_NODE_BY_SOURCE, mpv_port_positions
@@ -406,6 +406,9 @@ class DSPRuntime:
         self._input_latency_provider: Callable[[], float | Awaitable[float]] | None = None
         self._last_input_latency_ms: float | None = None
         self._ingress_latency_pending = False
+        self._ingress_latency_pending_since: float | None = None
+        self._ingress_latency_pending_owner: tuple | None = None
+        self._input_latency_error: str | None = None
         self._graph_revision = 0
         self._output_switch_scope = None
         self._measurement_latency_signature: tuple | None = None
@@ -447,26 +450,45 @@ class DSPRuntime:
         owner = self._latency_owner()
         try:
             value = await self._input_latency_ms()
-        except RuntimeError as exc:
+        except SrcPathUnavailable as exc:
+            if not self._latency_owner_matches(owner):
+                return
             if not defer_unavailable and not (isinstance(exc, SrcGraphSettling) and exc.path == 'ingress'):
                 raise
             # A committed graph must survive an unavailable SRC observation.
             # Never invent a latency; the watch retries once its links settle.
+            now = time.monotonic()
+            pending_owner = self._ingress_latency_pending_owner
+            if pending_owner is None or not self._latency_owner_matches(pending_owner):
+                self._ingress_latency_pending_since = now
+                self._ingress_latency_pending_owner = owner
+                logger.warning('Native DSP graph committed; SRC latency pending: %s', exc)
             self._ingress_latency_pending = True
             self._last_input_latency_ms = None
             self._latency_snapshot = {}
-            if defer_unavailable:
-                logger.warning('Native DSP graph committed; SRC latency pending: %s', exc)
+            age = now - self._ingress_latency_pending_since
+            self._input_latency_error = f'SRC latency pending for {age:.1f}s: {exc}' if age >= 10 else None
             return
-        self._ingress_latency_pending = False
+        except RuntimeError as exc:
+            if self._latency_owner_matches(owner):
+                self._input_latency_error = str(exc)
+                self._latency_snapshot = {}
+            raise
         async with self._control_lock:
             if not self._latency_owner_matches(owner) or not self._engine_running():
                 return
+            self._clear_input_latency_pending()
             if value != self._last_input_latency_ms:
                 self._last_input_latency_ms = None
                 await self._control_unlocked(f'input latency {value:.9g}', reply=True)
                 if self._latency_owner_matches(owner) and self._engine_running():
                     self._last_input_latency_ms = value
+
+    def _clear_input_latency_pending(self) -> None:
+        self._ingress_latency_pending = False
+        self._ingress_latency_pending_since = None
+        self._ingress_latency_pending_owner = None
+        self._input_latency_error = None
 
     async def read_latency(self) -> dict:
         if (not self._engine_running() or self._config is None or self.sync_in_progress
@@ -661,13 +683,19 @@ class DSPRuntime:
         return roles, measured_positions
 
     async def latency_watch_loop(self, *, on_ready: Callable[[dict], Awaitable[None]] | None = None) -> None:
+        delay = 0.1
+        warning_at = 0.0
         while True:
-            await asyncio.sleep(0.1)
+            await asyncio.sleep(delay)
             if not self._engine_running() or self._lock.locked() or self._control_poisoned:
                 continue
             try:
-                await self.update_input_latency()
+                await self.update_input_latency(defer_unavailable=self._ingress_latency_pending)
+                if self._ingress_latency_pending:
+                    delay = min(2.0, delay * 2)
+                    continue
                 value = await self.read_latency()
+                delay = 0.1
                 try:
                     self.validate_measurement_latency(value)
                 except RuntimeError:
@@ -681,7 +709,11 @@ class DSPRuntime:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                logger.warning('AV Sync readback unavailable: %s', exc)
+                delay = min(2.0, delay * 2)
+                now = time.monotonic()
+                if now >= warning_at:
+                    logger.warning('AV Sync readback unavailable: %s', exc)
+                    warning_at = now + 5.0
 
     @property
     def sync_in_progress(self) -> bool:
@@ -814,7 +846,7 @@ class DSPRuntime:
 
     def snapshot(self) -> dict[str, Any]:
         running = self._process is not None and getattr(self._process, "returncode", None) is None
-        return {"active": running and not self._error and not self._control_poisoned and bool(self._links), "engine": "fxroute_native_dsp",
+        return {"active": running and not (self._error or self._input_latency_error) and not self._control_poisoned and bool(self._links), "engine": "fxroute_native_dsp",
                 "helper_pid": getattr(self._process, "pid", None) if running else None,
                 "graph_revision": self._graph_revision,
                 "helper_args": [str(self.binary), str(self._config_path)] if self._config_path else None,
@@ -824,7 +856,7 @@ class DSPRuntime:
                             "output_routes": list(config_route_pairs(self._config)),
                             "plan_fingerprint": getattr(self._config, "plan_fingerprint", None),
                             "layout": [dict(channel) for channel in getattr(self._config, "layout", ())]} if self._config else None,
-                "last_error": self._error, "last_started_at": self._started_at,
+                "last_error": self._error or self._input_latency_error, "last_started_at": self._started_at,
                  "links_configured": bool(self._links), "exact_sub_mute": self._exact_sub_mute,
                  "surround_input": self._surround_input,
                  "mapped_ingress": [list(edge) for edge in self._mapped_ingress],
@@ -832,7 +864,10 @@ class DSPRuntime:
                 "input_mask": None if self._control_poisoned else self._input_mask,
                 "control_state": "unknown" if self._control_poisoned else "ready",
                  "effect_bypass": self._effect_bypass, "output_gain_db": self._output_gain_db,
-                 "latency_tracking": self._latency_tracking,
+                  "latency_tracking": self._latency_tracking,
+                "ingress_latency_pending": self._ingress_latency_pending,
+                "ingress_latency_pending_seconds": (max(0.0, time.monotonic() - self._ingress_latency_pending_since)
+                                                    if self._ingress_latency_pending_since is not None else None),
                 "av_sync": copy.deepcopy(self._latency_snapshot),
                  "measurement_latency": copy.deepcopy(self._measurement_latency_snapshot),
                   "measurement_active": self._measurement_active,
@@ -1400,31 +1435,28 @@ class DSPRuntime:
 
         if self._can_hot_update(config):
             try:
-                if await self._try_live_update(text):
-                    await self._reconcile_output_links(config)
-                    self._config = config
-                    self._config_text = text
-                    self._effect_bypass = any(line.strip() == 'bypass 1' for line in text.splitlines())
-                    await self.update_input_latency(defer_unavailable=True)
-                    Path(config_name).unlink(missing_ok=True)
-                    self._error = None
-                    return
-                if self._control_poisoned:
-                    raise RuntimeError("Native DSP live update state is unknown; rebuilding engine")
-                await self._control(
-                    f"swap config {config_name} {max(-80.0, min(0.0, float(initial_output_gain_db))):.9g}",
-                    reply=True,
-                )
+                if not await self._try_live_update(text):
+                    if self._control_poisoned:
+                        raise RuntimeError("Native DSP live update state is unknown; rebuilding engine")
+                    await self._control(
+                        f"swap config {config_name} {max(-80.0, min(0.0, float(initial_output_gain_db))):.9g}",
+                        reply=True,
+                    )
                 await self._reconcile_output_links(config)
                 self._config = config
                 self._config_text = text
                 self._effect_bypass = any(line.strip() == 'bypass 1' for line in text.splitlines())
-                await self.update_input_latency(defer_unavailable=True)
-                Path(config_name).unlink(missing_ok=True)
-                self._error = None
-                return
             except Exception as exc:
                 logger.warning("Native DSP hot update failed; falling back to process rebuild: %s", exc)
+            else:
+                # SRC evidence failures are not helper-update failures. Let the
+                # owning transaction roll back rather than hide them in a rebuild.
+                try:
+                    await self.update_input_latency(defer_unavailable=True)
+                finally:
+                    Path(config_name).unlink(missing_ok=True)
+                self._error = None
+                return
 
         await self.stop()
         self._config_path = Path(config_name)
@@ -1804,6 +1836,7 @@ class DSPRuntime:
         self._output_mask = 0
         self._input_mask = 0
         self._config_text = None
+        self._clear_input_latency_pending()
 
     async def verify_output_links(self) -> bool:
         """Confirm the hardware boundary without vetoing a changing source layout."""
