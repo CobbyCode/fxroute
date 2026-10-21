@@ -13,6 +13,7 @@ import asyncio
 import json
 import logging
 import time
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 from uuid import uuid4
@@ -158,6 +159,42 @@ class _OutputGateMixin:
         """Resolve an FXRoute-owned mute left by an earlier process."""
         async with self.lock:
             return await self._reconcile_startup_gate_locked()
+
+    def _invalidate_gate_sink(self) -> None:
+        invalidate = getattr(self.runtime, 'invalidate_gate_sink_resolution', None)
+        if callable(invalidate):
+            invalidate()
+
+    async def handoff_output_gate(self) -> None:
+        """Retain user intent, but rebind the gate after replacing its physical sink."""
+        if not self.lock.locked() or not self.gate.closed:
+            raise RuntimeError('Output gate handoff requires an active lease')
+        self._invalidate_gate_sink()
+        await self.ensure_output_gate_closed(self.gate.transition_id, stage='output-edit-handoff')
+
+    @asynccontextmanager
+    async def output_gate_lease(self):
+        """Gate an explicit output edit while its caller holds the coordinator lock."""
+        if not self.lock.locked():
+            raise RuntimeError('Output gate lease requires coordinator ownership')
+        if not await self._reconcile_startup_gate_locked():
+            raise RuntimeError('Output gate startup reconciliation is unavailable')
+        inherited = self.gate.closed
+        transition_id = self.gate.transition_id if inherited else f'output-{uuid4().hex}'
+        try:
+            if not inherited:
+                await self._close_gate(transition_id)
+            await self.ensure_output_gate_closed(transition_id, stage='output-edit')
+            yield
+            await self.handoff_output_gate()
+            if not inherited:
+                await self._hold_gate_after_verification()
+                await self._restore_gate(transition_id)
+        except BaseException:
+            if self.gate.closed and self.gate.transition_id == transition_id:
+                self._invalidate_gate_sink()
+                await self._latch_failure(transition_id)
+            raise
 
     async def _read_dsp_sink_mute(self) -> bool | None:
         reader = getattr(self.runtime, "read_sink_mute", None)

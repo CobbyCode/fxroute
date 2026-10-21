@@ -170,7 +170,7 @@ class DeviceSwitchTests(unittest.IsolatedAsyncioTestCase):
 
     async def diagnose(self, target):
         key = target["selected_output"]["key"]
-        return {"output_key": key, "links_complete": bool(
+        return {"output_key": key, "output_links_complete": bool(
             self.applied and self.applied.config.output_key == key and key not in self.fail_readback)}
 
     async def select(self, key):

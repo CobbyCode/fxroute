@@ -19,6 +19,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import main
 from audio import hdmi
+from playback.transition import PlaybackTransitionCoordinator
+from test_playback_transition_coordinator import FakeRuntime
 from audio.output_state import routing_for_device, set_mode_routing, switch_mode
 from scripts.test_output_state_api import make_manager, make_service
 from audio.samplerate import _load_audio_output_selection, _save_audio_output_selection
@@ -42,7 +44,8 @@ class HdmiTransportSwitchTests(unittest.IsolatedAsyncioTestCase):
         self.fail_selection = set()
         self.manager = make_manager(self.directory.name)
         self.service = make_service(self.directory.name, self.manager)
-        self.coordinator = SimpleNamespace(lock=asyncio.Lock())
+        self.gate_runtime = FakeRuntime()
+        self.coordinator = PlaybackTransitionCoordinator(self.gate_runtime, gate_settle_seconds=0)
         self.session = SimpleNamespace(lock=asyncio.Lock(), has_active_jobs=False)
         patches = [
             mock.patch.object(main, "playback_transition_coordinator", self.coordinator),
@@ -139,6 +142,121 @@ class HdmiTransportSwitchTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(commands, [('audio-channels', 'auto'), ('ingress', SURROUND71)])
         self.assertEqual(player.state['current_file'], '/music/current.flac')
         self.assertFalse(player.state['paused'])
+
+    async def test_automatic_channel_change_and_ingress_are_gated_and_keep_user_mute(self):
+        from playback.player import MPVWrapper
+        for user_muted in (False, True):
+            with self.subTest(user_muted=user_muted):
+                self.gate_runtime.muted = user_muted
+                player = MPVWrapper()
+                player._state.update(current_file='/music/current.flac')
+                player._notify_callbacks()
+                def property_write(*args):
+                    self.assertTrue(self.gate_runtime.muted, 'Channel change requires a physical mute')
+                    self.assertTrue(self.coordinator.gate.closed)
+                async def ingress():
+                    self.assertTrue(self.gate_runtime.muted, 'Ingress relink requires a physical mute')
+                    return True
+                with mock.patch.object(main.runtime, 'player_instance', player), \
+                        mock.patch.object(main, '_player_is_running', return_value=True), \
+                        mock.patch.object(player, 'set_property', side_effect=property_write), \
+                        mock.patch.object(main.playback_orchestration.configured(), 'ensure_mpv_to_dsp_links',
+                                          side_effect=ingress):
+                    await self.automatic('surround')
+                self.assertEqual(self.gate_runtime.muted, user_muted)
+                self.assertFalse(self.coordinator.gate.closed)
+                # Reset transport and stored mode for the next independent upgrade.
+                await self.automatic('stereo')
+                await self.change(SURROUND71, 'stereo')
+
+    async def test_failed_hdmi_downshift_still_restores_channels_and_connector(self):
+        from playback.player import MPVWrapper
+        player = MPVWrapper()
+        player._state.update(current_file='/music/current.flac')
+        player._notify_callbacks()
+        original = RuntimeError('Original ingress failure')
+        channels = []
+        connectors = hdmi.load_connectors()
+        transport = main._apply_hdmi_transport
+        async def fail_downshift(sink, target, **kwargs):
+            if target == 'stereo':
+                raise RuntimeError('Downshift failed')
+            return await transport(sink, target, **kwargs)
+        with mock.patch.object(main.runtime, 'player_instance', player), \
+                mock.patch.object(main, '_player_is_running', return_value=True), \
+                mock.patch.object(player, 'set_property', side_effect=lambda *args: channels.append(args)), \
+                mock.patch.object(main, '_apply_hdmi_transport', side_effect=fail_downshift), \
+                mock.patch.object(main.playback_orchestration.configured(), 'ensure_mpv_to_dsp_links',
+                                  side_effect=[original, True]):
+            with self.assertRaises(RuntimeError) as raised:
+                await self.automatic('surround')
+        self.assertIs(raised.exception, original)
+        self.assertEqual(channels, [('audio-channels', 'auto'), ('audio-channels', 'stereo')])
+        self.assertEqual(hdmi.load_connectors(), connectors)
+        self.assertEqual(self.sink, SURROUND71, 'Failed downshift must not be reported as restored')
+        self.assertEqual(self.service.load()['active_mode'], 'stereo')
+        self.assertTrue(self.coordinator.gate.failure_latched)
+        self.assertTrue(any('Downshift failed' in note for note in original.__notes__))
+
+    async def _production_gate_upgrade(self, user_muted):
+        from dataclasses import replace
+        from playback.runtime import FxrouteTransitionRuntime
+        from playback.player import MPVWrapper
+        adapter = FxrouteTransitionRuntime(replace(main.make_playback_runtime_deps(), output_switch_user_mute=None))
+        coordinator = PlaybackTransitionCoordinator(adapter, gate_settle_seconds=0)
+        coordinator._startup_gate_reconciled = True
+        mutes = {STEREO: user_muted}
+        def read(key):
+            if key != self.sink:
+                raise RuntimeError(f'No such sink: {key}')
+            return mutes.get(key, False)
+        def write(key, muted):
+            read(key)
+            mutes[key] = muted
+        player = MPVWrapper()
+        player._state.update(current_file='/music/current.flac')
+        player._notify_callbacks()
+        def property_write(*args):
+            self.assertTrue(read(self.sink), 'Replacement sink must be gated before changing channels')
+        with mock.patch.object(main, 'playback_transition_coordinator', coordinator), \
+                mock.patch('playback.runtime.mute._hardware_sink_for_transition', side_effect=lambda deps: self.sink), \
+                mock.patch('playback.runtime.mute._read_hardware_sink_mute', side_effect=read), \
+                mock.patch('playback.runtime.mute._set_hardware_sink_mute', side_effect=write), \
+                mock.patch.object(main.runtime, 'player_instance', player), \
+                mock.patch.object(main, '_player_is_running', return_value=True), \
+                mock.patch.object(player, 'set_property', side_effect=property_write), \
+                mock.patch.object(main.playback_orchestration.configured(), 'ensure_mpv_to_dsp_links', return_value=True):
+            await self.automatic('surround')
+        self.assertEqual(read(SURROUND71), user_muted)
+        self.assertFalse(coordinator.gate.closed)
+
+    async def test_production_gate_rebinds_a_replaced_sink_before_channels_and_restore(self):
+        await self._production_gate_upgrade(False)
+
+    async def test_production_gate_preserves_user_mute_across_sink_replacement(self):
+        await self._production_gate_upgrade(True)
+
+    async def test_failed_state_rollback_uses_the_mode_that_is_still_published(self):
+        from playback.player import MPVWrapper
+        player = MPVWrapper()
+        player._state.update(current_file='/music/current.flac')
+        player._notify_callbacks()
+        original = RuntimeError('Original ingress failure')
+        channels = []
+        with mock.patch.object(main.runtime, 'player_instance', player), \
+                mock.patch.object(main, '_player_is_running', return_value=True), \
+                mock.patch.object(player, 'set_property', side_effect=lambda *args: channels.append(args)), \
+                mock.patch.object(self.service, 'revert', side_effect=OSError('State rollback failed')), \
+                mock.patch.object(main.playback_orchestration.configured(), 'ensure_mpv_to_dsp_links',
+                                  side_effect=[original, True]):
+            with self.assertRaises(RuntimeError) as raised:
+                await self.automatic('surround')
+        self.assertIs(raised.exception, original)
+        self.assertEqual(self.service.load()['active_mode'], 'surround')
+        self.assertEqual(channels, [('audio-channels', 'auto')])
+        self.assertEqual(self.sink, STEREO)
+        self.assertTrue(self.coordinator.gate.failure_latched)
+        self.assertTrue(any('State rollback failed' in note for note in original.__notes__))
 
     async def test_automatic_mode_failure_restores_mpv_channel_policy(self):
         from playback.player import MPVWrapper

@@ -5509,6 +5509,7 @@ async def _sync_mpv_output_mode_channels(mode: str) -> None:
     player = runtime.player_instance
     if player is None or not _player_is_running(player):
         return
+    await playback_transition_coordinator.handoff_output_gate()
     changed = await _drain_worker(player.set_surround_channels, mode == 'surround')
     if (changed and player.state.get('current_file')
             and playback_state.current_playback_owner not in source_policy.EXTERNAL_SOURCES):
@@ -5555,22 +5556,37 @@ async def _apply_hdmi_output_state(body: dict, state: dict, candidate: dict, ove
                     "fingerprint": None, "fingerprint_changed": None, "live_applied": False,
                     "live_reason": "not-activatable",
                     "topology": output_state_topology(committed, mode, key, hdmi.routing_capacity(overview))}
-        committed = await asyncio.to_thread(service.commit_unowned, candidate, expected_revision=state["revision"])
         connector_before = (await asyncio.to_thread(hdmi.load_connectors)).get(sink.identity)
-        transport_applied = False
-        try:
-            result = await _apply_hdmi_transport(sink, target, remember=True)
-            transport_applied = True
-            await _sync_mpv_output_mode_channels(mode)
-        except BaseException:
-            await asyncio.to_thread(service.revert, state, expected_revision=committed["revision"])
-            if transport_applied:
-                await _apply_hdmi_transport(sink, sink.transport, remember=True)
-                await asyncio.to_thread(hdmi.store_connector, sink.identity, connector_before)
-            else:
-                await _apply_audio_output_selection(key, seed_routing=False)
-            await _sync_mpv_output_mode_channels(state['active_mode'])
-            raise
+        async with playback_transition_coordinator.output_gate_lease():
+            committed = await asyncio.to_thread(service.commit_unowned, candidate, expected_revision=state["revision"])
+            transport_applied = False
+            try:
+                result = await _apply_hdmi_transport(sink, target, remember=True)
+                transport_applied = True
+                await _sync_mpv_output_mode_channels(mode)
+            except BaseException as error:
+                async def rollback_step(name, operation):
+                    try:
+                        return await operation()
+                    except BaseException as rollback_error:
+                        logger.exception('Automatic HDMI rollback failed: %s', name)
+                        error.add_note(f'HDMI rollback {name} failed: {rollback_error}')
+
+                await rollback_step('state', lambda: asyncio.to_thread(
+                    service.revert, state, expected_revision=committed["revision"]))
+                if transport_applied:
+                    await rollback_step('transport', lambda: _apply_hdmi_transport(sink, sink.transport, remember=True))
+                else:
+                    await rollback_step('output', lambda: _apply_audio_output_selection(key, seed_routing=False))
+                await rollback_step('connector', lambda: asyncio.to_thread(
+                    hdmi.store_connector, sink.identity, connector_before))
+
+                async def restore_channels():
+                    actual = await asyncio.to_thread(service.load)
+                    await _sync_mpv_output_mode_channels(actual['active_mode'])
+
+                await rollback_step('MPV channels', restore_channels)
+                raise
         _hdmi_transport_watch.settled(sink.identity)
         live_key, live_channels = output_state_device(result)
         return {"status": "ok", "revision": (await asyncio.to_thread(service.load))["revision"], "active_mode": mode,

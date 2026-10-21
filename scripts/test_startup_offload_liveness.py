@@ -134,6 +134,8 @@ class FakeMeasurementSession:
 
 
 class FakeCoordinator:
+    startup_gate_restored = False
+
     def __init__(self, *args, **kwargs):
         pass
 

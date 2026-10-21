@@ -229,6 +229,8 @@ def _reason(context: str, name: str) -> str | None:
         return "Coordinator adapter/core: production transition graph ownership"
     if leaf == "stabilize_effects_after_rate_change":
         return "Coordinator adapter/core: bounded link-only repair under the closed gate"
+    if leaf == "_sync_mpv_output_mode_channels":
+        return "automatic HDMI edit/rollback under Coordinator lock and output_gate_lease"
     if leaf == "_reconcile_transition_sink_rate":
         return "rate reconciliation primitive invoked by Coordinator adapter/verifier or measurement entry"
     if leaf == "_coordinator_reconcile_subwoofer_links_only":
