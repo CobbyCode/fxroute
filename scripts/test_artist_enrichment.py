@@ -533,6 +533,77 @@ class MappingVersionTests(unittest.TestCase):
         self.assertEqual(backend.calls, [], "ambiguous rows must be cooled down")
 
 
+class ArtistDescriptionCooldownTests(unittest.TestCase):
+    """About text: a failed lookup retries on the short cooldown, a completed
+    run without a summary keeps the long missing-description cooldown."""
+
+    DESCRIPTION_FIXTURES = {
+        "/ws/2/artist/mb-1": {
+            "relations": [{"url": {"resource": "https://www.wikidata.org/wiki/Q1"}}],
+            "name": "Daft Punk",
+        },
+        "wikidata.org": {"entities": {"Q1": {"sitelinks": {"enwiki": {"title": "Daft Punk"}}}}},
+        "en.wikipedia.org": {"extract": "Daft Punk were a French duo. Sentence two."},
+    }
+
+    def _seed(self, svc, *, attempted_at: str, error, description=None):
+        svc.store.upsert_artist_description(
+            "mb-1", "Daft Punk", description, attempted_at=attempted_at, error=error,
+        )
+
+    def _past(self, hours: int) -> str:
+        return (datetime.now(timezone.utc) - timedelta(hours=hours)).replace(microsecond=0).isoformat()
+
+    def _fixture_backend(self) -> FakeBackend:
+        backend = FakeBackend()
+        for fragment, payload in self.DESCRIPTION_FIXTURES.items():
+            backend.set(fragment, payload)
+        return backend
+
+    def test_transient_failure_is_cached_and_recorded(self):
+        backend = FakeBackend()  # every request fails -> transient lookup error
+        svc = _mk_tmp_service(backend)
+        self.assertIsNone(svc.artist_description("mb-1"))
+        row = svc.store.get_artist("mb-1")
+        self.assertTrue(row["description_attempted_at"])
+        self.assertTrue(row["description_error"], "the transient failure must be recorded")
+
+    def test_transient_failure_retried_after_short_cooldown(self):
+        # A MusicBrainz 503 must not suppress the about text for a week: once
+        # the transient cooldown has elapsed the lookup is attempted again and
+        # the stored error is cleared.
+        backend = self._fixture_backend()
+        svc = _mk_tmp_service(backend)
+        self._seed(svc, attempted_at=self._past(2), error="503 Server Error")
+        self.assertEqual(
+            svc.artist_description("mb-1"),
+            "Daft Punk were a French duo. Sentence two.",
+        )
+        row = svc.store.get_artist("mb-1")
+        self.assertTrue(row["description"])
+        self.assertIsNone(row["description_error"], "a successful retry must clear the error")
+        # The recovered text is cached: no further network traffic.
+        backend.calls.clear()
+        self.assertTrue(svc.artist_description("mb-1"))
+        self.assertEqual(backend.calls, [])
+
+    def test_transient_failure_suppressed_within_short_cooldown(self):
+        backend = FakeBackend()
+        svc = _mk_tmp_service(backend)
+        self._seed(svc, attempted_at=ae._utc_now(), error="503 Server Error")
+        self.assertIsNone(svc.artist_description("mb-1"))
+        self.assertEqual(backend.calls, [], "the short cooldown must suppress an immediate retry")
+
+    def test_missing_description_keeps_long_cooldown(self):
+        # A completed run that simply found no summary is not a transient
+        # failure: it keeps the long cooldown instead of being retried hourly.
+        backend = FakeBackend()
+        svc = _mk_tmp_service(backend)
+        self._seed(svc, attempted_at=self._past(2), error=None)
+        self.assertIsNone(svc.artist_description("mb-1"))
+        self.assertEqual(backend.calls, [], "a found-nothing result must not be retried hourly")
+
+
 class SchemaMigrationTests(unittest.TestCase):
     """Test #7: an existing DB without the new columns/tables migrates
     additively and the legacy release rows are preserved, not destroyed."""

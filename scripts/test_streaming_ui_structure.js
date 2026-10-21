@@ -349,6 +349,14 @@ assert.ok(artistBody.includes("heading.textContent = 'Top Tracks'") && artistBod
     'the artist detail must render Top Tracks and Albums sections');
 assert.ok(artistBody.includes("renderSearchItem('albums', item, [])"),
     'album rows in the artist detail must reuse the existing album row/click');
+// The body appends its sections to the results host, so the "Loading…"
+// placeholder from renderTidalArtist must be cleared first; otherwise every
+// artist with catalog data keeps a stale loading line above Top Tracks.
+const clearIndex = artistLoad.indexOf("results.innerHTML = ''");
+assert.ok(clearIndex > 0,
+    'the artist detail must clear the loading placeholder before rendering');
+assert.ok(clearIndex < artistLoad.indexOf('renderTidalArtistBody(results, data)'),
+    'the loading placeholder must be cleared before the sections are rendered');
 assert.ok(js.includes('viewStack'),
     'detail navigation must keep a back stack so nested details return through');
 assert.ok(js.includes('function closeTidalDetail'),

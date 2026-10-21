@@ -1014,6 +1014,11 @@ class ArtistEnrichmentService:
         A non-empty description is served from the cache without refreshing; an
         empty description is only retried after the cooldown has elapsed, so the
         same artist's bio is never re-fetched per request or per album.
+
+        A *failed* lookup (MusicBrainz 503/network/timeout) is transient and uses
+        the short retry cooldown: an outage must not suppress the about text for
+        the long missing-description cooldown.  Only a completed run that found
+        no summary earns the long cooldown.
         """
         mb_artist_id = str(mb_artist_id or "").strip()
         if not mb_artist_id:
@@ -1023,7 +1028,7 @@ class ArtistEnrichmentService:
             return row["description"]
         if row and row["description_attempted_at"]:
             age = time.time() - (_iso_timestamp(row["description_attempted_at"]) or 0)
-            cooldown = MISSING_DESCRIPTION_COOLDOWN
+            cooldown = TRANSIENT_ERROR_RETRY_SECONDS if row["description_error"] else MISSING_DESCRIPTION_COOLDOWN
             if age < cooldown:
                 return None
         description = None

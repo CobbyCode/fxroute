@@ -1638,6 +1638,11 @@
             const data = await fetchTidalArtist(state.tidal.detailId);
             try { await loadTidalFavoriteIds(); } catch (e) { /* hearts degrade to unfilled */ }
             if (requestId !== state.tidal.detailRequestId || state.tidal.view !== 'artist') return;
+            // The artist body (Top Tracks, Albums, Discover Similar) is appended
+            // to this host, so the loading placeholder from renderTidalArtist
+            // must be dropped first; otherwise an artist with catalog data keeps
+            // a stale "Loading…" line above its sections.
+            results.innerHTML = '';
             if (data.art_url) {
                 state.tidal.detailArt = data.art_url;
                 const cover = content.querySelector('.tidal-detail-cover');
