@@ -991,16 +991,19 @@ class PlaybackOrchestrator:
         diagnosis = await self.playback_graph_diagnosis(overview, target_rate=target_rate)
         dsp_reinitialized = helper_rebuilt = links_reconciled = False
         repair_error = None
+        failed_repair = None
 
         async def repair_links(action):
-            nonlocal repair_error, links_reconciled
+            nonlocal repair_error, failed_repair, links_reconciled
             try:
                 await action()
                 repair_error = None
+                failed_repair = None
                 links_reconciled = True
             except RuntimeError as exc:
                 # PipeWire readbacks may lag a repair; retain the bounded retry.
                 repair_error = exc
+                failed_repair = action
                 logger.warning('Coordinator effects link repair not yet confirmed: %s', exc)
 
         if request.graph_only:
@@ -1070,7 +1073,9 @@ class PlaybackOrchestrator:
         for _ in range(3):
             if final.get("links_complete") and repair_error is None:
                 break
-            if final.get("bypass_only") or (repair_error is not None and mode in self._deps.output_mode_subwoofer_modes):
+            if failed_repair is not None:
+                await repair_links(failed_repair)
+            elif final.get("bypass_only"):
                 await repair_links(self.reconcile_subwoofer_links_only)
             else:
                 await repair_links(lambda: self.relink_missing_production_links(final, require_source=False))

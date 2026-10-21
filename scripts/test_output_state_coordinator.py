@@ -159,6 +159,31 @@ class PlannedDiagnosisTests(unittest.IsolatedAsyncioTestCase):
 
 
 class StagingBranchTests(unittest.IsolatedAsyncioTestCase):
+    async def test_retry_retains_runtime_repair_after_its_error_changes_the_diagnosis(self):
+        for mode in ('stereo', 'surround'):
+            with self.subTest(mode=mode):
+                attempts = 0
+                error = None
+                async def repair():
+                    nonlocal attempts, error
+                    attempts += 1
+                    if attempts == 1:
+                        error = 'Native DSP output links did not verify after repair'
+                        raise RuntimeError(error)
+                    error = None
+                instance = orchestrator({
+                    'get_dsp_runtime': lambda: SimpleNamespace(reclean_direct_dsp_links=repair)})
+                async def diagnosis(*args, **kwargs):
+                    return {'dsp_ports': True, 'helper_ports': True, 'links': {},
+                            'helper_active': error is None, 'bypass_only': attempts == 0,
+                            'links_complete': attempts > 0 and error is None, 'signature': mode}
+                request = TransitionRequest(operation='play', source='local', target_rate=48000,
+                    graph_only=True, audio_overview={'output_mode': {'mode': mode}})
+                with mock.patch.object(instance, 'playback_graph_diagnosis', side_effect=diagnosis):
+                    result = await instance.establish_effects_and_helper(request)
+                self.assertTrue(result['graph_complete'])
+                self.assertEqual(attempts, 2)
+
     async def test_effects_link_repairs_retry_exceptions_and_remain_bounded(self):
         for failures in (1, 99):
             with self.subTest(failures=failures):
