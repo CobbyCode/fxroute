@@ -173,8 +173,8 @@ class _OutputGateMixin:
         await self.ensure_output_gate_closed(self.gate.transition_id, stage='output-edit-handoff')
 
     @asynccontextmanager
-    async def output_gate_lease(self):
-        """Gate an explicit output edit while its caller holds the coordinator lock."""
+    async def output_gate_lease(self, *, verify_rollback: Callable[[], Awaitable[bool]] | None = None):
+        """Gate an output edit; only a verified rollback may release a failed new lease."""
         if not self.lock.locked():
             raise RuntimeError('Output gate lease requires coordinator ownership')
         if not await self._reconcile_startup_gate_locked():
@@ -190,10 +190,21 @@ class _OutputGateMixin:
             if not inherited:
                 await self._hold_gate_after_verification()
                 await self._restore_gate(transition_id)
-        except BaseException:
+        except BaseException as error:
             if self.gate.closed and self.gate.transition_id == transition_id:
-                self._invalidate_gate_sink()
-                await self._latch_failure(transition_id)
+                restored = False
+                if not inherited and verify_rollback is not None:
+                    try:
+                        if await verify_rollback():
+                            await self.handoff_output_gate()
+                            await self._hold_gate_after_verification()
+                            await self._restore_gate(transition_id)
+                            restored = True
+                    except BaseException as restore_error:
+                        error.add_note(f'Output gate rollback verification/restoration failed: {restore_error}')
+                if not restored:
+                    self._invalidate_gate_sink()
+                    await self._latch_failure(transition_id)
             raise
 
     async def _read_dsp_sink_mute(self) -> bool | None:

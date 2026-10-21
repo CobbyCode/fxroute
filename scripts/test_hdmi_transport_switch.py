@@ -27,6 +27,8 @@ from audio.samplerate import _load_audio_output_selection, _save_audio_output_se
 from test_hdmi_transport import (CARD, MARANTZ_ELD, PORTS_51, PORTS_71, STEREO, SURROUND, SURROUND71, card,
                                  surround_eld, tv_eld)
 
+APPLY_OUTPUT_SELECTION = main._apply_audio_output_selection
+
 
 class HdmiTransportSwitchTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
@@ -56,7 +58,9 @@ class HdmiTransportSwitchTests(unittest.IsolatedAsyncioTestCase):
             mock.patch.object(main, "dsp_orchestrator", SimpleNamespace(
                 refresh_peak_monitor_after_effects_change=self.refresh)),
             mock.patch.object(main.runtime, "dsp_runtime", SimpleNamespace(
-                snapshot=lambda: {"active": True}, sync_in_progress=False)),
+                snapshot=lambda: {"active": True, 'config': {'output_key': self.sink}}, sync_in_progress=False)),
+            mock.patch.object(main.playback_orchestration.configured(), 'playback_graph_diagnosis',
+                              side_effect=self.diagnose),
             mock.patch.object(main, "_measurement_session_owns_live_rate", return_value=False),
             mock.patch.object(main, "_hdmi_transport_watch", hdmi.TransportWatch()),
             mock.patch.object(main, "_hdmi_eld_cache", hdmi.EldCache()),
@@ -73,18 +77,24 @@ class HdmiTransportSwitchTests(unittest.IsolatedAsyncioTestCase):
     async def refresh(self, reason):
         return None
 
+    async def diagnose(self, target=None, **kwargs):
+        return {'output_key': self.sink, 'output_links_complete': True, 'links_complete': True}
+
     async def transition(self, request):
         change = request.output_state_transition
         await asyncio.to_thread(self.service.commit_unowned, change["candidate_state"],
                                 expected_revision=change["expected_revision"])
 
-    def overview(self):
-        parsed = hdmi.parse_sink_key(self.sink or STEREO)
+    def overview(self, *, selection_key=None):
+        selected = selection_key or self.sink
+        parsed = hdmi.parse_sink_key(selected or STEREO)
         channels = hdmi.transport(parsed.transport)["channels"]
-        return {"selected_output": {"key": self.sink, "channels": channels,
-                                    "hdmi": hdmi.describe(self.sink, card=self.card, eld=hdmi.parse_eld(self.eld))},
-                "output_mode": {"effective_output_key": self.sink, "effective_output_channels": channels,
-                                "hardware_playback_ports": PORTS_71[:channels]}}
+        return {"selected_output": {"key": selected, "channels": channels,
+                                    "hdmi": hdmi.describe(selected, card=self.card, eld=hdmi.parse_eld(self.eld))},
+                "outputs": [{"key": self.sink, "name": self.sink, "channels": channels, "selectable": True}],
+                "default_output": {"key": self.sink},
+                "output_mode": {"effective_output_key": selected, "effective_output_channels": channels,
+                                 "hardware_playback_ports": PORTS_71[:channels]}}
 
     async def automatic(self, mode):
         main._seed_hdmi_routing(self.sink, self.overview())
@@ -124,6 +134,87 @@ class HdmiTransportSwitchTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.service.load()["active_mode"], "stereo")
         self.assertEqual(self.sink, STEREO)
         self.assertEqual(_load_audio_output_selection()["selected_key"], STEREO)
+
+    async def test_automatic_failure_has_one_output_rollback_after_state_revert(self):
+        original = RuntimeError('Target selection failed')
+        select = self.select
+        restored_modes = []
+        async def failing(key, **kwargs):
+            if key == SURROUND71:
+                self.selections.append(key)
+                raise original
+            restored_modes.append(self.service.load()['active_mode'])
+            return await select(key, **kwargs)
+        with mock.patch.object(main, '_apply_audio_output_selection', side_effect=failing):
+            with self.assertRaises(RuntimeError) as raised:
+                await self.automatic('surround')
+        self.assertIs(raised.exception, original)
+        self.assertEqual(self.selections, [SURROUND71, STEREO])
+        self.assertEqual(restored_modes, ['stereo'], 'Restore output only after reverting the candidate')
+        self.assertEqual(hdmi.load_connectors(), {})
+        self.assertEqual(self.profile_changes(), ['output:hdmi-surround71+input:analog-stereo',
+                                                 'output:hdmi-stereo+input:analog-stereo'])
+
+    async def test_real_selection_defers_all_graph_rollback_to_the_automatic_edit(self):
+        original = RuntimeError('Original native apply failure')
+        graph = [STEREO]
+        syncs = []
+        async def sync(*, reason, target_overview, **kwargs):
+            key = target_overview['selected_output']['key']
+            syncs.append((reason, self.service.load()['active_mode'], key))
+            if reason == 'output-selection-rollback':
+                raise RuntimeError('Premature rollback under candidate state')
+            if key == SURROUND71:
+                graph[0] = None
+                raise original
+            graph[0] = key
+        async def diagnose(target, **kwargs):
+            return {'output_key': graph[0], 'output_links_complete': bool(graph[0]), 'links_complete': bool(graph[0])}
+        native = SimpleNamespace(snapshot=lambda: {'active': bool(graph[0]), 'config': {'output_key': graph[0]}},
+                                 fail_closed=mock.AsyncMock())
+        with mock.patch.object(main, '_apply_audio_output_selection', wraps=APPLY_OUTPUT_SELECTION), \
+                mock.patch.object(main.samplerate, 'prepare_audio_output_selection', side_effect=lambda key: {'name': key}), \
+                mock.patch.object(main.samplerate, '_set_default_sink', return_value=None), \
+                mock.patch.object(main.dsp_orchestrator, 'sync_runtime', side_effect=sync, create=True), \
+                mock.patch.object(main.runtime, 'dsp_runtime', native), \
+                mock.patch.object(main.playback_orchestration.configured(), 'playback_graph_diagnosis', side_effect=diagnose):
+            with self.assertRaises(RuntimeError) as raised:
+                await self.automatic('surround')
+        self.assertIs(raised.exception, original)
+        self.assertEqual(syncs, [('output-selection', 'surround', SURROUND71),
+                                 ('output-selection', 'stereo', STEREO)])
+        self.assertEqual(graph[0], STEREO)
+        self.assertEqual(_load_audio_output_selection()['selected_key'], STEREO)
+        native.fail_closed.assert_not_awaited()
+        self.assertFalse(self.coordinator.gate.closed)
+
+    async def test_verified_automatic_rollback_restores_user_mute_and_opens_its_gate(self):
+        for user_muted in (False, True):
+            with self.subTest(user_muted=user_muted):
+                self.gate_runtime.muted = user_muted
+                self.fail_selection.add(SURROUND71)
+                async def verify(key, overview):
+                    self.assertEqual(key, STEREO)
+                    self.assertEqual(self.sink, STEREO)
+                    self.assertEqual(self.service.load()['active_mode'], 'stereo')
+                    self.assertTrue(self.coordinator.gate.closed)
+                    self.assertTrue(self.gate_runtime.muted)
+                with mock.patch.object(main, '_verify_audio_output_selection', side_effect=verify):
+                    with self.assertRaisesRegex(RuntimeError, 'graph apply failed'):
+                        await self.automatic('surround')
+                self.assertEqual(self.gate_runtime.muted, user_muted)
+                self.assertFalse(self.coordinator.gate.closed)
+                self.assertFalse(self.coordinator.gate.failure_latched)
+
+    async def test_unverified_automatic_rollback_keeps_gate_latched(self):
+        self.fail_selection.add(SURROUND71)
+        with mock.patch.object(main, '_verify_audio_output_selection',
+                               side_effect=RuntimeError('Restored graph is incomplete')):
+            with self.assertRaisesRegex(RuntimeError, 'graph apply failed') as raised:
+                await self.automatic('surround')
+        self.assertTrue(self.gate_runtime.muted)
+        self.assertTrue(self.coordinator.gate.failure_latched)
+        self.assertTrue(any('Restored graph is incomplete' in note for note in getattr(raised.exception, '__notes__', [])))
 
     async def test_automatic_mode_upgrade_updates_mpv_channels_and_relinks_current_track(self):
         from playback.player import MPVWrapper
@@ -268,6 +359,8 @@ class HdmiTransportSwitchTests(unittest.IsolatedAsyncioTestCase):
         with mock.patch.object(main.runtime, 'player_instance', player), \
                 mock.patch.object(main, '_player_is_running', return_value=True), \
                 mock.patch.object(player, 'set_property', side_effect=lambda *args: commands.append(args)), \
+                mock.patch.object(player, 'get_property', return_value='stereo'), \
+                mock.patch.object(main, '_verify_audio_output_selection', return_value=None), \
                 mock.patch.object(main.playback_orchestration.configured(), 'ensure_mpv_to_dsp_links',
                                   side_effect=[False, True]):
             with self.assertRaisesRegex(RuntimeError, 'MPV channel-mode ingress'):
@@ -276,6 +369,86 @@ class HdmiTransportSwitchTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.service.load()['active_mode'], 'stereo')
         self.assertEqual(self.sink, STEREO)
         self.assertEqual(hdmi.load_connectors(), connectors_before)
+        self.assertFalse(self.coordinator.gate.closed)
+        self.assertFalse(self.gate_runtime.muted)
+
+    async def test_uncertain_mpv_channel_restore_does_not_open_gate(self):
+        from playback.player import MPVWrapper
+        player = MPVWrapper()
+        player._state.update(current_file='/music/current.flac')
+        player._notify_callbacks()
+        with mock.patch.object(main.runtime, 'player_instance', player), \
+                mock.patch.object(main, '_player_is_running', return_value=True), \
+                mock.patch.object(player, 'set_property', return_value=None), \
+                mock.patch.object(player, 'get_property', return_value='auto'), \
+                mock.patch.object(main, '_verify_audio_output_selection', return_value=None), \
+                mock.patch.object(main.playback_orchestration.configured(), 'ensure_mpv_to_dsp_links',
+                                  side_effect=[False, True]):
+            with self.assertRaisesRegex(RuntimeError, 'MPV channel-mode ingress') as raised:
+                await self.automatic('surround')
+        self.assertTrue(self.coordinator.gate.failure_latched)
+        self.assertTrue(self.gate_runtime.muted)
+        self.assertTrue(any('restoration was not confirmed' in note for note in raised.exception.__notes__))
+
+    async def test_unchanged_mpv_channels_still_require_verified_ingress_on_rollback(self):
+        from playback.player import MPVWrapper
+        player = MPVWrapper()
+        player._state.update(current_file='/music/current.flac')
+        player._notify_callbacks()
+        self.fail_selection.add(SURROUND71)
+        with mock.patch.object(main.runtime, 'player_instance', player), \
+                mock.patch.object(main, '_player_is_running', return_value=True), \
+                mock.patch.object(player, 'get_property', return_value='stereo'), \
+                mock.patch.object(main, '_verify_audio_output_selection', return_value=None), \
+                mock.patch.object(main.playback_orchestration.configured(), 'ensure_mpv_to_dsp_links', return_value=False):
+            with self.assertRaisesRegex(RuntimeError, 'graph apply failed'):
+                await self.automatic('surround')
+        self.assertTrue(self.coordinator.gate.failure_latched)
+        self.assertTrue(self.gate_runtime.muted)
+
+    async def test_complete_outputs_do_not_open_rollback_gate_with_incomplete_source_graph(self):
+        from playback.player import MPVWrapper
+        player = MPVWrapper()
+        player._state.update(current_file='/music/current.flac')
+        player._notify_callbacks()
+        self.fail_selection.add(SURROUND71)
+        async def diagnosis(target, **kwargs):
+            return {'output_key': self.sink, 'output_links_complete': True,
+                    'source_links_complete': False, 'links_complete': False}
+        with mock.patch.object(main.runtime, 'player_instance', player), \
+                mock.patch.object(main.playback_state, 'current_playback_owner', None), \
+                mock.patch.object(main, '_player_is_running', return_value=True), \
+                mock.patch.object(player, 'get_property', return_value='stereo'), \
+                mock.patch.object(main.playback_orchestration.configured(), 'ensure_mpv_to_dsp_links', return_value=True), \
+                mock.patch.object(main.playback_orchestration.configured(), 'playback_graph_diagnosis',
+                                  side_effect=diagnosis):
+            with self.assertRaisesRegex(RuntimeError, 'graph apply failed') as raised:
+                await self.automatic('surround')
+        self.assertTrue(self.coordinator.gate.failure_latched)
+        self.assertTrue(self.gate_runtime.muted)
+        self.assertTrue(any('playback graph was not restored' in note for note in raised.exception.__notes__))
+
+    async def test_failed_profile_rollback_preserves_original_error_and_safe_gate(self):
+        original = RuntimeError('Original target failure')
+        select = self.select
+        run_command = self.run_command
+        def command(args, *rest, **kwargs):
+            if args[:2] == ['pactl', 'set-card-profile'] and 'hdmi-stereo+' in args[3]:
+                raise RuntimeError('Profile restore failed')
+            return run_command(args, *rest, **kwargs)
+        async def failing(key, **kwargs):
+            if key == SURROUND71:
+                raise original
+            return await select(key, **kwargs)
+        with mock.patch.object(main.samplerate, '_run_command', side_effect=command), \
+                mock.patch.object(main, '_apply_audio_output_selection', side_effect=failing), \
+                mock.patch.object(main, '_verify_audio_output_selection', return_value=None):
+            with self.assertRaises(RuntimeError) as raised:
+                await self.automatic('surround')
+        self.assertIs(raised.exception, original)
+        self.assertTrue(self.coordinator.gate.failure_latched)
+        self.assertTrue(self.gate_runtime.muted)
+        self.assertTrue(any('Profile restore failed' in note for note in raised.exception.__notes__))
 
     async def test_uninitialized_routing_cannot_supersede_failure_rollback(self):
         before = self.service.load()
@@ -415,7 +588,7 @@ class HdmiTransportSwitchTests(unittest.IsolatedAsyncioTestCase):
             return "\n".join(f"{self.sink}:{port}" for port in PORTS_71) if self.sink else ""
         raise AssertionError(f"unexpected command {args}")
 
-    async def select(self, key, *, seed_routing=True):
+    async def select(self, key, *, seed_routing=True, rollback_on_failure=True):
         self.selections.append(key)
         if seed_routing:
             await asyncio.to_thread(main._seed_hdmi_routing, key, self.overview())

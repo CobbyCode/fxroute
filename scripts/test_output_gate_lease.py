@@ -46,6 +46,52 @@ class OutputGateLeaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(runtime.muted)
         self.assertTrue(coordinator.gate.failure_latched)
 
+    async def test_verified_rollback_releases_only_a_new_lease_and_preserves_user_mute(self):
+        for inherited in (False, True):
+            for user_muted in (False, True):
+                with self.subTest(inherited=inherited, user_muted=user_muted):
+                    runtime = FakeRuntime(muted=user_muted)
+                    coordinator = PlaybackTransitionCoordinator(runtime, gate_settle_seconds=0)
+                    coordinator._startup_gate_reconciled = True
+                    original = RuntimeError('Edit failed but was restored')
+                    async def verified():
+                        self.assertTrue(runtime.muted)
+                        return True
+                    async with coordinator.lock:
+                        if inherited:
+                            await coordinator._close_gate('prior')
+                            await coordinator._latch_failure('prior')
+                        with self.assertRaises(RuntimeError) as raised:
+                            async with coordinator.output_gate_lease(verify_rollback=verified):
+                                raise original
+                    self.assertIs(raised.exception, original)
+                    self.assertEqual(coordinator.gate.closed, inherited)
+                    self.assertEqual(runtime.muted, inherited or user_muted)
+
+    async def test_failed_rollback_verification_or_unmute_remains_fail_closed(self):
+        for failure in ('unverified', 'readback', 'unmute'):
+            with self.subTest(failure=failure):
+                runtime = FakeRuntime()
+                coordinator = PlaybackTransitionCoordinator(runtime, gate_settle_seconds=0)
+                original = RuntimeError('Original edit error')
+                async def verify():
+                    if failure == 'readback':
+                        raise RuntimeError('Readback failed')
+                    if failure == 'unmute':
+                        async def fail_unmute(muted, transition_id):
+                            if not muted:
+                                raise RuntimeError('Unmute failed')
+                            runtime.muted = True
+                        runtime.set_hardware_mute = fail_unmute
+                    return failure != 'unverified'
+                async with coordinator.lock:
+                    with self.assertRaises(RuntimeError) as raised:
+                        async with coordinator.output_gate_lease(verify_rollback=verify):
+                            raise original
+                self.assertIs(raised.exception, original)
+                self.assertTrue(runtime.muted)
+                self.assertTrue(coordinator.gate.failure_latched)
+
 
 if __name__ == '__main__':
     unittest.main()

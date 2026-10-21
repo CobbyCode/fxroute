@@ -5185,8 +5185,14 @@ async def _verify_audio_output_selection(key: str, target: dict) -> None:
         raise RuntimeError(f"Native DSP links did not verify for output {key}")
 
 
-async def _apply_audio_output_selection(key: str, *, seed_routing: bool = True) -> dict:
+async def _apply_audio_output_selection(key: str, *, seed_routing: bool = True,
+                                        rollback_on_failure: bool = True) -> dict:
     """Apply and verify a target under Coordinator and rate ownership."""
+    if not rollback_on_failure:
+        coordinator = playback_transition_coordinator
+        if (coordinator is None or not coordinator.lock.locked()
+                or not coordinator.gate.closed or coordinator.gate.owner != 'fxroute'):
+            raise RuntimeError('Delegated output rollback requires an owned output gate')
     selected = await asyncio.to_thread(samplerate.prepare_audio_output_selection, key)
     previous = await asyncio.to_thread(get_audio_output_overview)
     previous_default = (previous.get("default_output") or {}).get("key")
@@ -5232,6 +5238,9 @@ async def _apply_audio_output_selection(key: str, *, seed_routing: bool = True) 
             raise RuntimeError("Default sink changed before output selection commit")
         await asyncio.to_thread(samplerate._save_audio_output_selection, key)
     except BaseException:
+        if not rollback_on_failure:
+            # The HDMI edit owns state/profile/output recovery under its gate.
+            raise
         rollback_error = graph_error = None
         needs_source_sync = False
         source_state = previous_state
@@ -5429,7 +5438,8 @@ async def _wait_for_hdmi_sink(key: str, channels: int) -> None:
         await asyncio.sleep(0.2)
 
 
-async def _apply_hdmi_transport(sink: hdmi.HdmiSink, transport_id: str, *, remember: bool) -> dict:
+async def _apply_hdmi_transport(sink: hdmi.HdmiSink, transport_id: str, *, remember: bool,
+                                rollback_output: bool = True) -> dict:
     """Play one HDMI connector through another transport (card profile).
 
     The card profile changes first; the new sink is then selected through the
@@ -5442,13 +5452,15 @@ async def _apply_hdmi_transport(sink: hdmi.HdmiSink, transport_id: str, *, remem
     previous_owner = runtime.hdmi_transport_change_owner
     runtime.hdmi_transport_change_owner = asyncio.current_task()
     try:
-        return await _apply_hdmi_transport_change(sink, transport_id, remember=remember)
+        return await _apply_hdmi_transport_change(sink, transport_id, remember=remember,
+                                                  rollback_output=rollback_output)
     finally:
         runtime.hdmi_transport_change_owner = previous_owner
         runtime.hdmi_transport_change_depth -= 1
 
 
-async def _apply_hdmi_transport_change(sink: hdmi.HdmiSink, transport_id: str, *, remember: bool) -> dict:
+async def _apply_hdmi_transport_change(sink: hdmi.HdmiSink, transport_id: str, *, remember: bool,
+                                       rollback_output: bool = True) -> dict:
     hdmi.transport(transport_id)
     connectors = await asyncio.to_thread(hdmi.load_connectors)
     previous = connectors.get(sink.identity)
@@ -5474,7 +5486,8 @@ async def _apply_hdmi_transport_change(sink: hdmi.HdmiSink, transport_id: str, *
     try:
         if current_key == target_key:
             selected = (await asyncio.to_thread(samplerate._load_audio_output_selection)).get("selected_key")
-            result = (await _apply_audio_output_selection(target_key) if selected != target_key else
+            result = (await _apply_audio_output_selection(target_key, rollback_on_failure=rollback_output)
+                      if selected != target_key else
                       with_subwoofer_derived_delays(await asyncio.to_thread(get_audio_output_overview)))
         else:
             logger.info("HDMI layout change: connector=%s from=%s to=%s profile=%s",
@@ -5482,36 +5495,44 @@ async def _apply_hdmi_transport_change(sink: hdmi.HdmiSink, transport_id: str, *
             await asyncio.to_thread(samplerate._run_command, ["pactl", "set-card-profile", sink.card, profile])
             try:
                 await _wait_for_hdmi_sink(target_key, option["channels"])
-                result = await _apply_audio_output_selection(target_key)
-            except BaseException:
+                result = await _apply_audio_output_selection(target_key, rollback_on_failure=rollback_output)
+            except BaseException as error:
                 logger.warning("HDMI layout change to %s failed; restoring %s", target_key, old_profile)
                 try:
                     await asyncio.to_thread(samplerate._run_command,
                                             ["pactl", "set-card-profile", sink.card, old_profile or "off"])
                     if current is not None:
                         await _wait_for_hdmi_sink(current_key, hdmi.transport(current.transport)["channels"])
-                        await _apply_audio_output_selection(current_key)
-                except BaseException:
+                        if rollback_output:
+                            await _apply_audio_output_selection(current_key)
+                except BaseException as rollback_error:
                     logger.exception("HDMI layout rollback failed")
-                    raise RuntimeError("HDMI layout change failed and the previous layout could not be restored")
+                    error.add_note(f'HDMI profile/output rollback failed: {rollback_error}')
                 raise
-    except BaseException:
+    except BaseException as error:
         if remember:
-            await asyncio.to_thread(hdmi.store_connector, sink.identity, previous)
+            try:
+                await asyncio.to_thread(hdmi.store_connector, sink.identity, previous)
+            except BaseException as rollback_error:
+                error.add_note(f'HDMI connector rollback failed: {rollback_error}')
         raise
     result = dict(result)
     result["output_mode"] = {**(result.get("output_mode") or {}), "runtime": runtime.dsp_runtime.snapshot()}
     return result
 
 
-async def _sync_mpv_output_mode_channels(mode: str) -> None:
+async def _sync_mpv_output_mode_channels(mode: str, *, verify: bool = False) -> None:
     """Align a retained MPV track after the HDMI path bypassed a mode transition."""
     player = runtime.player_instance
     if player is None or not _player_is_running(player):
         return
     await playback_transition_coordinator.handoff_output_gate()
     changed = await _drain_worker(player.set_surround_channels, mode == 'surround')
-    if (changed and player.state.get('current_file')
+    if verify:
+        observed = await _drain_worker(player.get_property, 'audio-channels')
+        if observed != ('auto' if mode == 'surround' else 'stereo'):
+            raise RuntimeError('MPV channel-mode restoration was not confirmed')
+    if ((changed or verify) and player.state.get('current_file')
             and playback_state.current_playback_owner not in source_policy.EXTERNAL_SOURCES):
         if not await playback_orchestration.configured().ensure_mpv_to_dsp_links():
             raise RuntimeError('MPV channel-mode ingress was not confirmed')
@@ -5557,22 +5578,59 @@ async def _apply_hdmi_output_state(body: dict, state: dict, candidate: dict, ove
                     "live_reason": "not-activatable",
                     "topology": output_state_topology(committed, mode, key, hdmi.routing_capacity(overview))}
         connector_before = (await asyncio.to_thread(hdmi.load_connectors)).get(sink.identity)
-        async with playback_transition_coordinator.output_gate_lease():
+        probe_before = await asyncio.to_thread(_probe_hdmi_connector, sink, (connector_before or {}).get('pcm_device'))
+        profile_before = (probe_before.get('card') or {}).get('active_profile')
+        rollback_complete = False
+        restored_state = None
+
+        async def verify_rollback():
+            if not rollback_complete:
+                return False
+            if await asyncio.to_thread(service.load) != restored_state:
+                raise RuntimeError('HDMI rollback output state changed')
+            if (await asyncio.to_thread(hdmi.load_connectors)).get(sink.identity) != connector_before:
+                raise RuntimeError('HDMI rollback connector changed')
+            probe = await asyncio.to_thread(_probe_hdmi_connector, sink, (connector_before or {}).get('pcm_device'))
+            if (not profile_before or probe['current_key'] != key
+                    or (probe.get('card') or {}).get('active_profile') != profile_before):
+                raise RuntimeError('HDMI rollback profile was not restored')
+            if (await asyncio.to_thread(samplerate._load_audio_output_selection)).get('selected_key') != key:
+                raise RuntimeError('HDMI rollback output selection was not restored')
+            live = await asyncio.to_thread(get_audio_output_overview)
+            if (live.get('default_output') or {}).get('key') != key:
+                raise RuntimeError('HDMI rollback default output was not restored')
+            await _verify_audio_output_selection(key, live)
+            player = runtime.player_instance
+            source = playback_state.current_playback_owner
+            if not source and player is not None and player.state.get('current_file'):
+                source = 'local'
+            diagnosis = await playback_orchestration.configured().playback_graph_diagnosis(
+                live, source=source, require_source=bool(source))
+            if not diagnosis.get('links_complete'):
+                raise RuntimeError('HDMI rollback playback graph was not restored')
+            return True
+
+        async with playback_transition_coordinator.output_gate_lease(verify_rollback=verify_rollback):
             committed = await asyncio.to_thread(service.commit_unowned, candidate, expected_revision=state["revision"])
             transport_applied = False
             try:
-                result = await _apply_hdmi_transport(sink, target, remember=True)
+                # The transport owns profile rollback; this edit restores its
+                # output once, after reverting the candidate routing state.
+                result = await _apply_hdmi_transport(sink, target, remember=True, rollback_output=False)
                 transport_applied = True
                 await _sync_mpv_output_mode_channels(mode)
             except BaseException as error:
+                rollback_ok = True
                 async def rollback_step(name, operation):
+                    nonlocal rollback_ok
                     try:
                         return await operation()
                     except BaseException as rollback_error:
+                        rollback_ok = False
                         logger.exception('Automatic HDMI rollback failed: %s', name)
                         error.add_note(f'HDMI rollback {name} failed: {rollback_error}')
 
-                await rollback_step('state', lambda: asyncio.to_thread(
+                restored_state = await rollback_step('state', lambda: asyncio.to_thread(
                     service.revert, state, expected_revision=committed["revision"]))
                 if transport_applied:
                     await rollback_step('transport', lambda: _apply_hdmi_transport(sink, sink.transport, remember=True))
@@ -5583,9 +5641,10 @@ async def _apply_hdmi_output_state(body: dict, state: dict, candidate: dict, ove
 
                 async def restore_channels():
                     actual = await asyncio.to_thread(service.load)
-                    await _sync_mpv_output_mode_channels(actual['active_mode'])
+                    await _sync_mpv_output_mode_channels(actual['active_mode'], verify=True)
 
                 await rollback_step('MPV channels', restore_channels)
+                rollback_complete = rollback_ok
                 raise
         _hdmi_transport_watch.settled(sink.identity)
         live_key, live_channels = output_state_device(result)
