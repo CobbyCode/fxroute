@@ -716,8 +716,14 @@
             const peer = pickSpatial(from, peers, direction);
             return peer ? focusElement(peer, doc) : false;
         }
+        // Down walks the rest of the page first; the fixed footer, which is
+        // always close, only wins when nothing is left below.
+        const pageCandidates = direction === 'down' && !footer
+            ? candidates.filter(candidate => !candidate.element.closest(FOOTER_SELECTOR))
+            : candidates;
         const target = pickSpatial(from, peers, direction)
-            || pickSpatial(from, local, direction) || pickSpatial(from, candidates, direction);
+            || pickSpatial(from, local, direction) || pickSpatial(from, pageCandidates, direction)
+            || pickSpatial(from, candidates, direction);
         // Entering a track list lands on a Play button, from above on the first.
         const entered = !row && target && trackRow(target);
         if (entered) {

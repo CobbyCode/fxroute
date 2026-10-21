@@ -182,6 +182,24 @@ def run():
                 page.keyboard.press('ArrowUp')
                 assert active(page) == 'near', f'Up from the footer reached {active(page)} above the viewport'
 
+            def page_before_footer(page):
+                # The fixed footer is always close; Down must still walk the
+                # rest of the page (DSP tiles below the Tone effect) first.
+                page.evaluate("""() => {
+                    document.body.innerHTML = `
+                      <button id="upper" style="position:absolute;left:600px;top:200px;width:40px;height:40px">A</button>
+                      <button id="lower" style="position:absolute;left:300px;top:1500px;width:300px;height:40px">B</button>
+                      <div style="position:absolute;left:0;top:1900px;width:1px;height:1px"></div>
+                      <footer class="playback-bar"><button id="play" style="width:60px;height:44px">Play</button></footer>`;
+                    const play = document.getElementById('play').getBoundingClientRect();
+                    document.getElementById('upper').style.left = (play.left + play.width / 2 - 20) + 'px';
+                    document.getElementById('upper').focus();
+                }""")
+                page.keyboard.press('ArrowDown')
+                assert active(page) == 'lower', f'Down skipped the page content for {active(page)}'
+                page.keyboard.press('ArrowDown')
+                assert active(page) == 'play', f'Down from the last page control reached {active(page)}'
+
             def vanished_control_keeps_footer_focus(page):
                 prepare(page, 'library')
                 page.focus('#btn-play-pause')
@@ -257,6 +275,7 @@ def run():
             scenario('footer row order at TV size', row_walk('radio'), viewport=(1280, 720))
             scenario('footer row order at TV size (library)', row_walk('library'), viewport=(1280, 720))
             scenario('footer Up prefers a control in view', leave_to_visible_control)
+            scenario('Down walks the page before the footer', page_before_footer)
             scenario('footer keeps the focus when a control vanishes', vanished_control_keeps_footer_focus)
             scenario('footer keeps the focus when a control is disabled', disabled_control_keeps_footer_focus)
             scenario('footer is reachable from the page', enter_footer_from_page)
