@@ -161,6 +161,7 @@ assert.match(overlaysCss, /\.source-picker-option\[aria-selected="true"\]/);
 // system-level key remapping.
 assert.doesNotMatch(navSource, /1915|1025|XING|evdev|uinput|xdotool/i);
 assert.match(navSource, /BrowserBack/);
+assert.doesNotMatch(navSource, /toggleSettings/, 'BrowserBack runs homeAction');
 assert.match(navSource, /ContextMenu/);
 assert.match(navSource, /addEventListener\('contextmenu'/,
     'a keyboard context menu must be suppressed, not just its keydown');

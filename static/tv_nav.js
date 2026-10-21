@@ -10,8 +10,10 @@
  *   PageUp/Down   next/previous tab of the tab strip that owns the focus
  *                 (Up goes right, Down goes left)
  *   Backspace     close the top dialog, else return within the current view
- *   BrowserBack   settings open/close (closes an open dialog first); the
- *                 menu back button may also arrive as Alt+ArrowLeft
+ *   BrowserBack   the remote's Home key: back to the main view of the tab
+ *                 (closes dialogs and detail views), else the settings open;
+ *                 may also arrive as Alt+ArrowLeft. A history guard keeps the
+ *                 browser from leaving the app on it.
  *   ContextMenu   audio-input picker open/close. A remote's menu key often
  *                 arrives as Compose/Unidentified; Firefox then emits a
  *                 contextmenu event with button 0, which is handled too.
@@ -846,9 +848,23 @@
         return false;
     }
 
-    function toggleSettings(doc) {
-        if (closeTopDialog(doc)) return true;
-        if (closePowerMenu(doc)) return true;
+    // Home (the remote sends it as BrowserBack) returns to the main view of
+    // the current tab: every dialog and menu closes and detail views return to
+    // their list. With nothing left to close it opens the Technical settings,
+    // so the next press closes them again.
+    function homeAction(doc) {
+        let closed = false;
+        for (let guard = 0; guard < 8 && closeTopDialog(doc); guard++) closed = true;
+        if (closePowerMenu(doc)) closed = true;
+        let back = findBackControl(doc);
+        for (let guard = 0; back && guard < 4; guard++) {
+            back.click();
+            closed = true;
+            const next = findBackControl(doc);
+            if (next === back) break;
+            back = next;
+        }
+        if (closed) return true;
         const open = doc.getElementById('open-settings');
         if (!open) return false;
         open.click();
@@ -1091,7 +1107,7 @@
             if (event.repeat) return;
             // Back first ends a slider adjustment, like Backspace does.
             if (isArmedSlider(ctx, target)) setEditing(ctx, null);
-            else toggleSettings(doc);
+            else homeAction(doc);
             return;
         }
         if (action === 'source-picker') {
@@ -1181,6 +1197,28 @@
         toggleSourcePicker(ctx.doc);
     }
 
+    // Firefox runs its history Back for the remote's BrowserBack key even when
+    // the page handles and cancels it, which sent Home to the browser start
+    // page. A guard entry keeps Back (also Alt+Left and the mouse button)
+    // inside the app: popstate puts the guard back.
+    const HISTORY_GUARD = 'fxrouteBackGuard';
+
+    function guardHistory(win) {
+        const history = win?.history;
+        if (!history || typeof history.pushState !== 'function') return;
+        // The public web demo must not trap its visitors.
+        if (win.FXROUTE_DEMO_BOOTED) return;
+        const push = () => {
+            try {
+                history.pushState({ [HISTORY_GUARD]: true }, '', win.location.href);
+            } catch (_error) { /* sandboxed documents may refuse */ }
+        };
+        if (!history.state?.[HISTORY_GUARD]) push();
+        win.addEventListener('popstate', event => {
+            if (!event.state?.[HISTORY_GUARD]) push();
+        });
+    }
+
     function init(options = {}) {
         const doc = options.document
             || (typeof document !== 'undefined' ? document : null);
@@ -1207,6 +1245,7 @@
         // the modal manager still receives Escape at document capture.
         const win = doc.defaultView || (typeof window !== 'undefined' ? window : null);
         const keyTarget = win && typeof win.addEventListener === 'function' ? win : doc;
+        guardHistory(win);
         keyTarget.addEventListener('keydown', event => handleKeyDown(event, ctx), true);
         // Bubble phase: page handlers run first and can consume the key.
         keyTarget.addEventListener('keydown', event => handleActivation(event, ctx), false);

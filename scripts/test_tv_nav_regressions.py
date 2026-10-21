@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 """Focused rendered regressions for remote navigation and scroll boundaries."""
 
-from test_tv_nav import STUB, _serve
+from test_tv_nav import STUB, _browser_back, _serve
 import traceback
 
 
@@ -252,7 +252,61 @@ def run():
                 assert page.evaluate('window.contextPrevented'), 'native keyboard menu was not prevented'
                 assert page.locator('#tv-select-picker').is_visible()
 
+            def home_closes_layers(page):
+                # Home arrives as BrowserBack: it closes every dialog (a select
+                # picker inside Settings too) and returns to the tab's main view.
+                _browser_back(page)
+                page.wait_for_function("!document.getElementById('settings-source-select').disabled")
+                assert page.locator('#settings-panel').is_visible(), 'Home did not open the settings'
+                page.focus('#settings-source-select')
+                page.keyboard.press('Enter')
+                assert page.locator('#tv-select-picker').is_visible()
+                _browser_back(page)
+                assert page.locator('#tv-select-picker').count() == 0, 'Home left the select picker open'
+                assert not page.locator('#settings-panel').is_visible(), 'Home left the settings open'
+                assert page.get_attribute('#tab-btn-radio', 'aria-selected') == 'true', 'Home changed the tab'
+                page.evaluate('''() => {
+                    const view = document.createElement('div');
+                    view.id = 'fake-detail';
+                    view.innerHTML = '<button class="album-detail-back" type="button">Back</button>';
+                    view.querySelector('button').addEventListener('click', () => view.remove());
+                    document.querySelector('#tab-radio').append(view);
+                }''')
+                _browser_back(page)
+                assert page.locator('#fake-detail').count() == 0, 'Home did not leave the detail view'
+                assert not page.locator('#settings-panel').is_visible(), 'Home opened the settings from a detail view'
+                _browser_back(page)
+                assert page.locator('#settings-panel').is_visible(), 'Home with nothing to close did not open the settings'
+
+            def home_stays_on_tab(page):
+                page.click('#tab-btn-library')
+                _browser_back(page)
+                _browser_back(page)
+                assert page.get_attribute('#tab-btn-library', 'aria-selected') == 'true', 'Home left the Library tab'
+
+            def history_guard(page):
+                # Firefox runs history Back for BrowserBack even when the page
+                # cancels the key; the guard keeps the document in place.
+                page.evaluate('window.__stillHere = 1')
+                page.go_back()
+                page.wait_for_timeout(300)
+                assert page.evaluate('window.__stillHere') == 1, 'Back left the app'
+                assert page.evaluate("location.pathname") == '/static/index.html'
+                assert page.evaluate("!!history.state && history.state.fxrouteBackGuard"), 'guard entry was not restored'
+                page.go_back()
+                page.wait_for_timeout(300)
+                assert page.evaluate('window.__stillHere') == 1, 'second Back left the app'
+                page.reload()
+                page.wait_for_selector('#tab-btn-radio')
+                length = page.evaluate('history.length')
+                page.reload()
+                page.wait_for_selector('#tab-btn-radio')
+                assert page.evaluate('history.length') == length, 'reload piled up guard entries'
+
             for name, test in [
+                ('Home closes dialogs and detail views, then opens settings', home_closes_layers),
+                ('Home stays on the current tab', home_stays_on_tab),
+                ('history guard keeps Back inside the app', history_guard),
                 ('search exit and native typing', search_exit),
                 ('combine name exit', combine_exit),
                 ('catalog D-pad access', catalog),
@@ -271,6 +325,16 @@ def run():
                 ('trusted keyboard context-menu event', trusted_context_menu),
             ]:
                 scenario(name, test)
+            # The public web demo keeps the browser's own Back.
+            demo = browser.new_page(viewport={"width": 1280, "height": 720})
+            demo.add_init_script("window.FXROUTE_DEMO_BOOTED = true;")
+            demo.add_init_script(STUB)
+            demo.goto(f"http://127.0.0.1:{server.server_port}/static/index.html")
+            demo.wait_for_selector('#tab-btn-radio')
+            assert demo.evaluate('history.state') is None, 'the demo got a history guard'
+            count += 1
+            print('PASS demo keeps native Back')
+            demo.close()
             browser.close()
     finally:
         server.shutdown()
