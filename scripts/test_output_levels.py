@@ -130,6 +130,24 @@ class OutputLevelsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.sinks[NEW]['volume']['front-left']['value'], 22222)
         self.assertFalse(self.state_path.exists())
 
+    async def test_server_restart_inside_switch_records_fresh_safety_mute_ownership(self):
+        self.sinks[OLD]['mute'] = False
+        levels = self.persistent_levels()
+        levels.observe_selected()
+        self.sinks = {NEW: sink(NEW, 11, [65536] * 6, False)}
+        with self.assertRaisesRegex(RuntimeError, 'Audio server changed'):
+            async with levels.switch(OLD, NEW):
+                self.cookie = 'new-server-during-sync'
+                self.sinks = {NEW: sink(NEW, 11, [22222] * 6, False)}
+        self.assertTrue(self.sinks[NEW]['mute'])
+        self.assertTrue(self.state_path.exists(), 'Any new safety mute must have fresh ownership')
+        for _ in range(2):
+            async with levels.switch(NEW, NEW):
+                pass
+        self.assertFalse(self.sinks[NEW]['mute'])
+        self.assertEqual(self.sinks[NEW]['volume']['front-left']['value'], 22222)
+        self.assertFalse(self.state_path.exists())
+
     async def test_malformed_marker_cannot_abort_startup_or_claim_hardware_mute(self):
         levels = self.persistent_levels()
         self.state_path.write_text(json.dumps({'version': 1, 'owner': 'fxroute-output-switch',

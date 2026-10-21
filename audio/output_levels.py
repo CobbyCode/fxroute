@@ -209,6 +209,7 @@ class OutputLevels:
 
     def _finish(self, key: str, state: SinkLevels | None, success: bool) -> None:
         with self._lock:
+            cookie = self._pending_cookie
             try:
                 if state is not None and success:
                     live = self._inventory()
@@ -229,6 +230,19 @@ class OutputLevels:
                     self._persist_pending()
             except BaseException as error:
                 try:
+                    current = self._inventory()[key]
+                    server_changed = cookie is not None and self._server_cookie() != cookie
+                    if server_changed or (state is not None and current.index != state.index):
+                        if server_changed:
+                            self._discard_server_ownership()
+                            replacement = current
+                        else:
+                            volumes = dict(state.volumes)
+                            replacement = SinkLevels(current.index,
+                                tuple((position, volumes.get(position, max(volumes.values())))
+                                      for position, _ in current.volumes), state.muted)
+                        self._pending[key] = replacement
+                        self._persist_pending()
                     self._mute(key, True)
                 except Exception as mute_error:
                     logger.exception('Hardware output safety mute failed')
