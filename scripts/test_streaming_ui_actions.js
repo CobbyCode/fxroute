@@ -271,6 +271,7 @@ function runStreaming(options = {}) {
                 if (options.tidalUser) body.user = { id: options.tidalUser };
             } else if (u.startsWith('/api/streaming/tidal/') && u.endsWith('/favorite')) {
                 body = { favorite: !!JSON.parse((opts && opts.body) || '{}').favorite };
+                if (options.favoriteResponse) Object.assign(body, options.favoriteResponse(u, body));
             }
             if (failed) return { ok: false, status: 502, json: async () => ({ detail: 'TIDAL unreachable' }) };
             return { ok: true, json: async () => body };
@@ -775,6 +776,71 @@ async function main() {
         assert.equal(await reading, true);
         assert.equal(adapter.isFavorite('albums', 'x1'), false, 'the ids read must not restore an un-hearted item');
         assert.equal(adapter.isFavorite('albums', 'y1'), true, 'the ids read must not drop a newly hearted item');
+    }
+}
+
+// --- 13b2. quality variants of one album are a single favorite ---------------
+
+{
+    // The backend lists one entry per album and names the variants folded into it.
+    const folded = { id: 'B', title: 'Album', artist: 'Artist', art_url: '', variant_ids: ['A', 'B'] };
+    const other = { id: 'C', title: 'Other', artist: 'Artist', art_url: '' };
+    const snapshot = { user_id: '42', ids: { tracks: [], albums: ['A', 'B', 'C'], artists: [], playlists: [] }, tracks: [], albums: [folded, other], artists: [], playlists: [] };
+
+    // A list read keeps the heart of every folded variant.
+    {
+        const { sandbox } = runStreaming({
+            tidalSnapshot: snapshot,
+            tidalUser: '42',
+            tidalFavoriteAlbums: [folded, other],
+        });
+        await tick();
+        const adapter = sandbox.window.FXRouteStreaming.tidal;
+        await adapter.ensureLibrary();
+        await tick(5);
+        assert.deepEqual([...adapter.items('albums').map((item) => item.id)], ['B', 'C'], 'the list shows one entry per album');
+        ['A', 'B', 'C'].forEach((id) => assert.equal(adapter.isFavorite('albums', id), true,
+            'a list read must keep the heart of folded variant ' + id));
+    }
+
+    // Removing the album removes the variants favorited with it, and a reload
+    // that no longer lists any of them keeps them out.
+    {
+        let serverAlbums = [folded, other];
+        const { sandbox, fetchCalls } = runStreaming({
+            tidalSnapshot: snapshot,
+            tidalUser: '42',
+            favoritesFetch: (u) => (u.includes('type=albums')
+                ? Promise.resolve({ ok: true, json: async () => serverAlbums }) : null),
+            favoriteResponse: (u) => (u.includes('/albums/B/') ? { variant_ids: ['B', 'A'] } : {}),
+        });
+        await tick();
+        const adapter = sandbox.window.FXRouteStreaming.tidal;
+        await adapter.ensureLibrary();
+        assert.equal(adapter.isFavorite('albums', 'A'), true);
+        await adapter.toggleFavorite('albums', 'B');
+        const write = fetchCalls.filter((c) => c.url.endsWith('/albums/B/favorite'));
+        assert.equal(write.length, 1, 'one request removes the album');
+        assert.deepEqual(JSON.parse(write[0].opts.body), { favorite: false });
+        assert.equal(adapter.isFavorite('albums', 'B'), false, 'the removed variant is no favorite');
+        assert.equal(adapter.isFavorite('albums', 'A'), false, 'its sibling goes with it');
+        assert.equal(adapter.isFavorite('albums', 'C'), true, 'other albums are untouched');
+        serverAlbums = [other];
+        await adapter.ensureLibrary(true);
+        await tick(5);
+        assert.deepEqual(['A', 'B', 'C'].map((id) => adapter.isFavorite('albums', id)), [false, false, true],
+            'a reload after the removal keeps the album out');
+    }
+
+    // Adding sets exactly the toggled id, and a plain removal stays single.
+    {
+        const { sandbox } = runStreaming({ tidalUser: '42' });
+        await tick();
+        const adapter = sandbox.window.FXRouteStreaming.tidal;
+        await adapter.toggleFavorite('albums', 'B');
+        assert.deepEqual(['A', 'B'].map((id) => adapter.isFavorite('albums', id)), [false, true]);
+        await adapter.toggleFavorite('albums', 'B');
+        assert.equal(adapter.isFavorite('albums', 'B'), false);
     }
 }
 

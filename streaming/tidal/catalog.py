@@ -141,8 +141,12 @@ def _album_preference(album: dict) -> tuple[int, int]:
 
 
 def _dedupe_albums(albums: list[dict]) -> list[dict]:
-    """Drop duplicate album identities while retaining the best quality."""
+    """Drop duplicate album identities while retaining the best quality.
+
+    A kept album that absorbed other ids lists all of them in ``variant_ids``.
+    """
     result: list[dict] = []
+    members: list[list[str]] = []
     indexes: dict[tuple, int] = {}
     for album in albums:
         keys: list[tuple] = []
@@ -161,11 +165,17 @@ def _dedupe_albums(albums: list[dict]) -> list[dict]:
         if existing_index is None:
             existing_index = len(result)
             result.append(album)
+            members.append([])
         elif _album_preference(album) > _album_preference(result[existing_index]):
             result[existing_index] = album
+        if album_id and album_id not in members[existing_index]:
+            members[existing_index].append(album_id)
         for key in keys:
             indexes[key] = existing_index
-    return result
+    return [
+        {**album, "variant_ids": ids} if len(ids) > 1 else album
+        for album, ids in zip(result, members)
+    ]
 
 
 # TIDAL picture UUID -> CDN URL template (same one tidalapi uses for
@@ -493,20 +503,55 @@ def set_track_favorite(track_id: str, favorite: bool) -> dict:
     return {"type": "track", "id": str(track_id), "favorite": bool(favorite)}
 
 
+def _favorited_album_variants(favorites: Any, album_id: str) -> list[str]:
+    """Return ``album_id`` plus the favorited ids that are its quality variants.
+
+    A failed listing leaves just ``album_id``, so a removal still goes through.
+    """
+    try:
+        albums = [normalize_album(a) for a in _favorite_items(favorites, "albums")]
+    except Exception:  # noqa: BLE001
+        return [album_id]
+    target = next((a for a in albums if a["id"] == album_id), None)
+    release_key = _album_release_key(target) if target is not None else None
+    siblings = [
+        a["id"]
+        for a in albums
+        if release_key is not None and a["id"] != album_id and _album_release_key(a) == release_key
+    ]
+    return [album_id, *siblings]
+
+
 def set_album_favorite(album_id: str, favorite: bool) -> dict:
-    """Add/remove an album from the user's TIDAL favorites."""
+    """Add/remove an album from the user's TIDAL favorites.
+
+    Quality variants of one album are a single favorite: removing it also
+    removes the variants favorited alongside it, all listed in ``variant_ids``.
+    """
     _require_tidalapi()
     session = _session()
     user_id = _cache_user_id(session)
+    album_id = str(album_id)
+    changed: list[str] = []
     try:
         favorites = session.user.favorites
-        ok = favorites.add_album(str(album_id)) if favorite else favorites.remove_album(str(album_id))
+        targets = [album_id] if favorite else _favorited_album_variants(favorites, album_id)
+        for target in targets:
+            ok = favorites.add_album(target) if favorite else favorites.remove_album(target)
+            if not ok:
+                break
+            changed.append(target)
     except Exception as exc:  # noqa: BLE001
         raise auth.TidalAuthError(f"TIDAL album favorite update failed: {exc}") from exc
-    if not ok:
+    finally:
+        for done in changed:
+            _update_cached_favorite_id(user_id, "albums", done, bool(favorite))
+    if len(changed) < len(targets):
         raise auth.TidalAuthError("TIDAL album favorite update failed")
-    _update_cached_favorite_id(user_id, "albums", str(album_id), bool(favorite))
-    return {"type": "album", "id": str(album_id), "favorite": bool(favorite)}
+    result = {"type": "album", "id": album_id, "favorite": bool(favorite)}
+    if len(changed) > 1:
+        result["variant_ids"] = changed
+    return result
 
 
 def set_artist_favorite(artist_id: str, favorite: bool) -> dict:

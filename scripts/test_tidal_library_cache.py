@@ -455,6 +455,122 @@ class CatalogCacheTests(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# quality variants of one album are a single favorite
+# ---------------------------------------------------------------------------
+
+def _album(album_id, quality="LOSSLESS", title="Same Album", version=None):
+    return SimpleNamespace(
+        id=album_id, name=title, artist=SimpleNamespace(id=7, name="Artist"),
+        image=lambda size=640: "", num_tracks=10, audio_quality=quality,
+        available=True, year=2000, version=version,
+    )
+
+
+class StatefulAlbumFavorites(FakeFavorites):
+    """FakeFavorites whose album add/remove really changes the collection."""
+
+    def __init__(self, albums=None, fail_remove=()):
+        super().__init__(albums=albums)
+        self.added = []
+        self.removed = []
+        self._fail_remove = set(fail_remove)
+
+    def add_album(self, album_id):
+        self.added.append(album_id)
+        return True
+
+    def remove_album(self, album_id):
+        if album_id in self._fail_remove:
+            return False
+        self.removed.append(album_id)
+        self._albums = [a for a in self._albums if str(a.id) != album_id]
+        return True
+
+
+class AlbumVariantFavoriteTests(unittest.TestCase):
+    def _run(self, favorites, *calls):
+        store = TidalLibraryCache(db_path=pathlib.Path(tempfile.mkdtemp()) / "cache.sqlite")
+        p1, p2, p3 = _patch_catalog(_session(42, favorites), store)
+        with p1, p2, p3:
+            return store, [call() for call in calls]
+
+    def test_list_folds_variants_but_keeps_their_ids(self):
+        favorites = StatefulAlbumFavorites([
+            _album("A"), _album("B", "HI_RES_LOSSLESS"),
+            _album("C", title="Other"), _album("D", title="Same Album", version="Deluxe"),
+        ])
+        store, (state, listed) = self._run(
+            favorites, catalog.favorite_state, lambda: catalog.favorites_albums(0))
+        self.assertEqual(state["albums"], ["A", "B", "C", "D"])
+        self.assertEqual([a["id"] for a in listed], ["B", "C", "D"])
+        self.assertEqual(listed[0]["variant_ids"], ["A", "B"])
+        self.assertNotIn("variant_ids", listed[1], "an album without variants stays as it was")
+        self.assertNotIn("variant_ids", listed[2], "a distinct edition is not a variant")
+        self.assertEqual(store.get("42", "albums")[0]["variant_ids"], ["A", "B"],
+                         "the cached list keeps the folded ids")
+
+    def test_repeated_id_is_not_a_variant(self):
+        merged = catalog._dedupe_albums([catalog.normalize_album(_album("A")), catalog.normalize_album(_album("A"))])
+        self.assertEqual([a["id"] for a in merged], ["A"])
+        self.assertNotIn("variant_ids", merged[0])
+
+    def test_removing_one_variant_removes_the_favorited_siblings(self):
+        favorites = StatefulAlbumFavorites([
+            _album("A"), _album("B", "HI_RES_LOSSLESS"), _album("C", title="Other"),
+            _album("D", title="Same Album", version="Deluxe"),
+        ])
+        store, (_, removed, state, listed) = self._run(
+            favorites,
+            catalog.favorite_state,
+            lambda: catalog.set_album_favorite("B", False),
+            catalog.favorite_state,
+            lambda: catalog.favorites_albums(0),
+        )
+        self.assertEqual(removed, {"type": "album", "id": "B", "favorite": False, "variant_ids": ["B", "A"]})
+        self.assertEqual(favorites.removed, ["B", "A"])
+        self.assertEqual(state["albums"], ["C", "D"], "the album does not come back as its sibling")
+        self.assertEqual([a["id"] for a in listed], ["C", "D"])
+        cached = store.get("42", "ids")
+        self.assertEqual(cached["albums"], ["C", "D"])
+
+    def test_removing_from_either_variant_works(self):
+        favorites = StatefulAlbumFavorites([_album("A"), _album("B", "HI_RES_LOSSLESS")])
+        _, (removed,) = self._run(favorites, lambda: catalog.set_album_favorite("A", False))
+        self.assertEqual(removed["variant_ids"], ["A", "B"])
+        self.assertEqual(favorites._albums, [])
+
+    def test_removing_a_plain_album_keeps_the_response_shape(self):
+        favorites = StatefulAlbumFavorites([_album("A"), _album("C", title="Other")])
+        _, (removed,) = self._run(favorites, lambda: catalog.set_album_favorite("C", False))
+        self.assertEqual(removed, {"type": "album", "id": "C", "favorite": False})
+        self.assertEqual([str(a.id) for a in favorites._albums], ["A"])
+
+    def test_removal_still_works_when_the_listing_fails(self):
+        favorites = StatefulAlbumFavorites([_album("A"), _album("B", "HI_RES_LOSSLESS")])
+        favorites._fail = True
+        _, (removed,) = self._run(favorites, lambda: catalog.set_album_favorite("B", False))
+        self.assertEqual(removed, {"type": "album", "id": "B", "favorite": False})
+        self.assertEqual(favorites.removed, ["B"])
+
+    def test_failed_sibling_removal_reports_the_error_and_keeps_the_cache_true(self):
+        favorites = StatefulAlbumFavorites([_album("A"), _album("B", "HI_RES_LOSSLESS")], fail_remove=["A"])
+        store = TidalLibraryCache(db_path=pathlib.Path(tempfile.mkdtemp()) / "cache.sqlite")
+        p1, p2, p3 = _patch_catalog(_session(42, favorites), store)
+        with p1, p2, p3:
+            catalog.favorite_state()
+            with self.assertRaises(auth.TidalAuthError):
+                catalog.set_album_favorite("B", False)
+        self.assertEqual(favorites.removed, ["B"])
+        self.assertEqual(store.get("42", "ids")["albums"], ["A"], "only the removed id leaves the cached hearts")
+
+    def test_favoriting_adds_exactly_the_requested_id(self):
+        favorites = StatefulAlbumFavorites([_album("A")])
+        _, (added,) = self._run(favorites, lambda: catalog.set_album_favorite("B", True))
+        self.assertEqual(added, {"type": "album", "id": "B", "favorite": True})
+        self.assertEqual(favorites.added, ["B"])
+
+
+# ---------------------------------------------------------------------------
 # snapshot API endpoint
 # ---------------------------------------------------------------------------
 

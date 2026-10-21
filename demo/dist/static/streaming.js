@@ -1270,11 +1270,15 @@
             });
             const data = await resp.json().catch(() => ({}));
             if (!resp.ok) throw new Error(formatTransitionErrorDetail(data.detail, 'Failed to update favorite'));
-            if (data.favorite) state.tidal.favoriteIds[type].add(idStr);
-            else state.tidal.favoriteIds[type].delete(idStr);
-            recordFavoriteEdit(type, idStr, !!data.favorite);
-            syncTidalFavoriteButtons(type, idStr);
-            syncFavoriteDetailButtons(type, idStr);
+            // Removing an album also removes the quality variants favorited with it.
+            const changedIds = new Set([idStr].concat(data.favorite ? [] : (data.variant_ids || []).map(String)));
+            changedIds.forEach((changedId) => {
+                if (data.favorite) state.tidal.favoriteIds[type].add(changedId);
+                else state.tidal.favoriteIds[type].delete(changedId);
+                recordFavoriteEdit(type, changedId, !!data.favorite);
+                syncTidalFavoriteButtons(type, changedId);
+                syncFavoriteDetailButtons(type, changedId);
+            });
             notifyFavoritesChanged();
             showToast(data.favorite ? 'Added to favorites' : 'Removed from favorites', 'success');
             // A newly favorited item joins the Library grids; a removed one
@@ -2158,6 +2162,13 @@
         return fetchTidalJsonList(base + '0');
     }
 
+    // Ids a collection entry stands for: its own plus the quality variants
+    // the backend folded into it (all of them are favorites).
+    function tidalEntryIds(item) {
+        if (!item || item.id == null) return [];
+        return [item.id].concat(Array.isArray(item.variant_ids) ? item.variant_ids : []).map(String);
+    }
+
     // Adopt a collection for the current account. A complete list is the
     // authoritative favorite state of its kind; a first page only adds.
     // `sinceSeq` is the heart sequence when the collection read began.
@@ -2165,7 +2176,7 @@
         if (state.tidal.cacheUser !== userId) return;
         const list = Array.isArray(items) ? items : [];
         state.tidal.lastItems[kind] = list;
-        const ids = list.map((item) => String(item && item.id)).filter(Boolean);
+        const ids = list.flatMap(tidalEntryIds);
         const set = state.tidal.favoriteIds[kind];
         if (set) {
             if (complete) state.tidal.favoriteIds[kind] = new Set(ids);

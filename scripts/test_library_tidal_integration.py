@@ -70,6 +70,8 @@ def _tidal_album(index, artist):
 def _stub(tidal_mode, album_count):
     # Bravo sorts between the local Alpha and Charlie albums.
     tidal_albums = [_tidal_album(i, "Bravo") for i in range(album_count)]
+    # ta1 stands for two quality variants the backend folded into one entry.
+    tidal_albums[1]["variant_ids"] = ["ta1", "ta-lo"]
     tidal_tracks = [
         {"id": "9001", "title": "Tidal Song", "artist": "Bravo", "album": "Tidal Album 0", "duration": 200, "art_url": ""},
     ]
@@ -103,7 +105,7 @@ window.fetch = (url, opts) => {{
     if (u.includes('/api/streaming/providers/discovery')) return json({json.dumps(discovery)});
     if (u.includes('/api/streaming/tidal/status')) return json({json.dumps(status)});
     if (u.includes('/api/streaming/tidal/library/snapshot')) return json({{ user_id: 'u1', ids: {{}} }});
-    if (u.includes('/api/streaming/tidal/favorites/ids')) return json({{ tracks: ['9001'], albums: window.__tidalAlbums.map(a => a.id), artists: [], playlists: ['tp1'] }});
+    if (u.includes('/api/streaming/tidal/favorites/ids')) return json({{ tracks: ['9001'], albums: window.__tidalAlbums.flatMap(a => a.variant_ids || [a.id]), artists: [], playlists: ['tp1'] }});
     if (u.includes('/api/streaming/tidal/favorites?type=albums')) {{
         const limit = Number(new URL(u, location.href).searchParams.get('limit'));
         return json(limit > 0 ? window.__tidalAlbums.slice(0, limit) : window.__tidalAlbums);
@@ -113,8 +115,9 @@ window.fetch = (url, opts) => {{
     if (/\\/api\\/streaming\\/tidal\\/albums\\/[^/]+\\/tracks/.test(u)) return json({json.dumps(tidal_tracks)});
     if (/\\/api\\/streaming\\/tidal\\/albums\\/[^/]+$/.test(u)) return json({{ title: 'Tidal Album 0', artist: 'Bravo', num_tracks: 1 }});
     if (/\\/api\\/streaming\\/tidal\\/albums\\/[^/]+\\/favorite/.test(u)) {{
-        window.__tidalAlbums = window.__tidalAlbums.filter(a => !u.includes('/' + a.id + '/'));
-        return json({{ favorite: false }});
+        const gone = window.__tidalAlbums.find(a => u.includes('/' + a.id + '/'));
+        window.__tidalAlbums = window.__tidalAlbums.filter(a => a !== gone);
+        return json({{ favorite: false, ...(gone && gone.variant_ids ? {{ variant_ids: gone.variant_ids }} : {{}}) }});
     }}
     if (u.includes('/api/streaming/')) return json({{}});
     if (u.endsWith('/api/stations')) return json([]);
@@ -223,9 +226,14 @@ def _run():
             check("Back returns to the Albums grid", page.locator("#library-tidal-detail").is_hidden())
 
             # Un-hearting a TIDAL album removes it from the grid.
+            fav = "(id) => window.FXRouteStreaming.tidal.isFavorite('albums', id)"
+            check("a folded quality variant keeps its heart after the Library load",
+                  page.evaluate(fav, "ta-lo") and page.evaluate(fav, "ta1"))
             page.click('#albums-grid [data-tidal-id="ta1"] .streaming-fav')
             page.wait_for_function("!document.querySelector('#albums-grid [data-tidal-id=\"ta1\"]')")
             check("an un-hearted TIDAL album leaves the grid", True)
+            check("un-hearting the album also clears its quality variant",
+                  not page.evaluate(fav, "ta-lo") and not page.evaluate(fav, "ta1"))
             check(f"no page errors ({errors})", not errors)
             page.close()
 
