@@ -64,17 +64,54 @@
         return '/static/artwork-placeholder.svg?v=2';
     }
 
-    // Source mark for streaming items shown next to local music (TIDAL tiles
-    // and track rows in the Library). Same four-diamond glyph as the TIDAL
-    // tab button, painted from currentColor.
-    function sourceGlyphHtml(source, extraClass) {
+    // Official TIDAL marks (static/tidal-*.svg: white, unmodified artwork for
+    // dark backgrounds). The full logo is used wherever there is room; the
+    // diamond alone only in compact spots (track rows, list view, tab button)
+    // where the word TIDAL stands nearby. Never placed over cover art.
+    const TIDAL_LOGO_URL = '/static/tidal-logo-white.svg?v=1';
+    const TIDAL_DIAMOND_URL = '/static/tidal-diamond-white.svg?v=1';
+
+    // Web page of a TIDAL item; without a usable kind/id the TIDAL home page.
+    function tidalWebUrl(kind, id) {
+        const knownKind = kind === 'album' || kind === 'artist' || kind === 'playlist' || kind === 'track';
+        const hasId = id !== null && id !== undefined && String(id) !== '';
+        return knownKind && hasId
+            ? 'https://tidal.com/browse/' + kind + '/' + encodeURIComponent(String(id))
+            : 'https://tidal.com';
+    }
+
+    // fetchpriority: a 1 KB file shared by every card. Offscreen images queue
+    // behind slow cover requests otherwise and pop in seconds after scrolling.
+    function tidalMarkImg(kind) {
+        const url = kind === 'logo' ? TIDAL_LOGO_URL : TIDAL_DIAMOND_URL;
+        return '<img class="tidal-mark tidal-mark--' + kind + '" src="' + url + '" alt="" draggable="false" fetchpriority="high">';
+    }
+
+    // Source mark for streaming items shown next to local music.
+    // options.variant: 'diamond' (default, inline row marker), 'card' (brand
+    // row of a Library card: full logo, diamond in list view) or 'heading'
+    // (full logo). options.link ({kind, id} or true) makes it a link back to
+    // TIDAL; options.decorative hides it from assistive tech when a visible
+    // heading text already names it. Brand links stay out of the focus order
+    // so keyboard and remote navigation never land on an external link.
+    function sourceGlyphHtml(source, extraClass, options) {
         if (source !== 'tidal') return '';
-        const cls = 'source-glyph source-glyph--tidal' + (extraClass ? ' ' + extraClass : '');
-        return '<span class="' + cls + '" role="img" aria-label="TIDAL" data-tooltip="TIDAL">'
-            + '<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">'
-            + '<path d="M12 6.2 14.6 8.9 12 11.6 9.4 8.9Z"/><path d="M6.4 9 9 11.6 6.4 14.3 3.8 11.6Z"/>'
-            + '<path d="M17.6 9 20.2 11.6 17.6 14.3 15 11.6Z"/><path d="M12 11.6 14.6 14.3 12 17 9.4 14.3Z"/>'
-            + '</svg></span>';
+        const opts = options || {};
+        const variant = opts.variant || 'diamond';
+        const classes = ['source-glyph', 'source-glyph--tidal', 'source-glyph--' + variant];
+        if (extraClass) classes.push(extraClass);
+        const marks = variant === 'card' ? tidalMarkImg('logo') + tidalMarkImg('diamond')
+            : tidalMarkImg(variant === 'heading' ? 'logo' : 'diamond');
+        if (!opts.link) {
+            return '<span class="' + classes.join(' ') + '" role="img" aria-label="TIDAL" data-tooltip="TIDAL">' + marks + '</span>';
+        }
+        const target = opts.link === true ? {} : opts.link;
+        classes.push('tidal-brand-link');
+        // stopPropagation: the link sits inside clickable cards and must not open them.
+        return '<a class="' + classes.join(' ') + '" href="' + escapeHtml(tidalWebUrl(target.kind, target.id)) + '"'
+            + ' target="_blank" rel="noopener noreferrer" tabindex="-1" data-tooltip="Open on TIDAL"'
+            + (opts.decorative ? ' aria-hidden="true"' : ' aria-label="TIDAL"')
+            + ' onclick="event.stopPropagation()">' + marks + '</a>';
     }
 
     // Accent-folded, punctuation-free key for comparing artist/album names
@@ -219,6 +256,7 @@
         artworkPlaceholderUrl,
         albumArtFallbackSvg,
         sourceGlyphHtml,
+        tidalWebUrl,
         nameKey,
         setRangeProgress,
         setContentState,

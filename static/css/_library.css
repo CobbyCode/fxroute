@@ -152,13 +152,14 @@
     font-size: 0.95rem;
 }
 .albums-grid.is-list .playlist-collage-cell.is-fallback { padding: 8%; }
-.albums-grid.is-list .source-glyph--tile {
-    left: 2px;
-    bottom: 2px;
-    width: 16px;
-    height: 16px;
-    padding: 2px;
+/* List rows are too narrow for the full logo: the diamond sits before the heart. */
+.albums-grid.is-list .source-glyph--card {
+    order: 4;
+    align-self: center;
+    margin: 0;
 }
+.albums-grid.is-list .source-glyph--card .tidal-mark--logo { display: none; }
+.albums-grid.is-list .source-glyph--card .tidal-mark--diamond { display: block; }
 .albums-grid.is-list .album-smart-badge {
     top: 0.3rem;
     left: 0.3rem;
@@ -718,11 +719,6 @@
     gap: 0.4rem;
     white-space: nowrap;
 }
-.library-tidal-status .source-glyph {
-    width: 1.05rem;
-    height: 1.05rem;
-    color: var(--text-primary);
-}
 .library-tidal-status-dot {
     display: none;
     width: 0.42rem;
@@ -745,10 +741,6 @@
     align-items: center;
     gap: 0.45rem;
     margin-top: 0.2rem;
-}
-.library-search-heading .source-glyph {
-    width: 1.15em;
-    height: 1.15em;
 }
 .library-search-grid {
     margin-top: 0.4rem;

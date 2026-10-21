@@ -163,39 +163,31 @@ body {
     }
 }
 .hidden { display: none !important; }
-/* Source mark for TIDAL items shown next to local music (Library tiles and
-   track rows); painted from currentColor like the favorite heart. */
+/* TIDAL marks (official white artwork, see ui_helpers.js sourceGlyphHtml).
+   The height follows --tidal-mark-h; the marks never sit on cover art. */
 .source-glyph {
     display: inline-flex;
     align-items: center;
-    justify-content: center;
     flex: 0 0 auto;
-    width: 1em;
-    height: 1em;
-    color: var(--text-muted);
+    height: var(--tidal-mark-h);
 }
-.source-glyph svg { width: 100%; height: 100%; fill: currentColor; display: block; }
+.tidal-mark { display: block; height: 100%; width: auto; }
+.tidal-mark--logo { aspect-ratio: 69 / 9; }
+.tidal-mark--diamond { aspect-ratio: 16 / 10.6667; }
+.tidal-brand-link { text-decoration: none; }
+/* Row marker: the diamond leads the sub line, one diamond of room after it. */
 .track-sub .source-glyph {
-    width: 0.95em;
-    height: 0.95em;
-    margin-right: 0.3em;
-    vertical-align: -0.14em;
+    margin-right: calc(var(--tidal-mark-h) / 2);
+    vertical-align: -0.2em;
 }
-/* Cover mark: bottom-left, opposite the heart in the top-right corner. */
-.source-glyph--tile {
-    position: absolute;
-    left: 0.45rem;
-    bottom: 0.45rem;
-    z-index: var(--z-raised);
-    width: 26px;
-    height: 26px;
-    padding: 4px;
-    border-radius: 50%;
-    border: 1px solid rgba(255, 255, 255, 0.18);
-    background: rgba(8, 18, 26, 0.72);
-    backdrop-filter: blur(4px);
-    color: #f5f7fa;
+/* Card brand row: its own line under the artist, full logo; list view swaps
+   to the diamond (see _library.css). */
+.source-glyph--card {
+    align-self: flex-start;
+    margin-top: -0.3rem;
 }
+.source-glyph--card .tidal-mark--diamond { display: none; }
+.source-glyph--heading { height: max(16px, 1rem); }
 @keyframes bannerSlide {
     from { transform: translateY(-100%); }
     to   { transform: translateY(0); }

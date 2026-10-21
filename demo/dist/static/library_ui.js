@@ -120,10 +120,11 @@ function tidalCardHtml(kind, item) {
         : (item.track_count ? `${item.track_count} tracks` : 'Playlist');
     return `
         <div class="album-card" data-tidal-kind="${kind}" data-tidal-id="${deps.escapeHtml(item.id)}" data-tidal-name="${deps.escapeHtml(title)}" data-tidal-art="${deps.escapeHtml(item.art_url || '')}" role="button" tabindex="0">
-            <div class="album-art-wrap">${tidal.cardArtHtml(item.art_url, title)}${deps.sourceGlyphHtml('tidal', 'source-glyph--tile')}</div>
+            <div class="album-art-wrap">${tidal.cardArtHtml(item.art_url, title)}</div>
             ${tidal.favoriteButtonHtml(TIDAL_CARD_FAVORITE_KINDS[kind] || 'playlists', item.id)}
             <div class="album-name">${deps.escapeHtml(title)}</div>
             <div class="album-artist">${deps.escapeHtml(sub)}</div>
+            ${deps.sourceGlyphHtml('tidal', '', { variant: 'card', link: { kind, id: item.id } })}
         </div>`;
 }
 
@@ -1119,10 +1120,11 @@ function renderAlbums() {
 function playlistCardsHtml(playlists, tidalPlaylists) {
     return playlists.map(playlist => `
         <div class="album-card playlist-card" data-playlist-id="${deps.escapeHtml(playlist.id)}" role="button" tabindex="0">
-            <div class="album-art-wrap">${playlistCoverHtml(playlist)}${playlistHasTidal(playlist) ? deps.sourceGlyphHtml('tidal', 'source-glyph--tile') : ''}</div>
+            <div class="album-art-wrap">${playlistCoverHtml(playlist)}</div>
             <button type="button" class="album-card-fav is-active" data-playlist-fav="${deps.escapeHtml(playlist.id)}" aria-label="Delete playlist" data-tooltip="Delete playlist">${deps.favoriteHeartSvg()}</button>
             <div class="album-name">${deps.escapeHtml(playlist.name)}</div>
             <div class="album-artist">${playlist.track_count} track${playlist.track_count === 1 ? '' : 's'}</div>
+            ${playlistHasTidal(playlist) ? deps.sourceGlyphHtml('tidal', '', { variant: 'card', link: true }) : ''}
         </div>`).join('') + tidalPlaylists.map(item => tidalCardHtml('playlist', item)).join('');
 }
 
@@ -1395,14 +1397,15 @@ function artistCardHtml(view) {
     const ref = tidal ? artistTidalRef(view) : null;
     const tidalOnly = !view.albums.length && !view.trackIds.length;
     const art = ref && ref.art_url ? tidal.cardArtHtml(ref.art_url, view.name) : localArtistArtHtml(view);
-    const glyph = tidalOnly ? deps.sourceGlyphHtml('tidal', 'source-glyph--tile') : '';
+    const brand = tidalOnly ? deps.sourceGlyphHtml('tidal', '', { variant: 'card', link: { kind: 'artist', id: ref ? ref.id : null } }) : '';
     const heart = ref ? tidal.favoriteButtonHtml('artists', ref.id) : '';
     return `
         <div class="album-card artist-card" data-artist-key="${deps.escapeHtml(view.key)}" role="button" tabindex="0">
-            <div class="album-art-wrap">${art}${glyph}</div>
+            <div class="album-art-wrap">${art}</div>
             ${heart}
             <div class="album-name">${deps.escapeHtml(view.name)}</div>
             <div class="album-artist">${deps.escapeHtml(artistCountText(view))}</div>
+            ${brand}
         </div>`;
 }
 
@@ -1574,6 +1577,12 @@ async function openArtistDetail(key) {
     void loadArtistExtras(view, ref, isCurrent);
 }
 
+// "On <TIDAL logo>": the logo links to the artist's TIDAL page when matched.
+function artistDetailSourceHeadingHtml(tidalArtistId) {
+    const logo = deps.sourceGlyphHtml('tidal', '', { variant: 'heading', link: { kind: 'artist', id: tidalArtistId }, decorative: true });
+    return `<h3 class="artist-detail-source"><span>On</span>${logo}<span class="visually-hidden"> TIDAL</span></h3>`;
+}
+
 // Artist page parts that need the network: the TIDAL section (when the artist
 // resolves on a connected TIDAL) and Discover Similar.
 async function loadArtistExtras(view, ref, isCurrent) {
@@ -1594,7 +1603,7 @@ async function loadArtistExtras(view, ref, isCurrent) {
             if (ambiguous) {
                 const section = document.createElement('section');
                 section.className = 'artist-detail-section artist-detail-tidal';
-                section.innerHTML = `<h3 class="artist-detail-source">${deps.sourceGlyphHtml('tidal')}<span>On TIDAL</span></h3>`
+                section.innerHTML = artistDetailSourceHeadingHtml(null)
                     + '<p class="album-discover-note">Several TIDAL artists share this name.</p>'
                     + '<button type="button" class="btn-secondary artist-search-tidal">Search on TIDAL</button>';
                 section.querySelector('.artist-search-tidal').addEventListener('click', () => tidal.searchArtist(view.name));
@@ -1604,7 +1613,7 @@ async function loadArtistExtras(view, ref, isCurrent) {
         if (tidalRef) {
             const section = document.createElement('section');
             section.className = 'artist-detail-section artist-detail-tidal';
-            section.innerHTML = `<h3 class="artist-detail-source">${deps.sourceGlyphHtml('tidal')}<span>On TIDAL</span></h3>`;
+            section.innerHTML = artistDetailSourceHeadingHtml(tidalRef.id);
             els.albumDetail.insertBefore(section, els.albumDiscover || null);
             try {
                 tidalData = await tidal.renderArtistInto(section, tidalRef.id, isCurrent);
@@ -2921,8 +2930,9 @@ async function startTidalSearch(generation, key) {
     if (searchResultsActive()) fillTidalSearchSection(document.querySelector('#tab-library [data-search-section="tidal"]'), searchResultType());
 }
 
+// With a mark the label stays as screen-reader text: the logo is the heading.
 function searchSectionHeadingHtml(label, glyph) {
-    return `<h4 class="streaming-results-heading library-search-heading">${glyph || ''}<span>${deps.escapeHtml(label)}</span></h4>`;
+    return `<h4 class="streaming-results-heading library-search-heading">${glyph || ''}<span${glyph ? ' class="visually-hidden"' : ''}>${deps.escapeHtml(label)}</span></h4>`;
 }
 
 function searchEmptyHtml(text) {
@@ -2945,7 +2955,7 @@ function fillTidalSearchSection(section, type) {
         return;
     }
     section.classList.remove('hidden');
-    const heading = searchSectionHeadingHtml('TIDAL', deps.sourceGlyphHtml('tidal'));
+    const heading = searchSectionHeadingHtml('TIDAL', deps.sourceGlyphHtml('tidal', '', { variant: 'heading', link: true, decorative: true }));
     if (!connection.authenticated) {
         section.innerHTML = heading + searchEmptyHtml('Connect TIDAL to search its catalog.')
             + '<button type="button" class="btn-secondary library-search-action">Connect TIDAL</button>';

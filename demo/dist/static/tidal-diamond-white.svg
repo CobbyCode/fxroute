@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 2.4 16 10.6667" fill="#fff">
+<!-- TIDAL diamond, white variant for dark backgrounds (TIDAL design guidelines v3.0).
+     Artwork paths unmodified from tidal-music/embed-player, src/client/img/icons.svg (symbol tidalLogo).
+     Only the canvas is cropped to the artwork bounds (original viewBox 0 0 16 16).
+     TIDAL and the TIDAL logo are trademarks of their owner. -->
+<path d="M2.6667 2.40002L0 5.06646L2.6667 7.7329L5.33341 5.06646L2.6667 2.40002Z" /><path d="M5.33354 5.06849L8.00024 2.40206L10.6668 5.06832L13.3333 2.40206L16 5.06849L13.3333 7.73493L10.6668 5.06832L8.00036 7.73482L10.6661 10.4003L7.99939 13.0667L5.33268 10.4003L7.99928 7.73396L5.33354 5.06849Z"/>
+</svg>

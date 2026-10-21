@@ -171,6 +171,41 @@ def _run():
                   page.locator('#albums-grid [data-tidal-kind="album"] .source-glyph--tidal').count() == 2)
             check("local tiles carry no TIDAL glyph",
                   page.locator('#albums-grid .album-card:not([data-tidal-kind]) .source-glyph').count() == 0)
+            # TIDAL branding: official marks, own row in the card, never over the cover.
+            check("no TIDAL mark sits over cover art",
+                  page.locator("#albums-grid .album-art-wrap .source-glyph").count() == 0)
+            brand = page.locator('#albums-grid [data-tidal-kind="album"] .source-glyph--card').first
+            album_id = page.locator('#albums-grid [data-tidal-kind="album"]').first.get_attribute("data-tidal-id")
+            check("a TIDAL tile links back to the album on TIDAL",
+                  brand.get_attribute("href") == f"https://tidal.com/browse/album/{album_id}"
+                  and brand.get_attribute("target") == "_blank"
+                  and "noopener" in (brand.get_attribute("rel") or ""))
+            check("the brand link stays out of keyboard and remote focus", brand.get_attribute("tabindex") == "-1")
+            logo = brand.locator("img.tidal-mark--logo")
+            check("a grid tile shows the full TIDAL logo, unmodified white artwork",
+                  logo.is_visible() and "/static/tidal-logo-white.svg" in (logo.get_attribute("src") or "")
+                  and not brand.locator("img.tidal-mark--diamond").is_visible())
+            logo_box = logo.bounding_box()
+            check(f"the logo meets TIDAL's 13 px minimum height ({logo_box['height']})", logo_box["height"] >= 13)
+            check("the logo keeps the official proportions",
+                  abs(logo_box["width"] / logo_box["height"] - 69 / 9) < 0.05)
+            title_box = page.locator('#albums-grid [data-tidal-kind="album"] .album-artist').first.bounding_box()
+            check("the logo sits below the artist line, on its own row",
+                  logo_box["y"] >= title_box["y"] + title_box["height"])
+            page.evaluate("document.querySelectorAll('.tidal-brand-link').forEach(a => a.addEventListener('click', e => e.preventDefault()))")
+            brand.click()
+            check("clicking the brand link does not open the card",
+                  page.locator("#library-tidal-detail:not(.hidden)").count() == 0)
+            status_mark = page.locator("#library-tidal-status img.tidal-mark--diamond")
+            check("the header button shows the official diamond at 13 px or more",
+                  status_mark.is_visible() and status_mark.bounding_box()["height"] >= 13
+                  and "/static/tidal-diamond-white.svg" in (status_mark.get_attribute("src") or ""))
+            page.click("#library-view-mode-list")
+            diamond = page.locator('#albums-grid [data-tidal-kind="album"] .source-glyph--card img.tidal-mark--diamond').first
+            check("list rows are too narrow for the logo and show the diamond",
+                  diamond.is_visible() and diamond.bounding_box()["height"] >= 13
+                  and not page.locator('#albums-grid [data-tidal-kind="album"] .source-glyph--card img.tidal-mark--logo').first.is_visible())
+            page.click("#library-view-mode-grid")
             button = page.locator("#library-tidal-status")
             check("connected header button is visible", button.is_visible())
             check("connected header button reads TIDAL",
@@ -201,6 +236,10 @@ def _run():
                   == [False, False, True])
             check("TIDAL track rows carry the TIDAL glyph",
                   page.locator("#tracks-list .streaming-result .track-sub .source-glyph--tidal").count() == 1)
+            row_mark = page.locator("#tracks-list .streaming-result .track-sub .source-glyph--tidal img").first
+            check("a TIDAL track row marks itself with the diamond at 13 px or more",
+                  "/static/tidal-diamond-white.svg" in (row_mark.get_attribute("src") or "")
+                  and row_mark.bounding_box()["height"] >= 13)
 
             # Save row variants: TIDAL only, then mixed with a local track.
             page.click("#tracks-list .streaming-result .streaming-add")
