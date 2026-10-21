@@ -754,6 +754,54 @@ class DSPRuntimeConfigTests(unittest.TestCase):
             self.assertFalse(runtime._ingress_latency_pending)
         asyncio.run(exercise())
 
+    def test_fatal_src_error_survives_cold_rebuild_with_pending_latency(self):
+        from audio.src_latency import SrcPathUnavailable
+        async def exercise():
+            with tempfile.TemporaryDirectory() as directory:
+                binary = Path(directory) / 'fxroute-dsp'
+                binary.touch()
+                links = set()
+                commands = []
+                async def run(args):
+                    if tuple(args) == ('pw-link', '-l'):
+                        return CommandResult(0, '\n'.join(f'{a} -> {b}' for a, b in links))
+                    if args[0] == 'pw-link' and len(args) == 3:
+                        links.add(tuple(args[1:]))
+                    elif tuple(args[:2]) == ('pw-link', '-d'):
+                        links.discard(tuple(args[2:]))
+                    return CommandResult(0)
+                async def launch(args):
+                    return FakeProcess()
+                async def complete(*args):
+                    return None
+                async def control(command, **kwargs):
+                    commands.append(command)
+                    return '0' if command == 'effects bypass get' else 'ok'
+                runtime = DSPRuntime(self.manager, binary=binary, command_runner=run, process_launcher=launch)
+                runtime._process = FakeProcess()
+                runtime._config = self.config(output_key='old')
+                runtime._links = [PipeWireLink('fxroute_dsp:output_1', 'old:playback_FL')]
+                runtime._control = runtime._control_unlocked = control
+                runtime._stop_orphan_helpers = runtime._wait_for_ports = complete
+                fault = RuntimeError('SRC adapter failed before rebuild')
+                runtime.configure_latency_tracking(input_latency_provider=unittest.mock.Mock(side_effect=[
+                    fault, SrcPathUnavailable('New ingress not observed', path='ingress'), 125]))
+                try:
+                    with self.assertRaisesRegex(RuntimeError, 'SRC adapter failed'):
+                        await runtime.update_input_latency(defer_unavailable=True)
+                    await runtime.sync_rendered(self.target())
+                    self.assertTrue(await runtime.verify())
+                    self.assertFalse(any(command.startswith('input latency ') for command in commands))
+                    self.assertFalse(runtime.snapshot()['active'])
+                    self.assertEqual(runtime.snapshot()['last_error'], str(fault))
+                    self.assertTrue(runtime.snapshot()['ingress_latency_pending'])
+                    await runtime.update_input_latency()
+                    self.assertTrue(runtime.snapshot()['active'])
+                    self.assertIsNone(runtime.snapshot()['last_error'])
+                finally:
+                    await runtime.stop()
+        asyncio.run(exercise())
+
     def test_rejected_preflight_preserves_pending_latency_deadline(self):
         from audio.src_latency import SrcGraphSettling
         clock = [0.0]

@@ -481,12 +481,12 @@ class DSPRuntime:
             if self._latency_owner_matches(owner) and self._engine_running():
                 self._last_input_latency_ms = value
                 self._clear_input_latency_pending()
+                self._input_latency_error = None
 
     def _clear_input_latency_pending(self) -> None:
         self._ingress_latency_pending = False
         self._ingress_latency_pending_since = None
         self._ingress_latency_pending_owner = None
-        self._input_latency_error = None
 
     async def read_latency(self) -> dict:
         if (not self._engine_running() or self._config is None or self.sync_in_progress
