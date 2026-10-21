@@ -990,11 +990,23 @@ class PlaybackOrchestrator:
         mode = (overview.get("output_mode") or {}).get("mode")
         diagnosis = await self.playback_graph_diagnosis(overview, target_rate=target_rate)
         dsp_reinitialized = helper_rebuilt = links_reconciled = False
+        repair_error = None
+
+        async def repair_links(action):
+            nonlocal repair_error, links_reconciled
+            try:
+                await action()
+                repair_error = None
+                links_reconciled = True
+            except RuntimeError as exc:
+                # PipeWire readbacks may lag a repair; retain the bounded retry.
+                repair_error = exc
+                logger.warning('Coordinator effects link repair not yet confirmed: %s', exc)
+
         if request.graph_only:
             if not diagnosis.get("bypass_only"):
                 raise RuntimeError(f"graph-only reconciliation requested for a non-bypass graph: signature={diagnosis.get('signature')}")
-            await self.reconcile_subwoofer_links_only()
-            links_reconciled = True
+            await repair_links(self.reconcile_subwoofer_links_only)
         else:
             # An output-mode switch stages its own planned graph: staging may
             # cold-start the engine and reconciles its links. Every other
@@ -1050,20 +1062,23 @@ class PlaybackOrchestrator:
                         )
                     await self._deps.sync_runtime(**kwargs); helper_rebuilt = True
                 if helper_needs_sync or not diagnosis.get("links_complete"):
-                    if mode in self._deps.output_mode_subwoofer_modes: await self.reconcile_subwoofer_links_only()
-                    elif diagnosis.get("bypass_only"): await self.reconcile_subwoofer_links_only()
-                    else: await self.repair_stereo_output_links_once(diagnosis)
-                    links_reconciled = True
+                    if mode in self._deps.output_mode_subwoofer_modes or diagnosis.get('bypass_only'):
+                        await repair_links(self.reconcile_subwoofer_links_only)
+                    else:
+                        await repair_links(lambda: self.repair_stereo_output_links_once(diagnosis))
         final = await self.playback_graph_diagnosis(overview, target_rate=target_rate)
         for _ in range(3):
-            if final.get("links_complete"): break
-            if final.get("bypass_only"): await self.reconcile_subwoofer_links_only()
-            else: await self.relink_missing_production_links(final, require_source=False)
+            if final.get("links_complete") and repair_error is None:
+                break
+            if final.get("bypass_only") or (repair_error is not None and mode in self._deps.output_mode_subwoofer_modes):
+                await repair_links(self.reconcile_subwoofer_links_only)
+            else:
+                await repair_links(lambda: self.relink_missing_production_links(final, require_source=False))
             await self._deps.sleep(self._deps.pipewire_poll_interval_ms * 5 / 1000)
             final = await self.playback_graph_diagnosis(overview, target_rate=target_rate)
-        if not final.get("links_complete"):
+        if not final.get("links_complete") or repair_error is not None:
             self.log_playback_graph_diagnosis(final, target_rate=target_rate, reason=f"coordinator-{request.operation}", detail=request.detail)
-            raise RuntimeError("Coordinator effects/helper graph did not reach the canonical topology")
+            raise RuntimeError("Coordinator effects/helper graph did not reach the canonical topology") from repair_error
         return {"dsp_reinitialized": dsp_reinitialized, "helper_rebuilt": helper_rebuilt, "links_reconciled": links_reconciled, "graph_complete": True, "graph_signature": final.get("signature")}
 
     async def playback_graph_links_complete(self, audio_overview: dict | None = None, *, source: str | None = None, target_rate: int | None = None, require_source: bool = False) -> bool:

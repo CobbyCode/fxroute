@@ -159,6 +159,41 @@ class PlannedDiagnosisTests(unittest.IsolatedAsyncioTestCase):
 
 
 class StagingBranchTests(unittest.IsolatedAsyncioTestCase):
+    async def test_effects_link_repairs_retry_exceptions_and_remain_bounded(self):
+        for failures in (1, 99):
+            with self.subTest(failures=failures):
+                attempts = 0
+                complete = False
+
+                async def repair():
+                    nonlocal attempts, complete
+                    attempts += 1
+                    if attempts <= failures:
+                        raise RuntimeError('Native DSP output links did not verify after repair')
+                    complete = True
+
+                instance = orchestrator({
+                    'get_dsp_runtime': lambda: SimpleNamespace(reclean_direct_dsp_links=repair),
+                    'get_dsp_snapshot': lambda: {'active': True},
+                    'helper_argument_sample_rate': lambda _: 48000,
+                })
+                async def diagnosis(*args, **kwargs):
+                    return {'dsp_ports': True, 'helper_ports': True, 'links': {},
+                            'bypass_only': True, 'links_complete': complete, 'signature': 'test'}
+                request = TransitionRequest(operation='play', source='local', target_rate=48000,
+                    audio_overview={'output_mode': {'mode': 'subwoofer-2.1'}})
+                with mock.patch.object(instance, 'playback_graph_diagnosis', side_effect=diagnosis), \
+                        mock.patch.object(instance, 'wait_for_dsp_output_ports', return_value=True):
+                    if failures == 1:
+                        result = await instance.establish_effects_and_helper(request)
+                        self.assertTrue(result['graph_complete'])
+                        self.assertEqual(attempts, 2)
+                    else:
+                        with self.assertRaisesRegex(RuntimeError, 'canonical topology') as raised:
+                            await instance.establish_effects_and_helper(request)
+                        self.assertIsInstance(raised.exception.__cause__, RuntimeError)
+                        self.assertEqual(attempts, 4)
+
     async def test_v2_target_uses_plan_sync_and_skips_runtime_repairs(self):
         sync_plan = AsyncMock()
         sync_runtime = AsyncMock()
