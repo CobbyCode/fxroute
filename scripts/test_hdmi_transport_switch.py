@@ -122,6 +122,43 @@ class HdmiTransportSwitchTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.sink, STEREO)
         self.assertEqual(_load_audio_output_selection()["selected_key"], STEREO)
 
+    async def test_automatic_mode_upgrade_updates_mpv_channels_and_relinks_current_track(self):
+        from playback.player import MPVWrapper
+        player = MPVWrapper()
+        player._state.update(current_file='/music/current.flac', playing=True, paused=False)
+        player._notify_callbacks()
+        commands = []
+        async def ingress():
+            commands.append(('ingress', self.sink))
+            return True
+        with mock.patch.object(main.runtime, 'player_instance', player), \
+                mock.patch.object(main, '_player_is_running', return_value=True), \
+                mock.patch.object(player, 'set_property', side_effect=lambda *args: commands.append(args)), \
+                mock.patch.object(main.playback_orchestration.configured(), 'ensure_mpv_to_dsp_links', side_effect=ingress):
+            await self.automatic('surround')
+        self.assertEqual(commands, [('audio-channels', 'auto'), ('ingress', SURROUND71)])
+        self.assertEqual(player.state['current_file'], '/music/current.flac')
+        self.assertFalse(player.state['paused'])
+
+    async def test_automatic_mode_failure_restores_mpv_channel_policy(self):
+        from playback.player import MPVWrapper
+        connectors_before = hdmi.load_connectors()
+        player = MPVWrapper()
+        player._state.update(current_file='/music/current.flac')
+        player._notify_callbacks()
+        commands = []
+        with mock.patch.object(main.runtime, 'player_instance', player), \
+                mock.patch.object(main, '_player_is_running', return_value=True), \
+                mock.patch.object(player, 'set_property', side_effect=lambda *args: commands.append(args)), \
+                mock.patch.object(main.playback_orchestration.configured(), 'ensure_mpv_to_dsp_links',
+                                  side_effect=[False, True]):
+            with self.assertRaisesRegex(RuntimeError, 'MPV channel-mode ingress'):
+                await self.automatic('surround')
+        self.assertEqual(commands, [('audio-channels', 'auto'), ('audio-channels', 'stereo')])
+        self.assertEqual(self.service.load()['active_mode'], 'stereo')
+        self.assertEqual(self.sink, STEREO)
+        self.assertEqual(hdmi.load_connectors(), connectors_before)
+
     async def test_uninitialized_routing_cannot_supersede_failure_rollback(self):
         before = self.service.load()
         self.fail_selection.add(SURROUND)

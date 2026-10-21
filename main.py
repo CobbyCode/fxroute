@@ -5501,6 +5501,18 @@ async def _apply_hdmi_transport_change(sink: hdmi.HdmiSink, transport_id: str, *
     return result
 
 
+async def _sync_mpv_output_mode_channels(mode: str) -> None:
+    """Align a retained MPV track after the HDMI path bypassed a mode transition."""
+    player = runtime.player_instance
+    if player is None or not _player_is_running(player):
+        return
+    changed = await _drain_worker(player.set_surround_channels, mode == 'surround')
+    if (changed and player.state.get('current_file')
+            and playback_state.current_playback_owner not in source_policy.EXTERNAL_SOURCES):
+        if not await playback_orchestration.configured().ensure_mpv_to_dsp_links():
+            raise RuntimeError('MPV channel-mode ingress was not confirmed')
+
+
 async def _apply_hdmi_output_state(body: dict, state: dict, candidate: dict, overview: dict) -> dict | None:
     """Upgrade transport for edits; leave downshifts to the connection watcher."""
     key, _channels = output_state_device(overview)
@@ -5541,11 +5553,20 @@ async def _apply_hdmi_output_state(body: dict, state: dict, candidate: dict, ove
                     "live_reason": "not-activatable",
                     "topology": output_state_topology(committed, mode, key, hdmi.routing_capacity(overview))}
         committed = await asyncio.to_thread(service.commit_unowned, candidate, expected_revision=state["revision"])
+        connector_before = (await asyncio.to_thread(hdmi.load_connectors)).get(sink.identity)
+        transport_applied = False
         try:
             result = await _apply_hdmi_transport(sink, target, remember=True)
+            transport_applied = True
+            await _sync_mpv_output_mode_channels(mode)
         except BaseException:
             await asyncio.to_thread(service.revert, state, expected_revision=committed["revision"])
-            await _apply_audio_output_selection(key, seed_routing=False)
+            if transport_applied:
+                await _apply_hdmi_transport(sink, sink.transport, remember=True)
+                await asyncio.to_thread(hdmi.store_connector, sink.identity, connector_before)
+            else:
+                await _apply_audio_output_selection(key, seed_routing=False)
+            await _sync_mpv_output_mode_channels(state['active_mode'])
             raise
         _hdmi_transport_watch.settled(sink.identity)
         live_key, live_channels = output_state_device(result)
