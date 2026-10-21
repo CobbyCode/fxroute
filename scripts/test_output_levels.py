@@ -72,6 +72,25 @@ class OutputLevelsTests(unittest.IsolatedAsyncioTestCase):
             pass
         self.assertTrue(self.sinks[NEW]['mute'])
 
+    async def test_user_level_change_during_switch_is_not_a_sink_replacement(self):
+        for unmute in (False, True):
+            with self.subTest(unmute=unmute):
+                self.sinks = {OLD: sink(OLD, 10, [17039, 16000], unmute)}
+                self.levels.observe_selected()
+                self.sinks = {NEW: sink(NEW, 11, [65536] * 6, False)}
+                async with self.levels.switch(OLD, NEW):
+                    self.sinks[NEW]['volume']['front-left']['value'] = 12345
+                    if unmute:
+                        self.sinks[NEW]['mute'] = False
+                self.assertFalse(self.sinks[NEW]['mute'])
+                self.assertEqual(self.sinks[NEW]['volume']['front-left']['value'], 12345)
+                self.assertFalse(self.levels._pending)
+                self.sinks = {NEW: sink(NEW, 12, [65536] * 6, False)}
+                async with self.levels.switch(NEW, NEW):
+                    pass
+                self.assertEqual(self.sinks[NEW]['volume']['front-left']['value'], 12345)
+                self.assertFalse(self.sinks[NEW]['mute'])
+
     async def test_failed_graph_never_opens_replacement_and_retry_keeps_original_mute(self):
         self.sinks[OLD]['mute'] = False
         self.levels.observe_selected()

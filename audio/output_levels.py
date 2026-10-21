@@ -120,8 +120,12 @@ class OutputLevels:
                 if state is not None and success:
                     live = self._inventory()
                     current = live[key]
-                    if current.index != state.index or current.volumes != state.volumes or not current.muted:
+                    if (current.index != state.index
+                            or tuple(dict(current.volumes)) != tuple(dict(state.volumes))):
                         raise RuntimeError('Hardware output changed during sync')
+                    # Raw level edits do not replace the node. Keep a user's new
+                    # volume or explicit unmute instead of failing the switch.
+                    state = SinkLevels(current.index, current.volumes, state.muted if current.muted else False)
                     self._mute(key, state.muted or self._mute_held())
                     self._observed[key] = state
                     for source in list(self._pending):
