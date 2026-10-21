@@ -9235,6 +9235,10 @@ input[type="number"]::-webkit-outer-spin-button {
             grid-template-areas: "transport transport" "volume volume";
         }
         .playback-meter { display: none; }
+        /* The multichannel meter sets display: flex at higher specificity;
+           without this it falls out of the areas above into implicit
+           grid tracks (extra column and row, content squeezed left). */
+        .playback-meter.is-multichannel { display: none; }
     }
 }
 
