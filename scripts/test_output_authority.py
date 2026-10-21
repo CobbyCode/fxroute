@@ -111,6 +111,40 @@ class OutputAuthorityTests(unittest.IsolatedAsyncioTestCase):
     async def test_extra_physical_output_is_not_a_complete_graph(self):
         self.assertFalse(await self.runtime.verify())
 
+    async def test_pending_src_latency_never_repairs_a_healthy_graph_but_fatal_fault_does(self):
+        from audio.src_latency import SrcPathUnavailable
+        self.default = 'alsa_output.A'
+        self.links = self.desired | {self.tap}
+        self.runtime.configure_latency_tracking(input_latency_provider=mock.Mock(
+            side_effect=SrcPathUnavailable('Ingress not observed', path='ingress')))
+        deps = _watcher_deps(SimpleNamespace(
+            sleep=lambda _d: None, get_dsp_runtime=lambda: self.runtime,
+            get_audio_output_overview=lambda: {}, observe_playback_samplerate_drift=mock.AsyncMock()))
+        deps = replace(deps, reconcile_output_default=overview.reconcile_selected_output_default,
+                       read_output_default_state=overview.selected_output_default_state,
+                       get_coordinator_lock=asyncio.Lock,
+                       get_measurement_sr_session=lambda: SimpleNamespace(lock=asyncio.Lock()))
+        orchestrator = DspOrchestrator(deps)
+        repairs = []
+        async def repair(**kwargs):
+            repairs.append(kwargs)
+        orchestrator.sync_runtime = repair
+        with mock.patch('dsp.runtime.time.monotonic', return_value=0):
+            await self.runtime.update_input_latency(defer_unavailable=True)
+        for now in (11, 60):
+            with mock.patch('dsp.runtime.time.monotonic', return_value=now):
+                await self.runtime.update_input_latency(defer_unavailable=True)
+            await orchestrator.reconcile_output_authority()
+            self.assertTrue(self.runtime.snapshot()['active'])
+            self.assertEqual(repairs, [], 'Latency-only pending must not rebuild the DSP')
+        self.runtime.configure_latency_tracking(input_latency_provider=mock.Mock(
+            side_effect=RuntimeError('SRC adapter failed')))
+        with self.assertRaisesRegex(RuntimeError, 'SRC adapter failed'):
+            await self.runtime.update_input_latency(defer_unavailable=True)
+        await orchestrator.reconcile_output_authority()
+        self.assertFalse(self.runtime.snapshot()['active'])
+        self.assertTrue(repairs, 'Fatal SRC faults must still trigger recovery')
+
     async def test_direct_producer_links_are_not_a_complete_graph(self):
         for source in ("mpv:output_FL", "spotify:output_FR", "alsa_playback.qbzd:output_FL",
                        "alsa_playback.qbzd:playback_FR"):

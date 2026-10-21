@@ -653,7 +653,7 @@ class DSPRuntimeConfigTests(unittest.TestCase):
                 with self.subTest(kind=kind, failure=failure):
                     asyncio.run(exercise(kind, failure, transient))
 
-    def test_pending_latency_is_visible_times_out_with_backoff_and_recovers(self):
+    def test_pending_latency_preserves_health_with_backoff_and_recovers(self):
         from audio.src_latency import SrcLatencyReader
         from test_av_sync_src import graph
         clock, reads, timed_out = [0.0], [], []
@@ -692,11 +692,47 @@ class DSPRuntimeConfigTests(unittest.TestCase):
             asyncio.run(exercise())
         self.assertLessEqual(len(reads), 16, 'Unavailable evidence must not run pw-dump at 10 Hz')
         self.assertLessEqual(len(logs.output), 4, 'Unavailable evidence warnings must be throttled')
-        self.assertTrue(any(row.get('ingress_latency_pending') and row['last_error'] for row in timed_out))
+        self.assertTrue(timed_out)
+        self.assertTrue(all(row['active'] and row['last_error'] is None
+                            and row['ingress_latency_pending'] and not row['av_sync'] for row in timed_out))
         self.assertFalse(runtime.snapshot().get('ingress_latency_pending'))
         self.assertIsNone(runtime.snapshot()['last_error'])
         self.assertTrue(runtime.snapshot()['active'])
         self.assertEqual(runtime._last_input_latency_ms, 750)
+
+    def test_fatal_src_error_survives_pending_until_acknowledged_recovery(self):
+        from audio.src_latency import SrcPathUnavailable
+        async def exercise():
+            runtime = DSPRuntime(self.manager)
+            runtime._process = FakeProcess()
+            runtime._config = self.config()
+            runtime._links = [PipeWireLink('fxroute_dsp:output_1', 'hw:playback_FL')]
+            fault = RuntimeError('SRC latency adapter is unavailable')
+            provider = unittest.mock.Mock(side_effect=[
+                fault, SrcPathUnavailable('Ingress missing', path='ingress'),
+                SrcPathUnavailable('Output missing', path='output'), 125, 125])
+            runtime.configure_latency_tracking(input_latency_provider=provider)
+            runtime._control_unlocked = unittest.mock.AsyncMock(side_effect=[RuntimeError('No acknowledgement'), 'ok'])
+            with unittest.mock.patch('dsp.runtime.time.monotonic', return_value=5):
+                with self.assertRaisesRegex(RuntimeError, 'adapter is unavailable'):
+                    await runtime.update_input_latency(defer_unavailable=True)
+            for now in (6, 20):
+                with unittest.mock.patch('dsp.runtime.time.monotonic', return_value=now):
+                    await runtime.update_input_latency(defer_unavailable=True)
+                self.assertFalse(runtime.snapshot()['active'])
+                self.assertEqual(runtime.snapshot()['last_error'], str(fault))
+                self.assertTrue(runtime.snapshot()['ingress_latency_pending'])
+                self.assertEqual(await runtime.read_latency(), {'ready': False})
+            with self.assertRaisesRegex(RuntimeError, 'No acknowledgement'):
+                await runtime.update_input_latency()
+            self.assertFalse(runtime.snapshot()['active'])
+            self.assertEqual(runtime.snapshot()['last_error'], str(fault))
+            await runtime.update_input_latency()
+            self.assertTrue(runtime.snapshot()['active'])
+            self.assertIsNone(runtime.snapshot()['last_error'])
+            self.assertFalse(runtime.snapshot()['ingress_latency_pending'])
+            self.assertEqual(runtime._last_input_latency_ms, 125)
+        asyncio.run(exercise())
 
     def test_late_missing_latency_does_not_poison_a_new_graph(self):
         from audio.src_latency import SrcGraphSettling
@@ -743,7 +779,7 @@ class DSPRuntimeConfigTests(unittest.TestCase):
                 snapshot = runtime.snapshot()
                 self.assertTrue(snapshot['ingress_latency_pending'])
                 self.assertEqual(snapshot['ingress_latency_pending_seconds'], 13)
-                self.assertIn('13.0s', snapshot['last_error'])
+                self.assertIsNone(snapshot['last_error'])
         with unittest.mock.patch('dsp.runtime.time.monotonic', side_effect=lambda: clock[0]):
             asyncio.run(exercise())
 

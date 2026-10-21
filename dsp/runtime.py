@@ -466,8 +466,6 @@ class DSPRuntime:
             self._ingress_latency_pending = True
             self._last_input_latency_ms = None
             self._latency_snapshot = {}
-            age = now - self._ingress_latency_pending_since
-            self._input_latency_error = f'SRC latency pending for {age:.1f}s: {exc}' if age >= 10 else None
             return
         except RuntimeError as exc:
             if self._latency_owner_matches(owner):
@@ -477,12 +475,12 @@ class DSPRuntime:
         async with self._control_lock:
             if not self._latency_owner_matches(owner) or not self._engine_running():
                 return
-            self._clear_input_latency_pending()
-            if value != self._last_input_latency_ms:
+            if value != self._last_input_latency_ms or self._input_latency_error:
                 self._last_input_latency_ms = None
                 await self._control_unlocked(f'input latency {value:.9g}', reply=True)
-                if self._latency_owner_matches(owner) and self._engine_running():
-                    self._last_input_latency_ms = value
+            if self._latency_owner_matches(owner) and self._engine_running():
+                self._last_input_latency_ms = value
+                self._clear_input_latency_pending()
 
     def _clear_input_latency_pending(self) -> None:
         self._ingress_latency_pending = False
@@ -864,13 +862,13 @@ class DSPRuntime:
                 "input_mask": None if self._control_poisoned else self._input_mask,
                 "control_state": "unknown" if self._control_poisoned else "ready",
                  "effect_bypass": self._effect_bypass, "output_gain_db": self._output_gain_db,
-                  "latency_tracking": self._latency_tracking,
+                 "latency_tracking": self._latency_tracking,
                 "ingress_latency_pending": self._ingress_latency_pending,
                 "ingress_latency_pending_seconds": (max(0.0, time.monotonic() - self._ingress_latency_pending_since)
                                                     if self._ingress_latency_pending_since is not None else None),
                 "av_sync": copy.deepcopy(self._latency_snapshot),
                  "measurement_latency": copy.deepcopy(self._measurement_latency_snapshot),
-                  "measurement_active": self._measurement_active,
+                 "measurement_active": self._measurement_active,
                 "stderr_tail": self.stderr_tail()[:2048]}
 
     async def set_exact_sub_mute(self, enabled: bool, *, mask: int | None = None) -> bool:

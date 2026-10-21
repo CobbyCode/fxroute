@@ -29,6 +29,7 @@ class SrcGraphSettling(SrcPathUnavailable):
     ``path`` names the settling side, ``ingress`` or ``output``.
     """
 
+
 def graph_src_latency(graph: list[dict], *, include_ingress: bool = True,
                       ingress_nodes: tuple[str, ...] | None = None) -> float:
     nodes = {item['id']: item.get('info') or {} for item in graph
