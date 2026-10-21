@@ -566,7 +566,7 @@ class PlaybackOrchestrator:
                   "links": {}, "source_links": {}, "source_links_complete": None,
                   "direct_source_to_hw_present": False, "output_targets": (),
                   "unexpected_output_links": (),
-                  "links_complete": False, "bypass_only": False,
+                  "links_complete": False, "output_links_complete": False, "bypass_only": False,
                   "port_identities": {"source": (), "source_target": (), "dsp": (), "helper": (), "output": ()},
                   "signature": "unreadable"}
         try:
@@ -678,6 +678,11 @@ class PlaybackOrchestrator:
             f"{link.source} -> {link.target}" for link in physical_output_links(link_text)
             if (link.source, link.target) not in desired_pairs
         ))
+        result['output_links_complete'] = bool(
+            desired_pairs and result['helper_rate_matches']
+            and all(port in io_text for port in (*dsp_ports, *output_targets))
+            and all(self._deps.contains_link(link_text, source, target) for source, target in desired_pairs)
+            and not result['direct_source_to_hw_present'] and not result['unexpected_output_links'])
         result["duplicate_ingress"] = bool(duplicate_ingress)
         unwanted_links = result["direct_source_to_hw_present"] or result["unexpected_output_links"] or duplicate_ingress
         result["bypass_only"] = bool(native and unwanted_links)

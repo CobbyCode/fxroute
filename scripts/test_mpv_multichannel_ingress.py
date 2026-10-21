@@ -314,6 +314,34 @@ class TransitionTests(unittest.IsolatedAsyncioTestCase):
 
 
 class OrchestrationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_output_selection_commit_survives_a_shrinking_playlist_layout(self):
+        import main
+        import os
+        import tempfile
+        from audio.samplerate import _load_audio_output_selection
+        await self.engine.set_mapped_ingress(mapped_ingress_edges('mpv', SIDE, port_kind='output'))
+        await self.engine._reconcile_output_links(self.engine._config)
+        overview = {**self.overview, 'selected_output': {'key': 'hardware'},
+                    'default_output': {'key': 'hardware'}}
+        async def sync(*args, **kwargs):
+            self.suffixes = {'FL': 'FL', 'FR': 'FR'}
+            self.player.state['audio_output_params'] = {'channel-count': 2}
+            self.refresh_ports()
+            self.graph.links = {edge for edge in self.graph.links
+                                if not edge[0].startswith('mpv:') or edge[0] in ('mpv:output_FL', 'mpv:output_FR')}
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.dict(os.environ, {'XDG_CONFIG_HOME': directory}), \
+                patch.object(main.runtime, 'dsp_runtime', self.engine), \
+                patch.object(main, 'get_audio_output_overview', return_value=overview), \
+                patch.object(main.samplerate, 'prepare_audio_output_selection', return_value={'name': 'hardware'}), \
+                patch.object(main.samplerate, '_set_default_sink'), \
+                patch.object(main.dsp_orchestrator, 'sync_runtime', side_effect=sync), \
+                patch.object(main.playback_orchestration, 'configured', return_value=self.orchestrator):
+            await main._apply_audio_output_selection('hardware', seed_routing=False)
+            self.assertEqual(_load_audio_output_selection()['selected_key'], 'hardware')
+        diagnosis = await self.orchestrator.playback_graph_diagnosis(overview)
+        self.assertFalse(diagnosis['links_complete'], 'Ingress drift remains visible to the watch')
+
     async def asyncSetUp(self):
         import main
         from playback.orchestration import PlaybackOrchestrator

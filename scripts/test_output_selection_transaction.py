@@ -79,7 +79,7 @@ class OutputSelectionTransactionTests(unittest.IsolatedAsyncioTestCase):
 
     async def diagnose(self, target):
         key = target["output_mode"]["effective_output_key"]
-        return {"output_key": key, "links_complete": self.state["graph"] == key}
+        return {"output_key": key, "output_links_complete": self.state["graph"] == key}
 
     async def select(self, key="B"):
         return await main.save_audio_output_selection_route(SimpleNamespace(json=lambda: self.body(key)))
@@ -119,7 +119,7 @@ class OutputSelectionTransactionTests(unittest.IsolatedAsyncioTestCase):
     async def test_failed_graph_readback_rolls_back(self):
         async def incomplete(target):
             key = target["selected_output"]["key"]
-            return {"output_key": key, "links_complete": key == "A"}
+            return {"output_key": key, "output_links_complete": key == "A"}
 
         with mock.patch.object(main.playback_orchestration.configured(), "playback_graph_diagnosis", side_effect=incomplete):
             with self.assertRaises(Exception):

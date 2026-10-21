@@ -5178,7 +5178,7 @@ async def _verify_audio_output_selection(key: str, target: dict) -> None:
     if not snapshot.get("active") or (snapshot.get("config") or {}).get("output_key") != key:
         raise RuntimeError(f"Native DSP graph did not commit output {key}")
     diagnosis = await playback_orchestration.configured().playback_graph_diagnosis(target)
-    if diagnosis.get("output_key") != key or not diagnosis.get("links_complete"):
+    if diagnosis.get("output_key") != key or not diagnosis.get("output_links_complete"):
         raise RuntimeError(f"Native DSP links did not verify for output {key}")
 
 
