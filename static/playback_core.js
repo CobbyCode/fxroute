@@ -759,6 +759,17 @@ async function clearQueue() {
     }
 }
 
+// A new play takes priority over any in-flight one. The superseded request
+// returns early on its stale id, so its optimistic markers are dropped here.
+function supersedePendingPlayback() {
+    if (playbackActionInFlight) {
+        pendingPlaybackRequestId++;
+        playbackActionInFlight = false;
+    }
+    clearPendingOptimisticTrack();
+    clearPendingFooterSingleTrackStart();
+}
+
 // Playback actions
 async function playRadio(stationId) {
     pendingFooterSingleTrackStart = null;
@@ -767,11 +778,7 @@ async function playRadio(stationId) {
         deps.showToast('Station not found', 'error');
         return;
     }
-    // Cancel any in-flight action — new play takes priority
-    if (playbackActionInFlight) {
-        pendingPlaybackRequestId++;
-        playbackActionInFlight = false;
-    }
+    supersedePendingPlayback();
     const requestId = ++pendingPlaybackRequestId;
     playbackActionInFlight = true;
     armLocalFooterHold();
@@ -838,11 +845,7 @@ async function playLocal(trackId, queueTrackIds = null) {
         deps.showToast('Track not found', 'error');
         return;
     }
-    // Cancel any in-flight action — new play takes priority
-    if (playbackActionInFlight) {
-        pendingPlaybackRequestId++;
-        playbackActionInFlight = false;
-    }
+    supersedePendingPlayback();
     const shouldUseQueue = Array.isArray(queueTrackIds) && queueTrackIds.length > 1 && queueTrackIds.includes(trackId);
     const requestId = ++pendingPlaybackRequestId;
     pendingFooterSingleTrackStart = shouldUseQueue ? null : {
@@ -941,10 +944,7 @@ async function playLibraryRefs(startRef, refs) {
     if (!queueRefs.length) return;
     const start = queueRefs.includes(startRef) ? startRef : queueRefs[0];
     const startsOnTidal = String(start).startsWith(TIDAL_REF_PREFIX);
-    if (playbackActionInFlight) {
-        pendingPlaybackRequestId++;
-        playbackActionInFlight = false;
-    }
+    supersedePendingPlayback();
     const requestId = ++pendingPlaybackRequestId;
     playbackActionInFlight = true;
     try {
