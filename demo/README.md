@@ -129,6 +129,22 @@ but not after the JSON/bundle imports — without it the page's cached
 revision would stay one behind and the next import would be refused as
 stale.
 
+**Network shares (SMB + NFS).** The demo shows one NAS that publishes its
+folders over both protocols: `SMB_Demo_Library-1` / `SMB_Demo_Library-2` are
+the SMB shares, and the automatically discovered exports
+`/export/Music-Demo` and `/export/Archive` are the same folders over NFS. Both
+protocols appear in the Settings library selector with their mount state:
+the SMB shares start mounted, the NFS exports start unmounted and are mounted
+(and rescanned) when selected, while the other protocol's mount stays
+available. Each protocol entry serves its folder's catalog, so switching
+between SMB and NFS of the same NAS keeps the same albums.
+
+Manual entry accepts the backend's two forms, `smb://server/share` and
+`server:/export/path` (IPv6 servers bracketed, e.g. `[2001:db8::1]:/music`).
+An added share is listed unmounted until selected; an unusable URL is a 400
+with the backend wording. Removing a share keeps the other shares (and their
+catalogs) untouched.
+
 **Library files.** The library upload of the product frontend posts through
 `XMLHttpRequest`, not `fetch`, so `demo/xhr.js` replaces `window.XMLHttpRequest`
 with a shim that routes every `/api/` request through the same simulated API

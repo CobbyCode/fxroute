@@ -1798,19 +1798,69 @@
     }
 
     // ── Music libraries ─────────────────────────────────────────────────
-    // The demo presents "SMB_Demo_Library-1" (the first demo share) as its
+    // The demo presents "SMB_Demo_Library-1" (the first SMB demo share) as its
     // active library, like a box with that share selected; Local and
     // "SMB_Demo_Library-2" stay selectable under Settings. Each share serves
     // its own catalog (local main, demo-library-2 SMB-1, demo-nas SMB-2).
+    //
+    // NFS is presented the way a NAS publishes the same folders over both
+    // protocols: /export/Music-Demo is the SMB-1 folder and /export/Archive
+    // the SMB-2 folder, so picking either protocol shows the same music. Both
+    // exports come from automatic discovery and start unmounted; selecting
+    // one mounts it and keeps the SMB mount alongside.
     const musicLibraries = {
         active_id: 'demo-library-2',
         active_type: 'smb',
         libraries: [
             { id: 'local', label: 'Local', type: 'local' },
-            { id: 'demo-library-2', label: 'SMB_Demo_Library-1', type: 'smb', mounted: true },
-            { id: 'demo-nas', label: 'SMB_Demo_Library-2', type: 'smb', mounted: true },
+            { id: 'demo-library-2', label: 'SMB_Demo_Library-1', type: 'smb', server: '192.168.178.100', share: 'Music-Demo', mounted: true },
+            { id: 'demo-nas', label: 'SMB_Demo_Library-2', type: 'smb', server: '192.168.178.100', share: 'Music-Demo-2', mounted: true },
+            { id: 'demo-nfs', label: 'NFS — 192.168.178.100:/export/Music-Demo', type: 'nfs', server: '192.168.178.100', share: '/export/Music-Demo', mounted: false },
+            { id: 'demo-nfs-archive', label: 'NFS — 192.168.178.100:/export/Archive', type: 'nfs', server: '192.168.178.100', share: '/export/Archive', mounted: false },
+            { id: 'manual', type: 'action', label: 'Add network share manually…' },
         ],
     };
+
+    // Manual entry accepts both protocol spellings the real backend accepts:
+    // smb://server/share and server:/export/path (IPv6 servers bracketed).
+    // New shares stay unmounted until they are selected, like a real box.
+    function manualShareEntry(rawUrl) {
+        const value = String(rawUrl || '').trim();
+        const smb = value.match(/^smb:\/\/([A-Za-z0-9][A-Za-z0-9._-]*)\/([^/]+)\/?$/i);
+        if (smb) {
+            return {
+                id: `smb:${smb[1]}:${smb[2]}`,
+                type: 'smb',
+                label: `SMB — ${smb[1]} / ${smb[2]}`,
+                server: smb[1],
+                share: smb[2],
+                mounted: false,
+            };
+        }
+        // A single leading slash: "ftp://host/path" is a scheme, not an export.
+        const nfs = value.match(/^(\[[0-9A-Fa-f:]+\]|[A-Za-z0-9][A-Za-z0-9._-]*):(\/(?!\/).*)$/);
+        if (nfs) {
+            const share = nfs[2].replace(/\/+/g, '/').replace(/\/+$/, '') || '/';
+            return {
+                id: `nfs:${nfs[1]}:${share}`,
+                type: 'nfs',
+                label: `NFS — ${nfs[1]}:${share}`,
+                server: nfs[1],
+                share,
+                mounted: false,
+            };
+        }
+        throw new Error('Enter smb://server/share or server:/export/path');
+    }
+    // New shares go in front of the manual-entry action, keeping it last.
+    function addNetworkEntry(entry) {
+        const existing = musicLibraries.libraries.find(item => item.id === entry.id);
+        if (existing) return existing;
+        const actionIndex = musicLibraries.libraries.findIndex(item => item.type === 'action');
+        const index = actionIndex < 0 ? musicLibraries.libraries.length : actionIndex;
+        musicLibraries.libraries.splice(index, 0, entry);
+        return entry;
+    }
 
     // ── Library scan / share-discovery simulation ───────────────────────
     // A real box rescans after boot and on refresh; the frontend polls
@@ -1872,9 +1922,11 @@
     // serves the browse surfaces; manually added shares fall back to local.
     const lib2 = window.FXROUTE_DEMO_LIBRARY2 || { tracks: [], albums: [] };
     const lib3 = window.FXROUTE_DEMO_LIBRARY3 || { tracks: [], albums: [] };
+    // The NAS publishes each folder over SMB and NFS, so both protocol
+    // entries of one folder serve the same catalog.
     function activeLib() {
-        if (musicLibraries.active_id === 'demo-library-2') return lib2;
-        if (musicLibraries.active_id === 'demo-nas') return lib3;
+        if (musicLibraries.active_id === 'demo-library-2' || musicLibraries.active_id === 'demo-nfs') return lib2;
+        if (musicLibraries.active_id === 'demo-nas' || musicLibraries.active_id === 'demo-nfs-archive') return lib3;
         return lib;
     }
     // Cross-catalog lookup: the active catalog wins, the others are
@@ -3862,16 +3914,21 @@
         }
         if (p === '/api/music-libraries') return j(musicLibrariesPayload());
         if (p === '/api/music-libraries/manual' && post) {
-            const url = String(body.url || '');
-            const type = url.startsWith('smb://') ? 'smb' : 'nfs';
-            const entry = { id: 'demo-network-' + type + ':' + url, label: type.toUpperCase() + ' — ' + url, type, mounted: true };
-            if (!musicLibraries.libraries.find(l => l.id === entry.id)) musicLibraries.libraries.push(entry);
+            let entry;
+            try {
+                entry = manualShareEntry(body.url);
+            } catch (error) {
+                return err(error.message || 'Invalid network share', 400);
+            }
+            addNetworkEntry(entry);
             return j({ ...musicLibraries, entry });
         }
         if (p === '/api/music-libraries/remove' && post) {
             const id = String(body.id || '');
-            if (id === 'local' || id === musicLibraries.active_id) return err('Select the local library before removing this share', 409);
-            musicLibraries.libraries = musicLibraries.libraries.filter(entry => entry.id !== id);
+            const entry = musicLibraries.libraries.find(l => l.id === id);
+            if (!entry || !['smb', 'nfs'].includes(entry.type)) return err('Unknown network share', 404);
+            if (id === musicLibraries.active_id) return err('Select the local library before removing this share', 409);
+            musicLibraries.libraries = musicLibraries.libraries.filter(item => item.id !== id);
             return j(musicLibraries);
         }
         if (p === '/api/music-libraries/select' && post) {
@@ -3881,6 +3938,9 @@
                 const changed = entry.id !== musicLibraries.active_id;
                 musicLibraries.active_id = entry.id;
                 musicLibraries.active_type = entry.type;
+                // Selecting a shared folder mounts it; the mount then stays
+                // for the session, so the other protocol stays available.
+                if (entry.type === 'smb' || entry.type === 'nfs') entry.mounted = true;
                 // Local playback + queue fallbacks in state.js resolve
                 // against the active catalog.
                 if (typeof S.setActiveLibraryId === 'function') S.setActiveLibraryId(entry.id);

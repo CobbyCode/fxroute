@@ -117,6 +117,44 @@ async function checkCatalog(fetch, { selectId, albums, coverRe, label }) {
     assert.ok(smb2, 'SMB_Demo_Library-2 listed');
     assert.equal(smb2.label, 'SMB_Demo_Library-2');
     assert.equal(smb2.type, 'smb');
+    assert.equal(smb2.server, '192.168.178.100');
+    assert.equal(smb2.share, 'Music-Demo-2');
+
+    // NFS exports of the same NAS folders are discovered alongside SMB and
+    // start unmounted; the manual-entry action stays the last option.
+    const nfs = libraries.libraries.find(l => l.id === 'demo-nfs');
+    assert.ok(nfs, 'NFS export of the SMB-1 folder listed');
+    assert.equal(nfs.type, 'nfs');
+    assert.equal(nfs.server, '192.168.178.100');
+    assert.equal(nfs.share, '/export/Music-Demo');
+    assert.equal(nfs.mounted, false, 'a discovered NFS export starts unmounted');
+    assert.match(nfs.label, /^NFS — 192\.168\.178\.100:\/export\/Music-Demo$/);
+    const nfsArchive = libraries.libraries.find(l => l.id === 'demo-nfs-archive');
+    assert.ok(nfsArchive, 'second NFS export listed');
+    assert.equal(nfsArchive.type, 'nfs');
+    assert.equal(nfsArchive.share, '/export/Archive');
+    assert.equal(nfsArchive.mounted, false);
+    const lastOption = libraries.libraries[libraries.libraries.length - 1];
+    assert.deepEqual([lastOption.id, lastOption.type], ['manual', 'action'],
+        'the manual-entry action stays the last library option');
+    assert.equal(smb1.mounted, true, 'SMB shares stay mounted next to NFS');
+
+    // The payload renders through the product selector model unchanged, so
+    // both protocols and the manual entry are visible in Settings.
+    const settings = require('../static/settings_system.js');
+    const selectModel = settings.musicLibrarySelectModel(libraries);
+    assert.match(selectModel.html, /SMB_Demo_Library-1/);
+    assert.match(selectModel.html, /SMB_Demo_Library-2/);
+    assert.match(selectModel.html, /NFS — 192\.168\.178\.100:\/export\/Music-Demo/);
+    assert.match(selectModel.html, /NFS — 192\.168\.178\.100:\/export\/Archive/);
+    assert.match(selectModel.html, /Add network share manually/);
+    assert.equal(selectModel.value, 'demo-library-2');
+    assert.equal(selectModel.disabled, false);
+    const removalModel = settings.musicLibraryRemovalModel(libraries);
+    assert.match(removalModel.html, /demo-library-2/);
+    assert.match(removalModel.html, /demo-nfs/);
+    assert.doesNotMatch(removalModel.html, /value="local"|value="manual"/,
+        'only network shares are removable');
 
     const c1 = await checkCatalog(fetch, {
         selectId: 'demo-library-2', albums: 16,
@@ -141,6 +179,32 @@ async function checkCatalog(fetch, { selectId, albums, coverRe, label }) {
         coverRe: /^\/static\/demo\/s2-/, label: 'SMB_Demo_Library-2',
     });
     assert.ok(!c2.gotAlbums.some(a => c1.gotAlbums.some(b => b.id === a.id)), 'shares do not share album ids');
+
+    // ── NFS shares resolve to the same NAS folders as SMB ──────────────
+    const selectedNfs = await (await post(fetch, '/api/music-libraries/select', { id: 'demo-nfs' })).json();
+    assert.equal(selectedNfs.active_id, 'demo-nfs');
+    assert.equal(selectedNfs.active_type, 'nfs');
+    assert.equal(selectedNfs.libraries.find(l => l.id === 'demo-nfs').mounted, true,
+        'selecting an NFS export mounts it');
+    assert.equal(selectedNfs.libraries.find(l => l.id === 'demo-library-2').mounted, true,
+        'the SMB mount stays available next to NFS');
+    const nfsAlbums = await (await fetch('/api/albums')).json();
+    const nfsTracks = await (await fetch('/api/tracks')).json();
+    assert.deepEqual(nfsAlbums.map(a => a.id), c1.gotAlbums.map(a => a.id),
+        'the NFS export of the SMB-1 folder serves that catalog');
+    assert.deepEqual(nfsTracks.map(t => t.id), c1.gotTracks.map(t => t.id));
+    const nfsPlay = await (await post(fetch, '/api/play', { track_id: nfsTracks[0].id })).json();
+    assert.equal(nfsPlay.track.id, nfsTracks[0].id, 'playback works over NFS');
+    assert.match(nfsPlay.playback.current_track.cover_url, /^\/static\/demo\/s1-/, 'NFS playback keeps its cover');
+
+    const archiveAlbums = await (async () => {
+        const selected = await (await post(fetch, '/api/music-libraries/select', { id: 'demo-nfs-archive' })).json();
+        assert.equal(selected.active_type, 'nfs');
+        assert.equal(selected.libraries.find(l => l.id === 'demo-nfs-archive').mounted, true);
+        return (await fetch('/api/albums')).json();
+    })();
+    assert.deepEqual(archiveAlbums.map(a => a.id), c2.gotAlbums.map(a => a.id),
+        'the archive NFS export serves the SMB-2 catalog');
 
     // Local serves the main catalog (with its own playlists).
     const c0 = await checkCatalog(fetch, {
@@ -218,12 +282,44 @@ async function checkCatalog(fetch, { selectId, albums, coverRe, label }) {
     assert.ok(!localAfterDelete.some(pl => pl.id === createdLocal.playlist.id),
         'deleted playlist disappears from the local catalog');
 
-    const addedNfs = await (await post(fetch, '/api/music-libraries/manual', { url: 'nas:/music' })).json();
-    assert.equal(addedNfs.entry.type, 'nfs');
+    // ── Manual entry: both protocols, mount-on-select, validation ───────
+    await post(fetch, '/api/music-libraries/select', { id: 'local' });
+    const addedSmb = await (await post(fetch, '/api/music-libraries/manual', {
+        url: 'smb://nas.local/Archive',
+    })).json();
+    assert.deepEqual(
+        [addedSmb.entry.id, addedSmb.entry.type, addedSmb.entry.server, addedSmb.entry.share, addedSmb.entry.mounted],
+        ['smb:nas.local:Archive', 'smb', 'nas.local', 'Archive', false],
+        'manual SMB entry uses the backend id scheme and starts unmounted');
+    assert.equal(addedSmb.libraries[addedSmb.libraries.length - 1].id, 'manual',
+        'manually added shares go in front of the manual action');
+
+    const addedNfs = await (await post(fetch, '/api/music-libraries/manual', { url: 'nas:/exports/My Music/' })).json();
+    assert.deepEqual(
+        [addedNfs.entry.id, addedNfs.entry.type, addedNfs.entry.share, addedNfs.entry.mounted],
+        ['nfs:nas:/exports/My Music', 'nfs', '/exports/My Music', false],
+        'manual NFS entry normalises slashes and starts unmounted');
+
+    const selectedManualNfs = await (await post(fetch, '/api/music-libraries/select', { id: addedNfs.entry.id })).json();
+    assert.equal(selectedManualNfs.libraries.find(entry => entry.id === addedNfs.entry.id).mounted, true,
+        'selecting a manually added NFS export mounts it');
+    assert.equal(selectedManualNfs.active_type, 'nfs');
+    await post(fetch, '/api/music-libraries/select', { id: 'local' });
+
+    const invalid = await post(fetch, '/api/music-libraries/manual', { url: 'ftp://nas/music' });
+    assert.equal(invalid.status, 400, 'an unusable URL is rejected');
+    assert.match((await invalid.json()).detail, /smb:\/\/server\/share/, 'the error names both accepted forms');
+
     const removedNfs = await (await post(fetch, '/api/music-libraries/remove', { id: addedNfs.entry.id })).json();
     assert.ok(!removedNfs.libraries.some(entry => entry.id === addedNfs.entry.id));
     assert.ok(removedNfs.libraries.some(entry => entry.id === 'demo-library-2'), 'removing NFS preserves SMB catalogs');
-    console.log('ok demo library contract (local + SMB-1 + SMB-2 + manual NFS)');
+    assert.ok(removedNfs.libraries.some(entry => entry.id === 'demo-nfs'), 'discovered NFS exports stay listed');
+
+    const removedSmb = await (await post(fetch, '/api/music-libraries/remove', { id: addedSmb.entry.id })).json();
+    assert.ok(!removedSmb.libraries.some(entry => entry.id === addedSmb.entry.id));
+    assert.ok(removedSmb.libraries.some(entry => entry.id === 'demo-nas'), 'removing SMB preserves the other shares');
+    assert.equal(removedSmb.libraries[removedSmb.libraries.length - 1].id, 'manual');
+    console.log('ok demo library contract (local + SMB-1 + SMB-2 + NFS exports + manual SMB/NFS)');
 })().catch((err) => {
     console.error(err);
     process.exit(1);

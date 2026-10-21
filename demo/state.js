@@ -206,9 +206,11 @@
     // playback resolves against the active catalog, routes.js keeps this
     // in sync on selection.
     let activeLibraryId = 'demo-library-2';
+    // The NAS exports the same folders over SMB and NFS, so both protocol
+    // entries of one folder resolve to the same demo catalog.
     function activeLibraryTracks() {
-        if (activeLibraryId === 'demo-library-2') return (lib2.tracks || []);
-        if (activeLibraryId === 'demo-nas') return (lib3.tracks || []);
+        if (activeLibraryId === 'demo-library-2' || activeLibraryId === 'demo-nfs') return (lib2.tracks || []);
+        if (activeLibraryId === 'demo-nas' || activeLibraryId === 'demo-nfs-archive') return (lib3.tracks || []);
         return localTracks;
     }
     function setActiveLibraryId(id) {
