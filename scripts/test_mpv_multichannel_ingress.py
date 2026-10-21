@@ -186,6 +186,38 @@ class IngressTests(unittest.IsolatedAsyncioTestCase):
 
 
 class PlayerTests(unittest.TestCase):
+    def test_supported_layouts_keep_decoder_positions(self):
+        player = MPVWrapper()
+        with patch.object(player, 'set_property') as write:
+            player.set_surround_channels(True)
+            write.reset_mock()
+            for layout in ('mono', 'stereo', 'quad', '4.1(alsa)', '5.1', '5.1(side)',
+                           '7.1', '7.1(alsa)', 'fl-fr-fc-lfe-sl-sr'):
+                params = {'channels': layout}
+                player._handle_event({'event': 'property-change', 'name': 'audio-out-params', 'data': params})
+                self.assertEqual(player.state['audio_output_params'], params)
+            write.assert_not_called()
+
+    def test_unsupported_layouts_downmix_but_next_playlist_track_can_use_surround(self):
+        for layout in ('6.1', '6.1(back)', '7.1(wide)', 'fl-fr-bc', 'fl-fr-fwl-fwr'):
+            with self.subTest(layout=layout):
+                player = MPVWrapper()
+                calls = []
+                with patch.object(player, 'set_property', side_effect=lambda *args: calls.append(args)):
+                    player.set_surround_channels(True)
+                    player._handle_event({'event': 'property-change', 'name': 'audio-out-params',
+                                          'data': {'channels': layout, 'channel-count': 7}})
+                    self.assertEqual(calls[-1], ('audio-channels', 'stereo'))
+                    self.assertIsNone(player.state['audio_output_params'], 'Wait for actual downmix ports')
+                    player._handle_event({'event': 'property-change', 'name': 'audio-out-params',
+                                          'data': {'channels': 'stereo', 'channel-count': 2}})
+                    self.assertEqual(player.state['audio_output_params']['channel-count'], 2)
+                    player._handle_event({'event': 'start-file', 'playlist_entry_id': 2})
+                    self.assertEqual(calls[-1], ('audio-channels', 'auto'))
+                    player._handle_event({'event': 'property-change', 'name': 'audio-out-params',
+                                          'data': {'channels': '5.1(side)', 'channel-count': 6}})
+                    self.assertEqual(len(calls), 3)
+
     def test_channel_mode_changes_only_when_needed(self):
         player = MPVWrapper()
         calls = []

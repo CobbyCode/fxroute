@@ -14,6 +14,7 @@ import time
 from typing import Any, Dict, Optional
 
 from playback.mpv_process import _stop_orphan_mpv_processes
+from playback.source_policy import mpv_layout_supported
 from audio.src_policy import client_env
 
 logger = logging.getLogger(__name__)
@@ -82,6 +83,7 @@ class MPVWrapper:
         self._running = False
         self.process_generation = 0
         self._surround_channels = False
+        self._stereo_layout_fallback = False
         self._state = {
             "playing": False,
             "paused": False,
@@ -208,6 +210,7 @@ class MPVWrapper:
         environment["PIPEWIRE_PROPS"] = (f"{props} stream.dont-remix=true channelmix.upmix=false").strip()
         self.process = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=environment)
         self._surround_channels = False
+        self._stereo_layout_fallback = False
 
         timeout = 15
         start = time.time()
@@ -522,6 +525,13 @@ class MPVWrapper:
 
             elif name == "audio-out-params":
                 params = dict(data) if isinstance(data, dict) else None
+                layout = (params or {}).get('channels')
+                if (self._surround_channels and not self._stereo_layout_fallback
+                        and isinstance(layout, str) and layout and not mpv_layout_supported(layout)):
+                    logger.warning('Unsupported MPV layout %s; using stereo downmix', layout)
+                    self.set_property('audio-channels', 'stereo')
+                    self._stereo_layout_fallback = True
+                    params = None
                 if self._state.get("audio_output_params") != params:
                     self._state["audio_output_params"] = params
                     changed = True
@@ -561,6 +571,11 @@ class MPVWrapper:
                         changed = True
 
         elif event_name == "start-file":
+            if self._surround_channels and self._stereo_layout_fallback:
+                self.set_property('audio-channels', 'auto')
+                self._stereo_layout_fallback = False
+                self._state['audio_output_params'] = None
+                changed = True
             entry_id = event.get("playlist_entry_id")
             if isinstance(entry_id, int) and self._state.get("playlist_entry_id") != entry_id:
                 self._state["playlist_entry_id"] = entry_id
@@ -668,6 +683,7 @@ class MPVWrapper:
             if self._surround_channels != enabled:
                 self.set_property("audio-channels", "auto" if enabled else "stereo")
                 self._surround_channels = enabled
+                self._stereo_layout_fallback = False
                 return True
             return False
 

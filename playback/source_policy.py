@@ -48,6 +48,16 @@ GRAPH_NODE_BY_SOURCE = {
 _OUTPUT_CHANNELS = ("FL", "FR")
 
 
+def mpv_layout_supported(layout: str) -> bool:
+    """Whether a decoded layout contains only the existing DSP bus positions."""
+    layout = layout.lower()
+    if layout in {'mono', '1.0', 'stereo', '2.0', 'downmix', '2.1', '3.0', '3.1', 'quad', 'quad(side)',
+                  '4.1(alsa)', '5.0', '5.0(alsa)', '5.0(side)', '5.1', '5.1(alsa)', '5.1(side)',
+                  '7.0', '7.1', '7.1(alsa)'}:
+        return True
+    return bool(layout) and set(layout.split('-')) <= {'fl', 'fr', 'fc', 'lfe', 'bl', 'br', 'sl', 'sr'}
+
+
 def mpv_port_positions(io_text: str, channel_count: int | None = None) -> dict[str, str]:
     """Resolve actual MPV ports; PipeWire calls the back pair RL/RR."""
     suffixes = {line.strip().split(" -> ", 1)[0].removeprefix("mpv:output_") for line in io_text.splitlines()
