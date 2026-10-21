@@ -1307,8 +1307,33 @@ function getArtistEntries() {
     return Array.from(views.values()).sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()));
 }
 
-// One batch read of the stored TIDAL mappings for all local artists; the
-// grid re-renders when it lands.
+// Server limit per /api/artists/provider-matches request (library/api.py).
+const ARTIST_MATCH_CHUNK_SIZE = 5000;
+
+// Reads the stored TIDAL mappings in server-sized chunks. Resolves to a map by
+// artist key, or null when `isCurrent` turned false while waiting.
+async function fetchArtistMatches(entries, isCurrent) {
+    const map = new Map();
+    for (let start = 0; start < entries.length; start += ARTIST_MATCH_CHUNK_SIZE) {
+        const chunk = entries.slice(start, start + ARTIST_MATCH_CHUNK_SIZE);
+        const resp = await fetch('/api/artists/provider-matches', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ provider: 'tidal', artists: chunk.map(entry => ({ name: entry.name, mbid: entry.mbid })) }),
+        });
+        if (!resp.ok) throw new Error('Failed to match artists');
+        const data = await resp.json();
+        if (!isCurrent()) return null;
+        (data.matches || []).forEach((match, position) => {
+            if (!match || !chunk[position]) return;
+            map.set(chunk[position].key, { id: match.provider_artist_id, name: match.name, art_url: match.art_url || '' });
+        });
+    }
+    return map;
+}
+
+// Batch read of the stored TIDAL mappings for all local artists; the grid
+// re-renders when it lands.
 function ensureArtistMatches() {
     const tidal = tidalLibrary();
     const connection = tidal ? tidal.connection() : null;
@@ -1332,19 +1357,8 @@ function ensureArtistMatches() {
     artistMatchCache.index = index;
     const entries = Array.from(index.values());
     const userId = connection.userId;
-    const request = fetch('/api/artists/provider-matches', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ provider: 'tidal', artists: entries.map(entry => ({ name: entry.name, mbid: entry.mbid })) }),
-    }).then(async (resp) => {
-        if (!resp.ok) throw new Error('Failed to match artists');
-        const data = await resp.json();
-        if (artistMatchCache.userId !== userId || artistMatchCache.index !== index) return;
-        const map = new Map();
-        (data.matches || []).forEach((match, position) => {
-            if (!match || !entries[position]) return;
-            map.set(entries[position].key, { id: match.provider_artist_id, name: match.name, art_url: match.art_url || '' });
-        });
+    const request = fetchArtistMatches(entries, () => artistMatchCache.userId === userId && artistMatchCache.index === index).then((map) => {
+        if (!map) return;
         artistMatchCache.map = map;
         scheduleTidalLibraryRender();
     }).catch(() => {

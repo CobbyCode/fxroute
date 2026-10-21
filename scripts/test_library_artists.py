@@ -111,8 +111,11 @@ window.fetch = (url, opts) => {
     if (/\\/api\\/albums\\/[^/]+\\/discover/.test(u)) return json({ items: __DISCOVER__ });
     if (u.endsWith('/api/artists/provider-matches')) {
         const body = JSON.parse(opts.body);
+        // Same limit as library/api.py.
+        if (body.artists.length > 5000) return Promise.resolve(new Response('{"detail":"Too many artists"}', { status: 400 }));
         return json({ provider: 'tidal', matches: body.artists.map(a => a.name === 'Alpha'
-            ? { provider_artist_id: 'tp-alpha', name: 'Alpha', art_url: 'https://img.example/alpha.jpg' } : null) });
+            ? { provider_artist_id: 'tp-alpha', name: 'Alpha', art_url: 'https://img.example/alpha.jpg' }
+            : a.name === 'Zzz Last' ? { provider_artist_id: 'tp-last', name: 'Zzz Last', art_url: '' } : null) });
     }
     if (u.includes('/api/streaming/providers/discovery')) return json(__DISCOVERY__);
     if (u.includes('/api/streaming/tidal/status')) return json(__STATUS__);
@@ -145,7 +148,7 @@ window.fetch = (url, opts) => {
 """
 
 
-def _stub(tidal_mode):
+def _stub(tidal_mode, tracks=None, albums=None):
     installed = tidal_mode != "absent"
     authenticated = tidal_mode == "connected"
     status = {
@@ -157,7 +160,8 @@ def _stub(tidal_mode):
          "capabilities": {"catalog": True}},
     ]}
     replacements = {
-        "__FAV_ARTISTS__": TIDAL_FAV_ARTISTS, "__TRACKS__": TRACKS, "__ALBUMS__": ALBUMS, "__DISCOVER__": DISCOVER,
+        "__FAV_ARTISTS__": TIDAL_FAV_ARTISTS, "__TRACKS__": TRACKS if tracks is None else tracks,
+        "__ALBUMS__": ALBUMS if albums is None else albums, "__DISCOVER__": DISCOVER,
         "__DISCOVERY__": discovery, "__STATUS__": status, "__TIDAL_TRACK__": TIDAL_TRACK,
         "__ALPHA_TIDAL__": ALPHA_TIDAL,
     }
@@ -167,7 +171,7 @@ def _stub(tidal_mode):
     return script
 
 
-def _open_library(browser, tidal_mode, view="artists"):
+def _open_library(browser, tidal_mode, view="artists", tracks=None, albums=None):
     page = browser.new_page(viewport={"width": 1440, "height": 900})
     errors = []
 
@@ -182,7 +186,7 @@ def _open_library(browser, tidal_mode, view="artists"):
         status=200, content_type="image/png",
         body=bytes.fromhex("89504e470d0a1a0a0000000d4948445200000001000000010806000000"
                            "1f15c4890000000d49444154789c6360000002000001e221bc330000000049454e44ae426082")))
-    page.add_init_script(_stub(tidal_mode))
+    page.add_init_script(_stub(tidal_mode, tracks, albums))
     page.goto(f"http://127.0.0.1:{PORT}/static/index.html")
     page.click("#tab-btn-library")
     page.wait_for_selector(f"#library-view-{view}")
@@ -355,6 +359,26 @@ def _run():
             check("Clear selection clears both sources",
                   page.locator("#tracks-list .track-item.selected").count() == 0)
             check("no unexpected script errors (connected)", errors == [])
+            page.close()
+
+            # --- large library -------------------------------------------------
+            # More artists than one request may carry: sent in chunks, every
+            # chunk's matches land on the right artist, no 400 retry loop.
+            many = [_track(f"local_M/{index:04d}.flac", f"Song {index}", f"Artist {index:04d}", "Many Album",
+                           f"Artist {index:04d}", 1) for index in range(4999)]
+            many += [TRACKS[0], _track("local_ZZ/one.flac", "Last Song", "Zzz Last", "Last Album", "Zzz Last")]
+            page, errors = _open_library(browser, "connected", tracks=many, albums=[])
+            page.wait_for_selector('#albums-grid .artist-card[data-artist-key="zzz last"]')
+            page.wait_for_function(
+                "document.querySelector('.artist-card[data-artist-key=\"zzz last\"] .streaming-fav') !== null")
+            sizes = [len(json.loads(body)["artists"]) for url, body in page.evaluate("window.__posts")
+                     if url.endswith("/api/artists/provider-matches")]
+            check(f"{len(many) - 1} artists are matched in chunks of at most 5000 ({sizes})", sizes == [5000, 1])
+            check("a match from the first chunk lands on its artist",
+                  page.locator('.artist-card[data-artist-key="alpha"] .streaming-fav').count() == 1)
+            check("a match from the second chunk lands on its artist",
+                  page.locator('.artist-card[data-artist-key="zzz last"] .streaming-fav').count() == 1)
+            check("no unexpected script errors (large library)", errors == [])
             page.close()
 
             # --- not connected -------------------------------------------------
