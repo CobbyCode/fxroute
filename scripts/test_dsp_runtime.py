@@ -569,6 +569,77 @@ class DSPRuntimeConfigTests(unittest.TestCase):
             with self.subTest(hot=hot):
                 asyncio.run(exercise(hot))
 
+    def test_committed_graph_survives_unavailable_src_latency_and_recovers(self):
+        from audio.src_latency import SrcGraphSettling
+
+        async def exercise(kind, failure):
+            with tempfile.TemporaryDirectory() as directory:
+                binary = Path(directory) / 'fxroute-dsp'
+                binary.touch()
+                links, commands, launches = set(), [], []
+                unavailable = True
+
+                async def run(args):
+                    if args == ('pw-link', '-l'):
+                        return CommandResult(0, '\n'.join(f'{a} -> {b}' for a, b in links))
+                    if args[0] == 'pw-link':
+                        if args[1] == '-d':
+                            links.discard(tuple(args[2:]))
+                        else:
+                            links.add(tuple(args[1:]))
+                    return CommandResult(0)
+
+                async def launch(args):
+                    process = FakeProcess()
+                    launches.append(process)
+                    return process
+
+                async def control(command, **kwargs):
+                    commands.append(command)
+                    return '0' if command == 'effects bypass get' else 'ok\n'
+
+                async def complete(*args):
+                    pass
+
+                def latency():
+                    if unavailable:
+                        raise failure
+                    return 250
+
+                runtime = DSPRuntime(self.manager, binary=binary, command_runner=run,
+                                     process_launcher=launch)
+                target = self.target()
+                original = FakeProcess() if kind != 'cold' else None
+                runtime._process = original
+                runtime._config = target.config if original else None
+                runtime._control_socket = unittest.mock.Mock() if original else None
+                runtime._config_text = target.text if kind == 'live' else None
+                runtime._control = runtime._control_unlocked = control
+                runtime._stop_orphan_helpers = runtime._wait_for_ports = complete
+                runtime.configure_latency_tracking(input_latency_provider=latency)
+                try:
+                    await runtime.sync_rendered(target)
+                    self.assertTrue(runtime.snapshot()['active'])
+                    self.assertTrue(await runtime.verify())
+                    self.assertEqual(len(launches), int(kind == 'cold'))
+                    if original:
+                        self.assertIs(runtime._process, original)
+                        self.assertFalse(original.terminated)
+                    self.assertEqual(await runtime.read_latency(), {'ready': False})
+                    self.assertFalse(any(c.startswith('input latency ') for c in commands))
+                    unavailable = False
+                    await runtime.update_input_latency()
+                    self.assertEqual(runtime._last_input_latency_ms, 250)
+                    self.assertIn('input latency 250', commands)
+                finally:
+                    await runtime.stop()
+
+        for kind in ('cold', 'swap', 'live'):
+            for failure in (SrcGraphSettling('Output is negotiating', path='output'),
+                            RuntimeError('Owned SRC output path is unavailable')):
+                with self.subTest(kind=kind, failure=failure):
+                    asyncio.run(exercise(kind, failure))
+
     def test_hot_update_failure_keeps_config_for_fallback_rebuild(self):
         events = []
 
@@ -633,7 +704,7 @@ class DSPRuntimeConfigTests(unittest.TestCase):
             with self.subTest(fail_stage=fail_stage):
                 asyncio.run(exercise(fail_stage))
         launch_events = [event for event in events if event[0] == "launch"]
-        self.assertEqual(len(launch_events), 2)
+        self.assertEqual(len(launch_events), 1)
         self.assertTrue(all(event[2] for event in launch_events))
 
     def test_runtime_snapshot_reports_actual_layout_and_effect_bypass(self):

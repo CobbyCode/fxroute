@@ -441,20 +441,22 @@ class DSPRuntime:
                 and self._latency_ingress_owner() == ingress_owner
                 and (not self.sync_in_progress or was_syncing))
 
-    async def update_input_latency(self) -> None:
+    async def update_input_latency(self, *, defer_unavailable: bool = False) -> None:
         if not self._latency_tracking or not self._engine_running():
             return
         owner = self._latency_owner()
         try:
             value = await self._input_latency_ms()
-        except SrcGraphSettling as exc:
-            if exc.path != 'ingress':
+        except RuntimeError as exc:
+            if not defer_unavailable and not (isinstance(exc, SrcGraphSettling) and exc.path == 'ingress'):
                 raise
-            # New links to a paused source (MPV's Surround ingress) stay in init
-            # until it plays again. The input latency stays unknown, never a
-            # guessed zero; the latency watch reads it once the path carries audio.
+            # A committed graph must survive an unavailable SRC observation.
+            # Never invent a latency; the watch retries once its links settle.
             self._ingress_latency_pending = True
             self._last_input_latency_ms = None
+            self._latency_snapshot = {}
+            if defer_unavailable:
+                logger.warning('Native DSP graph committed; SRC latency pending: %s', exc)
             return
         self._ingress_latency_pending = False
         async with self._control_lock:
@@ -1403,7 +1405,7 @@ class DSPRuntime:
                     self._config = config
                     self._config_text = text
                     self._effect_bypass = any(line.strip() == 'bypass 1' for line in text.splitlines())
-                    await self.update_input_latency()
+                    await self.update_input_latency(defer_unavailable=True)
                     Path(config_name).unlink(missing_ok=True)
                     self._error = None
                     return
@@ -1417,7 +1419,7 @@ class DSPRuntime:
                 self._config = config
                 self._config_text = text
                 self._effect_bypass = any(line.strip() == 'bypass 1' for line in text.splitlines())
-                await self.update_input_latency()
+                await self.update_input_latency(defer_unavailable=True)
                 Path(config_name).unlink(missing_ok=True)
                 self._error = None
                 return
@@ -1445,7 +1447,7 @@ class DSPRuntime:
             await self._remove_direct_source_links()
             await self._reconcile_ingress_links()
             await self._reconcile_output_links(config)
-            await self.update_input_latency()
+            await self.update_input_latency(defer_unavailable=True)
             self._error = None
         except Exception as exc:
             try:
