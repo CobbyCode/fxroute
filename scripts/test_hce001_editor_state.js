@@ -38,10 +38,11 @@ function extractFunction(name) {
 
 const state = {
     measurement: {
-        activeEditor: 'none',
+        assistMode: 'peq',
+        activeEditor: 'peq',
         houseCurveOptions: [],
         customHouseCurve: { open: false, points: [], activePointId: null, name: '', nameTouched: false, saving: false },
-        peqAssistant: { filters: [], enabled: false, activeFilterId: null, dragFilterId: null, draft: { leftBands: [], rightBands: [] } },
+        peqAssistant: { filters: [], enabled: true, activeFilterId: null, dragFilterId: null, draft: { leftBands: [], rightBands: [] } },
         convolverAssistant: { targetCurve: 'neutral', dragMode: null },
     },
 };
@@ -100,12 +101,18 @@ context.setMeasurementActiveEditor('peq');
 assert.equal(context.getMeasurementActiveEditor(), 'peq');
 assert.equal(state.measurement.customHouseCurve.open, false);
 
-// 3. A normal target closes House Curve.
+// 3. A normal target closes House Curve and returns to the active assist mode.
 context.setMeasurementActiveEditor('houseCurve');
 context.handleMeasurementTargetCurveSelection('harman');
-assert.equal(context.getMeasurementActiveEditor(), 'none');
+assert.equal(context.getMeasurementActiveEditor(), 'peq');
 assert.equal(state.measurement.customHouseCurve.open, false);
 assert.equal(state.measurement.convolverAssistant.targetCurve, 'harman');
+state.measurement.assistMode = 'convolver';
+context.setMeasurementActiveEditor('houseCurve');
+context.handleMeasurementTargetCurveSelection('neutral');
+assert.equal(context.getMeasurementActiveEditor(), 'none');
+state.measurement.assistMode = 'peq';
+state.measurement.convolverAssistant.targetCurve = 'harman';
 
 // 4. The sentinel is an action: handling it reopens the editor, while the
 // actual target remains selected so the action can be chosen again.
@@ -125,7 +132,7 @@ assert.deepEqual(JSON.parse(JSON.stringify(context.getMeasurementHouseCurvePrevi
 assert.equal(state.measurement.peqAssistant.filters.length, 1, 'PEQ data remains intact');
 
 // Source-level guards for rendering and independent correction methods.
-assert.match(source, /activeEditor: 'none'/);
+assert.match(source, /activeEditor: 'peq'/);
 assert.match(source, /if \(getMeasurementActiveEditor\(\) !== 'peq'\) return;/, 'PEQ overlay is isolated');
 assert.match(source, /if \(getMeasurementActiveEditor\(\) === 'houseCurve'\) return;/, 'House Curve blocks PEQ graph interaction');
 assert.match(source, /getMeasurementTargetCurvePreview/);

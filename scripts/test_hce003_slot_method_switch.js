@@ -95,6 +95,12 @@ context.MeasurementGraph = {
     scheduleMeasurementGraphRender: (...args) => context.scheduleMeasurementGraphRender(...args),
 };
 
+// Initial state: PEQ is selected and directly active without a hidden pre-state.
+assert.equal(context.getMeasurementActiveEditor(), 'peq');
+state.measurement.assistMode = 'convolver';
+assert.equal(context.getMeasurementActiveEditor(), 'none');
+state.measurement.assistMode = 'peq';
+
 // 1–2. Neutral -> Custom -> re-activate the already selected PEQ method:
 // editor closes, Neutral remains selected, PEQ becomes visible/enabled.
 context.setMeasurementActiveEditor('houseCurve');

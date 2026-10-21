@@ -309,12 +309,21 @@ def _run():
                 assert page.locator(".measurement-workflow-label").all_text_contents()[:1] == ["Measurements"]
                 assert page.locator("#measurement-sweep-toggle").inner_text() == "Start Sweep"
                 assert not page.locator("#measurement-sweep-menu").is_visible()
+                assert page.locator("#measurement-assist-mode").input_value() == "peq"
+                assert page.locator("#measurement-peq-panel").is_visible()
+                assert not page.locator("#measurement-convolver-panel").is_visible()
+                page.locator("#measurement-assist-mode").select_option("convolver")
+                assert page.locator("#measurement-convolver-panel").is_visible()
+                assert not page.locator("#measurement-peq-panel").is_visible()
+                page.locator("#measurement-assist-mode").select_option("peq")
+                assert page.locator("#measurement-peq-panel").is_visible()
+                assert not page.locator("#measurement-convolver-panel").is_visible()
                 page.locator("#measurement-auto-sub-group").evaluate("element => element.classList.remove('hidden')")
                 labels = page.locator(".measurement-workflow-label").all_text_contents()
                 assert labels[:4] == ["Measurements", "Subwoofer", "Speaker Auto Alignment", "Calibration"], (
                     f"unexpected measurement workflow labels at {width}x{height}: {labels[:4]!r}"
                 )
-                checks += 4
+                checks += 11
 
                 page.locator("#measurement-sweep-toggle").click()
                 menu = page.locator("#measurement-sweep-menu")

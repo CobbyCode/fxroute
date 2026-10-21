@@ -88,6 +88,8 @@ const ctx = { measurementState: {},
     graphView: 'freq', frequencyView: true, peq, conv, activePeqFilter: peq.filters[0] };
 
 editors.renderMeasurementPanelEditorsSection(ctx);
+assert.equal(elements.measurementPeqPanel.classList.contains('hidden'), false);
+assert.equal(elements.measurementConvolverPanel.classList.contains('hidden'), true);
 assert.match(elements.measurementPeqChips.innerHTML, /data-measurement-peq-slot="11"/);
 assert.match(elements.measurementPeqEditor.innerHTML, /value="900" data-measurement-peq-field="freqHz"/);
 assert.match(elements.measurementPeqDraftSummary.innerHTML, /L draft ready · L: 1 bands · R: 0 bands/);
@@ -96,6 +98,25 @@ assert.equal(elements.measurementPeqPresetName.disabled, false);
 assert.equal(elements.measurementPeqCreateBtn.disabled, true);
 assert.match(elements.measurementCustomHouseCurveChips.innerHTML, /data-custom-house-curve-slot="7"/);
 assert.equal(elements.measurementCustomHouseCurvePanel.classList.contains('hidden'), true);
+
+// Initial empty PEQ state and Convolver mode directly show the matching assistant.
+const defaultPeq = ui.getDefaultMeasurementPeqState();
+assert.equal(defaultPeq.enabled, true);
+editors.renderMeasurementPanelEditorsSection({ ...ctx, peq: defaultPeq, activePeqFilter: null });
+assert.equal(elements.measurementPeqPanel.classList.contains('hidden'), false);
+assert.equal(elements.measurementConvolverPanel.classList.contains('hidden'), true);
+assert.equal(elements.measurementCustomHouseCurvePanel.classList.contains('hidden'), true);
+assert.match(elements.measurementPeqEditor.innerHTML, /Use F1-F12 or the graph near the fixed 0 dB line/);
+
+editors.renderMeasurementPanelEditorsSection({ ...ctx, assistMode: 'convolver', activeEditor: 'none', peq: defaultPeq, activePeqFilter: null });
+assert.equal(elements.measurementPeqPanel.classList.contains('hidden'), true);
+assert.equal(elements.measurementConvolverPanel.classList.contains('hidden'), false);
+assert.equal(elements.measurementCustomHouseCurvePanel.classList.contains('hidden'), true);
+
+editors.renderMeasurementPanelEditorsSection({ ...ctx, assistMode: 'convolver', activeEditor: 'houseCurve', peq: defaultPeq, activePeqFilter: null });
+assert.equal(elements.measurementPeqPanel.classList.contains('hidden'), true);
+assert.equal(elements.measurementConvolverPanel.classList.contains('hidden'), true);
+assert.equal(elements.measurementCustomHouseCurvePanel.classList.contains('hidden'), false);
 
 elements.measurementPeqPresetName.value = 'Typed PEQ';
 elements.measurementCustomHouseCurveName.value = 'Typed curve';

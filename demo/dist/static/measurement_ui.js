@@ -149,7 +149,7 @@ function getDefaultMeasurementPeqFilter(index = 0) {
 
 function getDefaultMeasurementPeqState() {
     return {
-        enabled: false,
+        enabled: true,
         filters: [],
         activeFilterId: null,
         dragFilterId: null,

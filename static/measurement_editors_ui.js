@@ -67,7 +67,7 @@
     function renderMeasurementPanelEditorsSection({ measurementState, current, measurements, graphEntries, assistMode, activeEditor, graphView, frequencyView, peq, conv, activePeqFilter }) {
         const elements = deps.getElements();
         if (elements.measurementPeqPanel) {
-            elements.measurementPeqPanel.classList.toggle('hidden', !frequencyView || activeEditor !== 'peq' || (!peq.enabled && !peq.filters.length));
+            elements.measurementPeqPanel.classList.toggle('hidden', !frequencyView || assistMode !== 'peq' || activeEditor === 'houseCurve');
         }
         const customHouseCurve = deps.ensureCustomHouseCurveState();
         const activeCustomPoint = customHouseCurve.points.find((point) => point.id === customHouseCurve.activePointId) || null;
@@ -116,7 +116,7 @@
             elements.measurementCustomHouseCurveCreateBtn.textContent = customHouseCurve.saving ? 'Creating…' : 'Create Target Curve';
         }
         if (elements.measurementConvolverPanel) {
-            elements.measurementConvolverPanel.classList.toggle('hidden', !frequencyView || assistMode !== 'convolver');
+            elements.measurementConvolverPanel.classList.toggle('hidden', !frequencyView || assistMode !== 'convolver' || activeEditor === 'houseCurve');
         }
         if (elements.measurementPeqChips) {
             elements.measurementPeqChips.innerHTML = Array.from({ length: 12 }, (_, index) => {

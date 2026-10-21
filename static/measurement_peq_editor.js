@@ -66,7 +66,7 @@
         }
         const peq = deps.getState().measurement.peqAssistant;
         if (!Array.isArray(peq.filters)) peq.filters = [];
-        if (typeof peq.enabled !== 'boolean') peq.enabled = peq.filters.length > 0;
+        if (typeof peq.enabled !== 'boolean') peq.enabled = true;
         if (!peq.draft || typeof peq.draft !== 'object') peq.draft = { leftBands: [], rightBands: [], presetName: '', nameTouched: false };
         if (!Array.isArray(peq.draft.leftBands)) peq.draft.leftBands = [];
         if (!Array.isArray(peq.draft.rightBands)) peq.draft.rightBands = [];
@@ -213,7 +213,7 @@
         const peq = ensureMeasurementPeqState();
         peq.filters = peq.filters.filter((filter) => filter.id !== filterId);
         peq.activeFilterId = peq.filters.some((filter) => filter.id === peq.activeFilterId) ? peq.activeFilterId : (peq.filters[0]?.id || null);
-        peq.enabled = peq.filters.length > 0;
+        peq.enabled = true;
         peq.dragFilterId = null;
     }
 

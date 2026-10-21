@@ -61,6 +61,10 @@ async function main() {
     editor.handleMeasurementPeqPointerDown(down, pointer, 'touch');
     assert.equal(peq.filters.length, currentCount, 'touch cooldown prevents duplicate creation');
     assert.equal(editor.stepMeasurementPeqGain(peq.filters[0].id, 1, 0.1), 0.1);
+    editor.deleteMeasurementPeqFilter(peq.filters[0].id);
+    assert.equal(peq.filters.length, 0);
+    assert.equal(peq.enabled, true, 'deleting the last filter keeps the PEQ assistant enabled');
+    editor.addMeasurementPeqFilter({ freqHz: 500, gainDb: 0.1 });
 
     editor.takeMeasurementPeqToPreset('both');
     assert.equal(peq.draft.leftBands.length, 1);

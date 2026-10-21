@@ -806,7 +806,7 @@ let state = {
         houseCurveUpdating: false,
         houseCurveDeleting: false,
         houseCurveExporting: false,
-        activeEditor: 'none',
+        activeEditor: 'peq',
         customHouseCurve: {
             open: false,
             displayTarget: 'actual',
@@ -870,7 +870,7 @@ let state = {
             profile: null,
         },
         peqAssistant: {
-            enabled: false,
+            enabled: true,
             filters: [],
             activeFilterId: null,
             dragFilterId: null,
@@ -3899,8 +3899,9 @@ function getVisibleMeasurementColorById() {
 
 
 function getMeasurementActiveEditor() {
-    const editor = String(state.measurement?.activeEditor || 'none');
-    return ['none', 'peq', 'houseCurve'].includes(editor) ? editor : 'none';
+    const editor = String(state.measurement?.activeEditor || '');
+    if (editor === 'houseCurve') return 'houseCurve';
+    return state.measurement?.assistMode === 'convolver' ? 'none' : 'peq';
 }
 
 function getMeasurementRestorableTargetCurve() {
@@ -3912,13 +3913,15 @@ function getMeasurementRestorableTargetCurve() {
 }
 
 function setMeasurementActiveEditor(editor = 'none') {
-    const nextEditor = ['none', 'peq', 'houseCurve'].includes(editor) ? editor : 'none';
+    const nextEditor = editor === 'houseCurve' ? 'houseCurve' : (state.measurement?.assistMode === 'convolver' ? 'none' : 'peq');
     state.measurement.activeEditor = nextEditor;
     const custom = window.FXRouteMeasurementCalibration.ensureCustomHouseCurveState();
     custom.open = nextEditor === 'houseCurve';
     custom.displayTarget = nextEditor === 'houseCurve' ? 'editing-custom-house-curve' : 'actual';
-    if (nextEditor !== 'peq') {
-        const peq = window.FXRouteMeasurementPeqEditor.ensureMeasurementPeqState();
+    const peq = window.FXRouteMeasurementPeqEditor.ensureMeasurementPeqState();
+    if (nextEditor === 'peq') {
+        peq.enabled = true;
+    } else {
         peq.dragFilterId = null;
     }
     window.FXRouteMeasurementCalibration.ensureCustomHouseCurveState().dragPointId = null;
