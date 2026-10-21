@@ -56,8 +56,8 @@ class OutputLevels:
         if path is None:
             return
         if not self._pending:
-            path.unlink(missing_ok=True)
             self._pending_cookie = None
+            path.unlink(missing_ok=True)
             return
         cookie = self._server_cookie()
         if self._pending_cookie is not None and cookie != self._pending_cookie:
@@ -73,7 +73,17 @@ class OutputLevels:
         self._pending_cookie = None
         path = self._marker_path()
         if path is not None:
-            path.unlink(missing_ok=True)
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                logger.warning('Could not remove stale output-switch ownership', exc_info=True)
+
+    def _persist_after_mute(self) -> None:
+        """Keep live safety/intent authoritative when marker storage fails."""
+        try:
+            self._persist_pending()
+        except OSError:
+            logger.warning('Could not persist output-switch ownership', exc_info=True)
 
     def _check_server_ownership(self) -> None:
         if self._pending_cookie is not None and self._server_cookie() != self._pending_cookie:
@@ -99,34 +109,44 @@ class OutputLevels:
         """
         with self._lock:
             path = self._marker_path()
-            if path is None or not path.exists():
+            if path is None:
                 return
             try:
-                payload = json.loads(path.read_text(encoding='utf-8'))
-                if (not isinstance(payload, dict) or payload.get('version') != 1
-                        or payload.get('owner') != 'fxroute-output-switch'
-                        or not isinstance(payload.get('sinks'), dict)):
-                    raise ValueError('Invalid output-switch ownership marker')
-                cookie = self._server_cookie()
-                pending = {}
-                if not mute_restored and payload.get('server_cookie') == cookie:
-                    live = self._inventory()
+                if not path.exists():
+                    return
+                try:
+                    payload = json.loads(path.read_text(encoding='utf-8'))
+                    if (not isinstance(payload, dict) or payload.get('version') != 1
+                            or payload.get('owner') != 'fxroute-output-switch'
+                            or not isinstance(payload.get('sinks'), dict)):
+                        raise ValueError('Invalid output-switch ownership marker')
+                    saved = {}
                     for key, row in payload['sinks'].items():
                         volumes = tuple((position, value) for position, value in row['volumes'])
                         if (type(row['index']) is not int or type(row['muted']) is not bool
                                 or not volumes or any(not isinstance(p, str) or type(v) is not int or v < 0
                                                       for p, v in volumes)):
                             raise ValueError('Invalid output-switch levels')
+                        saved[key] = SinkLevels(row['index'], volumes, row['muted'])
+                except (KeyError, TypeError, ValueError) as exc:
+                    logger.warning('Ignoring invalid output-switch ownership: %s', exc)
+                    path.unlink(missing_ok=True)
+                    return
+                cookie = self._server_cookie()
+                pending = {}
+                if not mute_restored and payload.get('server_cookie') == cookie:
+                    live = self._inventory()
+                    for key, state in saved.items():
                         current = live.get(key)
-                        if (current and current.index == row['index'] and current.muted
-                                and tuple(dict(current.volumes)) == tuple(dict(volumes))):
-                            pending[key] = SinkLevels(current.index, volumes, row['muted'])
+                        # Changed raw levels revoke uncertain crash ownership.
+                        if (current and current.index == state.index and current.muted
+                                and dict(current.volumes) == dict(state.volumes)):
+                            pending[key] = state
                 self._pending = pending
                 self._pending_cookie = cookie if pending else None
                 self._persist_pending()
-            except (KeyError, TypeError, ValueError) as exc:
-                logger.warning('Ignoring invalid output-switch ownership: %s', exc)
-                path.unlink(missing_ok=True)
+            except Exception as exc:
+                logger.warning('Output-switch recovery deferred; retaining ownership marker: %s', exc)
 
     def _inventory(self) -> dict[str, SinkLevels]:
         rows = json.loads(self._run(['pactl', '-f', 'json', 'list', 'sinks']))
@@ -195,9 +215,22 @@ class OutputLevels:
                     self._observed[key] = target
                 return None
             state = SinkLevels(target.index, state.volumes, state.muted)
+            previous_pending = self._pending.get(key)
+            previous_cookie = self._pending_cookie
             self._pending[key] = state
             try:
-                self._persist_pending()
+                try:
+                    self._persist_pending()
+                except BaseException:
+                    # No mute was acquired. Do not let a failed marker capture
+                    # override later user edits, or resurrect discarded servers.
+                    if self._pending.get(key) is state:
+                        if previous_pending is None:
+                            self._pending.pop(key)
+                        else:
+                            self._pending[key] = previous_pending
+                        self._pending_cookie = previous_cookie
+                    raise
                 self._mute(key, True)
                 self._run(['pactl', 'set-sink-volume', key, *(str(value) for _, value in state.volumes)])
                 if self._inventory()[key].volumes != state.volumes:
@@ -221,13 +254,13 @@ class OutputLevels:
                     # volume or explicit unmute instead of failing the switch.
                     state = SinkLevels(current.index, current.volumes, state.muted if current.muted else False)
                     self._pending[key] = state
-                    self._persist_pending()
+                    self._persist_after_mute()
                     self._mute(key, state.muted or self._mute_held())
                     self._observed[key] = state
                     for source in list(self._pending):
                         if successor_sink_key(source, live) == key:
                             self._pending.pop(source)
-                    self._persist_pending()
+                    self._persist_after_mute()
             except BaseException as error:
                 try:
                     current = self._inventory()[key]
@@ -242,11 +275,19 @@ class OutputLevels:
                                 tuple((position, volumes.get(position, max(volumes.values())))
                                       for position, _ in current.volumes), state.muted)
                         self._pending[key] = replacement
-                        self._persist_pending()
+                except Exception as ownership_error:
+                    logger.exception('Hardware output safety ownership readback failed')
+                    error.add_note(f'Safety ownership readback also failed: {ownership_error}')
+                try:
                     self._mute(key, True)
                 except Exception as mute_error:
                     logger.exception('Hardware output safety mute failed')
                     error.add_note(f'Safety mute also failed: {mute_error}')
+                try:
+                    self._persist_pending()
+                except Exception as marker_error:
+                    logger.exception('Hardware output safety ownership persistence failed')
+                    error.add_note(f'Safety ownership persistence also failed: {marker_error}')
                 raise
             finally:
                 self._switching = False

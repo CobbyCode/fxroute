@@ -13,6 +13,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from audio.output_levels import OutputLevels
+from audio.system_volume import SystemVolumeError
 
 OLD = 'alsa_output.pci-test.hdmi-stereo'
 NEW = 'alsa_output.pci-test.hdmi-surround'
@@ -114,6 +115,95 @@ class OutputLevelsTests(unittest.IsolatedAsyncioTestCase):
                     self.fail('Unrecorded mute must not enter graph scope')
         self.assertFalse(self.sinks[OTHER]['mute'])
         self.assertFalse(levels._switching)
+
+    async def test_unreachable_server_preserves_recovery_marker_until_a_later_attempt(self):
+        for command in ('info', 'sinks'):
+            with self.subTest(command=command):
+                levels = self.persistent_levels()
+                self.sinks[OTHER] = sink(OTHER, 20, [22222, 22222], False)
+                state = levels._begin(OLD, OTHER)
+                marker = self.state_path.read_bytes()
+                restarted = self.persistent_levels()
+                def unavailable(args):
+                    if args[-1] == command:
+                        raise SystemVolumeError('Audio server unavailable')
+                    return self.command(args)
+                restarted._run = unavailable
+                with self.assertLogs('audio.output_levels', level='WARNING'):
+                    restarted.recover_pending()
+                self.assertEqual(self.state_path.read_bytes(), marker)
+                self.assertTrue(self.sinks[OTHER]['mute'])
+                restarted._run = self.command
+                restarted.recover_pending()
+                async with restarted.switch(OTHER, OTHER):
+                    pass
+                self.assertFalse(self.sinks[OTHER]['mute'])
+                self.assertFalse(self.state_path.exists())
+
+    async def test_failed_initial_marker_does_not_overwrite_a_later_user_volume(self):
+        levels = self.persistent_levels()
+        self.sinks[OTHER] = sink(OTHER, 20, [20000, 20000], False)
+        with mock.patch('audio.output_levels.atomic_write_text', side_effect=OSError('Disk full')):
+            with self.assertRaises(OSError):
+                async with levels.switch(OLD, OTHER):
+                    pass
+        for row in self.sinks[OTHER]['volume'].values():
+            row['value'] = 8000
+        levels._selected_key = lambda: OTHER
+        levels.observe_selected()
+        async with levels.switch(OTHER, OTHER):
+            pass
+        self.assertEqual([row['value'] for row in self.sinks[OTHER]['volume'].values()], [8000, 8000])
+        self.assertFalse(self.sinks[OTHER]['mute'])
+
+    async def test_replacement_safety_mute_survives_marker_write_failure(self):
+        for server_changed in (False, True):
+            with self.subTest(server_changed=server_changed):
+                levels = self.persistent_levels()
+                self.sinks[OTHER] = sink(OTHER, 20, [20000, 20000], False)
+                with self.assertRaises(RuntimeError) as raised:
+                    async with levels.switch(OLD, OTHER):
+                        self.sinks[OTHER] = sink(OTHER, 21, [65536, 65536], False)
+                        if server_changed:
+                            self.cookie += '-new'
+                        with mock.patch('audio.output_levels.atomic_write_text', side_effect=OSError('Disk full')):
+                            levels._finish(OTHER, levels._pending[OTHER], True)
+                self.assertTrue(self.sinks[OTHER]['mute'], 'Marker I/O must not suppress the safety mute')
+                self.assertTrue(any('Disk full' in note for note in raised.exception.__notes__))
+
+    async def test_successful_finish_keeps_user_levels_when_marker_update_or_unlink_fails(self):
+        for failure in ('write', 'unlink'):
+            with self.subTest(failure=failure):
+                levels = self.persistent_levels()
+                self.sinks[OTHER] = sink(OTHER, 20, [20000, 20000], False)
+                state = levels._begin(OLD, OTHER)
+                self.sinks[OTHER]['volume']['front-left']['value'] = 30000
+                target = ('audio.output_levels.atomic_write_text' if failure == 'write'
+                          else 'audio.output_levels.Path.unlink')
+                with mock.patch(target, side_effect=OSError('Disk full')), \
+                        self.assertLogs('audio.output_levels', level='WARNING'):
+                    levels._finish(OTHER, state, True)
+                self.assertFalse(self.sinks[OTHER]['mute'])
+                self.assertEqual(self.sinks[OTHER]['volume']['front-left']['value'], 30000)
+                self.assertFalse(levels._pending)
+                self.state_path.unlink(missing_ok=True)
+
+    async def test_stale_marker_cannot_replay_old_volume_after_a_successful_finish(self):
+        levels = self.persistent_levels()
+        self.sinks[OTHER] = sink(OTHER, 20, [20000, 20000], True)
+        state = levels._begin(OLD, OTHER)
+        for row in self.sinks[OTHER]['volume'].values():
+            row['value'] = 8000
+        with mock.patch('audio.output_levels.atomic_write_text', side_effect=OSError('Read-only storage')), \
+                mock.patch('audio.output_levels.Path.unlink', side_effect=OSError('Read-only storage')), \
+                self.assertLogs('audio.output_levels', level='WARNING'):
+            levels._finish(OTHER, state, True)
+        restarted = self.persistent_levels()
+        restarted.recover_pending()
+        async with restarted.switch(OTHER, OTHER):
+            pass
+        self.assertTrue(self.sinks[OTHER]['mute'], 'Uncertain hardware mute must remain user-owned')
+        self.assertEqual([row['value'] for row in self.sinks[OTHER]['volume'].values()], [8000, 8000])
 
     async def test_server_restart_invalidates_pending_ownership_without_blocking_new_sync(self):
         self.sinks[OLD]['mute'] = False
