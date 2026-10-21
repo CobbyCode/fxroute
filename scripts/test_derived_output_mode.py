@@ -369,6 +369,35 @@ class CrossoverDerivedModeTests(unittest.TestCase):
         self.assertEqual(payload["subwoofers"]["sub2"]["alignment_ms"], 3.0)
 
 
+class HdmiRoutingKeyTests(unittest.TestCase):
+    """HDMI routing is stored under the connector identity, not the sink key.
+
+    Regression for the routing guard looking up only the sink key and its
+    ``device_key``: a routed HDMI output then read as unrouted and the overview
+    degraded to stereo, dropping the subs and their delays.
+    """
+
+    SINKS = ("alsa_output.pci-0000_01_00.1.hdmi-stereo",
+             "alsa_output.pci-0000_01_00.1.hdmi-surround",
+             "alsa_output.pci-0000_01_00.1.hdmi-surround71")
+
+    def test_routed_hdmi_sink_keeps_its_subwoofer_mode_and_delay(self):
+        head = head_with("stereo-sub", self.SINKS[1], ["sub1"],
+                         subs={"sub1": {"level_db": -3.0, "alignment_ms": 1.2}})
+        self.assertEqual(list(head["modes"]["stereo-sub"]["routing"]),
+                         ["alsa_card.pci-0000_01_00.1#hdmi0"])
+        for sink in self.SINKS:
+            with self.subTest(sink=sink):
+                payload = _derived_output_mode(head, sink)
+                self.assertEqual(payload["mode"], "subwoofer-2.1")
+                self.assertEqual(payload["subwoofer"]["sub_alignment_ms"], 1.2)
+                self.assertEqual(payload["subwoofer"]["sub_level_db"], -3.0)
+
+    def test_unrouted_hdmi_connector_still_degrades_to_none(self):
+        head = head_with("stereo-sub", self.SINKS[1], ["sub1"])
+        self.assertIsNone(_derived_output_mode(head, "alsa_output.pci-0000_02_00.1.hdmi-surround"))
+
+
 class LoaderFallbackTests(unittest.TestCase):
     def tearDown(self):
         configure_output_state_head(None)

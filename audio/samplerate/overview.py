@@ -176,6 +176,7 @@ def _derived_output_mode(
     if not isinstance(head, Mapping):
         return None
     try:
+        from audio import hdmi
         from audio.output_routing import device_key
         from audio.output_state import (bass_crossover_for_group, bass_crossover_for_side, effective_crossover_enabled, filter_label,
                                         routing_for_device, shared_bass_crossover)
@@ -191,9 +192,10 @@ def _derived_output_mode(
         return None
     routing = spec.get("routing")
     routing = routing if isinstance(routing, Mapping) else {}
-    if routing and not any(key for key in (output_key, device_key(output_key or "")) if key in routing):
+    if routing and hdmi.stored_routing(routing, device_key(output_key or "")) is None:
         # A device with no routing entry cannot be attributed roles; callers
-        # degrade to stereo instead of misreporting a subwoofer mode.
+        # degrade to stereo instead of misreporting a subwoofer mode. HDMI
+        # routing is stored under the connector identity, not the sink key.
         return None
     crossover_enabled = effective_crossover_enabled(head, mode, output_key=output_key)
     try:
