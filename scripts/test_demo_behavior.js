@@ -1244,12 +1244,21 @@ const radio = state.getPlayback();
     const splAuto = await (await demoFetch('/api/measurements/spl-calibration/automatic', { method: 'POST' })).json();
     assert.equal(splAuto.status, 'ok');
     assert.ok(splAuto.measured_spl_db >= 40 && splAuto.measured_spl_db <= 130);
-    const splApply = await (await demoFetch('/api/measurements/spl-calibration/apply', { method: 'POST', body: JSON.stringify({ measured_spl_db: 82.6 }) })).json();
+    assert.equal(splGet.output_profile.id, 'demo-output-profile');
+    assert.equal(splGet.output_profile.label, 'Demo Output');
+    assert.equal(splAuto.output_profile.id, splGet.output_profile.id, 'the measurement names the output it ran on');
+    const splApplyFor = (output) => demoFetch('/api/measurements/spl-calibration/apply', {
+        method: 'POST', body: JSON.stringify({ measured_spl_db: 82.6, ...(output === undefined ? {} : { output_profile_id: output }) }) });
+    assert.equal((await splApplyFor()).status, 400, 'a reading without its output is refused');
+    assert.equal((await splApplyFor('another-output')).status, 409, 'a reading of another output is refused');
+    const splApply = await (await splApplyFor('demo-output-profile')).json();
     assert.equal(splApply.status, 'ok');
     assert.equal(splApply.required_adjustment_db, 0.4);
     assert.equal(splApply.calibrated, true);
     const splExtras = (await (await demoFetch('/api/dsp/presets')).json()).global_extras.loudness.params.calibration;
     assert.equal(splExtras.measuredSplDb, 82.6, 'the applied calibration is served with the loudness extras, like the backend');
+    const splProfiles = (await (await demoFetch('/api/dsp/presets')).json()).global_extras.loudness.params.calibrationProfiles;
+    assert.equal(splProfiles['demo-output-profile'].measuredSplDb, 82.6, 'the record is kept per output');
 
     // A finished sweep job only reports its result.  A run reaches the saved
     // list through "Save current", like in the real store: an Advanced series

@@ -23,7 +23,9 @@ from fastapi import APIRouter, HTTPException, Request
 
 from http_errors import bad_request
 from measurement.session import MeasurementEntryInvalidated
+from audio.output_context import output_state_device
 from audio.samplerate import get_audio_output_overview
+from dsp.calibration_profiles import profile_id
 from audio.tool_env import c_locale_env
 from common.run_to_completion import wait_for_completion
 
@@ -149,12 +151,27 @@ def _dependencies() -> SplCalibrationDependencies:
 
 router = APIRouter()
 def _spl_output_profile() -> dict[str, str]:
-    overview = get_audio_output_overview()
-    selected = overview.get("selected_output") if isinstance(overview, dict) else {}
-    selected = selected if isinstance(selected, dict) else {}
-    key = str(selected.get("key") or selected.get("target") or "default")
-    label = str(selected.get("target_label") or selected.get("label") or key)
-    return {"id": key, "label": label}
+    """Identity and label of the output that renders now; the id is empty when none can be named.
+
+    The identity is the one the processing plan uses (``device_key`` of the effective output), so a
+    calibration saved under it is the one the Loudness work point reads for that output.
+    """
+    try:
+        overview = get_audio_output_overview()
+        output_key, _channels = output_state_device(overview)
+    except Exception as exc:
+        logger.warning("SPL calibration could not identify the output: %s", exc)
+        return {"id": "", "label": ""}
+    selected = overview.get("selected_output") if isinstance(overview.get("selected_output"), dict) else {}
+    label = str(selected.get("target_label") or selected.get("label") or output_key)
+    return {"id": profile_id(output_key), "label": label}
+
+
+def _require_output_profile() -> dict[str, str]:
+    profile = _spl_output_profile()
+    if not profile["id"]:
+        raise HTTPException(status_code=409, detail="No audio output device is selected")
+    return profile
 
 
 class _Umik1Profile:
@@ -1388,13 +1405,14 @@ async def shutdown() -> None:
 
 @router.get("/api/measurements/spl-calibration")
 async def get_spl_calibration():
-    extras = _dependencies().require_dsp_manager().load_global_extras()
+    profile = await asyncio.to_thread(_spl_output_profile)
+    extras = _dependencies().require_dsp_manager().load_global_extras(device_id=profile["id"])
     return {
         "status": "ok",
         "target_spl_db": 83.0,
         "noise_lufs": -23.0,
         "meter_hint": "C-weighted / Slow",
-        "output_profile": await asyncio.to_thread(_spl_output_profile),
+        "output_profile": profile,
         "loudness": extras["loudness"],
         "automatic": await asyncio.to_thread(_spl_auto_capability),
         "noise_active": bool(
@@ -1416,6 +1434,7 @@ async def set_spl_calibration_noise(request: Request):
         await _restore_unrestored_audio()
         return {"status": "stopped"}
 
+    profile = await asyncio.to_thread(_require_output_profile)
     operation = await _acquire_operation("manual-noise")
     try:
         await _register_operation(operation)
@@ -1426,6 +1445,7 @@ async def set_spl_calibration_noise(request: Request):
         )
         if operation.cancel_requested:
             raise RuntimeError("SPL calibration was stopped")
+        result = {**result, "output_profile": profile}
         watcher = asyncio.create_task(
             _watch_manual_noise(operation),
             name=f"spl-noise-watch:{operation.id}",
@@ -1449,6 +1469,8 @@ async def measure_spl_automatically():
     dependencies = _dependencies()
     operation = await _acquire_operation("automatic")
     try:
+        # Named before the recorder starts, so the lookup never delays the capture.
+        profile = await asyncio.to_thread(_require_output_profile)
         capability = await asyncio.to_thread(_spl_auto_capability)
         if not capability["available"]:
             raise HTTPException(status_code=409, detail=capability["reason"])
@@ -1606,6 +1628,8 @@ async def measure_spl_automatically():
         _require_settled_level(level_rise_db)
         if not math.isfinite(measured) or not 40.0 <= measured <= 130.0:
             raise RuntimeError(f"Automatic {microphone_model} SPL result is outside the valid range ({measured:.1f} dB)")
+        if (await asyncio.to_thread(_spl_output_profile))["id"] != profile["id"]:
+            raise RuntimeError("The output changed during the measurement. Repeat the measurement.")
         logger.info("Automatic %s SPL %.2f dB, level drift over the window %.2f dB",
                     microphone_model, measured, level_rise_db)
         return {
@@ -1615,6 +1639,7 @@ async def measure_spl_automatically():
             "weighting": "C",
             "averaging_seconds": SPL_WINDOW_SECONDS,
             "level_drift_db": round(level_rise_db, 2),
+            "output_profile": profile,
             "microphone_model": microphone_model,
             "serial_number": capability["serial_number"],
         }
@@ -1638,17 +1663,25 @@ async def apply_spl_calibration(request: Request):
     except ValueError as exc:
         raise bad_request(exc) from exc
     await _stop_active_operation()
+    measured_for = str(body.get("output_profile_id") or "").strip()
+    if not measured_for:
+        raise bad_request(ValueError("output_profile_id is required"))
     dsp_manager = _dependencies().require_dsp_manager()
     run_mutation = _dependencies().run_dsp_mutation
-    profile = _spl_output_profile()
+    profile = await asyncio.to_thread(_require_output_profile)
+    if profile_id(measured_for) != profile["id"]:
+        # The reading was taken through another output: it is not this output's calibration.
+        raise HTTPException(
+            status_code=409,
+            detail="The output changed since the measurement. Measure again for the current output.")
     automatic = _spl_auto_capability()
 
     def _apply_calibration_serialized() -> dict:
         # Runs under the central DSP mutation ownership: the extras
         # read, the calibration merge and the runtime apply/persist form one
         # atomic read-modify-write against other DSP mutations.
-        extras = dsp_manager.load_global_extras()
-        extras["loudness"]["params"]["calibration"] = {
+        extras = dsp_manager.load_global_extras(device_id=profile["id"])
+        record = {
             "outputProfileId": profile["id"],
             "outputProfileLabel": profile["label"],
             "targetSplDb": 83.0,
@@ -1661,11 +1694,12 @@ async def apply_spl_calibration(request: Request):
             "calibrationFilename": automatic["calibration_filename"],
             "createdAt": datetime.now(timezone.utc).isoformat(),
         }
-        profiles = dict(extras["loudness"]["params"].get("calibrationProfiles") or {})
-        profiles[profile["id"]] = dict(extras["loudness"]["params"]["calibration"])
-        extras["loudness"]["params"]["calibrationProfiles"] = profiles
+        # The record of this output replaces only this output's entry; calibration is its derived view.
+        params = extras["loudness"]["params"]
+        params["calibrationProfiles"] = {**(params.get("calibrationProfiles") or {}), profile["id"]: dict(record)}
+        params["calibration"] = dict(record)
         return dsp_manager.apply_autogain_loudness_runtime(
-            dsp_manager.load_global_extras(), extras, persist_all_presets=False
+            dsp_manager.load_global_extras(device_id=profile["id"]), extras, persist_all_presets=False
         )["extras"]
 
     # Lock order is session (job-free graph) outermost, then canonical volume
@@ -1684,4 +1718,5 @@ async def apply_spl_calibration(request: Request):
         "required_adjustment_db": adjustment,
         "calibrated": abs(adjustment) <= 1.0,
         "calibration": saved["loudness"]["params"]["calibration"],
+        "output_profile": profile,
     }

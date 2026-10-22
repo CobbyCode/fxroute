@@ -27,14 +27,16 @@ function fixture(fetchOverride) {
         getElements: () => ({ splCalibrationNoise: button, splCalibrationStatus: status,
             splCalibrationAutoStatus: action, splCalibrationPanel: panel, splCalibrationMeasured: { value: '83' } }),
         fetch: async (url, options = {}) => {
-            const enabled = options.body ? JSON.parse(options.body).enabled : undefined;
-            calls.push({ url, enabled });
+            const body = options.body ? JSON.parse(options.body) : undefined;
+            const enabled = body ? body.enabled : undefined;
+            calls.push({ url, enabled, body });
             if (fetchOverride) {
                 const result = fetchOverride(url, options, enabled);
                 if (result !== undefined) return result;
             }
             return response(url.endsWith('/spl-calibration')
-                ? { noise_active: false, operation_active: false, automatic: { available: false } }
+                ? { noise_active: false, operation_active: false, automatic: { available: false },
+                    output_profile: { id: 'dev', label: 'Dev' } }
                 : { status: enabled ? 'playing' : 'stopped' });
         },
         openModal: () => {}, closeModal: () => {},
@@ -234,7 +236,7 @@ async function testApplyDrainsStartBeforeSaving() {
     started.resolve(response({ status: 'playing' }));
     await Promise.all([start, save]);
     assert.equal(f.button.textContent, 'Start noise');
-    assert.match(f.status.textContent, /Saved:/);
+    assert.match(f.status.textContent, /Saved for Dev:/);
 }
 
 async function testStalledStartCancellationTimesOutAndCanRetry() {
@@ -349,6 +351,71 @@ async function testApplyTimeoutReleasesControlsAndReportsFailure() {
     assert.match(f.status.textContent, /timed out/);
 }
 
+async function testApplySendsTheOutputTheReadingBelongsTo() {
+    const f = fixture();
+    await f.spl.openSplCalibration();
+    await f.spl.saveSplCalibration();
+    const apply = f.calls.find((c) => c.url.endsWith('/apply'));
+    assert.deepEqual(apply.body, { measured_spl_db: 83, output_profile_id: 'dev' });
+    assert.match(f.status.textContent, /^Saved for Dev: 83\.0 dB SPL measured/);
+}
+
+async function testTheNoiseStartOutputWinsOverThePanelOpenOutput() {
+    const f = fixture((url, _options, enabled) => enabled === true
+        ? response({ status: 'playing', output_profile: { id: 'second', label: 'Second' } }) : undefined);
+    await f.spl.openSplCalibration();
+    await f.spl.toggleSplCalibrationNoise();
+    await f.spl.saveSplCalibration();
+    assert.equal(f.calls.find((c) => c.url.endsWith('/apply')).body.output_profile_id, 'second');
+}
+
+async function testAnAutomaticResultCarriesItsOutputToTheSave() {
+    const f = fixture((url) => {
+        if (url.endsWith('/spl-calibration')) return response({ noise_active: false, operation_active: false,
+            automatic: { available: true, microphone_model: 'UMIK-1' }, output_profile: { id: 'dev', label: 'Dev' } });
+        if (url.endsWith('/automatic')) return response({ measured_spl_db: 82.5, required_adjustment_db: 0.5,
+            microphone_model: 'UMIK-1', output_profile: { id: 'measured-on', label: 'Measured On' } });
+    });
+    await f.spl.openSplCalibration();
+    await f.spl.toggleSplCalibrationNoise();
+    assert.match(f.status.textContent, /Save \/ Apply to use it for Measured On\.$/);
+    await f.spl.saveSplCalibration();
+    assert.equal(f.calls.find((c) => c.url.endsWith('/apply')).body.output_profile_id, 'measured-on');
+}
+
+async function testNoSaveWithoutAKnownOutput() {
+    const f = fixture((url) => url.endsWith('/spl-calibration')
+        ? response({ noise_active: false, operation_active: false, automatic: { available: false }, output_profile: { id: '', label: '' } })
+        : undefined);
+    await f.spl.openSplCalibration();
+    await f.spl.saveSplCalibration();
+    assert.equal(f.calls.some((c) => c.url.endsWith('/apply')), false);
+    assert.match(f.status.textContent, /output could not be identified/);
+    assert.equal(f.button.disabled, false);
+}
+
+async function testAnOutputChangeIsReportedAndNothingIsClaimedSaved() {
+    const f = fixture((url) => url.endsWith('/apply')
+        ? response({ detail: 'The output changed since the measurement. Measure again for the current output.' }, false) : undefined);
+    await f.spl.openSplCalibration();
+    await f.spl.saveSplCalibration();
+    assert.equal(f.status.textContent, 'The output changed since the measurement. Measure again for the current output.');
+    assert.equal(f.button.disabled, false);
+}
+
+async function testReopeningForgetsTheEarlierOutput() {
+    let profile = { id: 'first', label: 'First' };
+    const f = fixture((url) => url.endsWith('/spl-calibration')
+        ? response({ noise_active: false, operation_active: false, automatic: { available: false }, output_profile: profile })
+        : undefined);
+    await f.spl.openSplCalibration();
+    profile = { id: 'second', label: 'Second' };
+    await f.spl.closeSplCalibration();
+    await f.spl.openSplCalibration();
+    await f.spl.saveSplCalibration();
+    assert.equal(f.calls.find((c) => c.url.endsWith('/apply')).body.output_profile_id, 'second');
+}
+
 (async () => {
     const tests = [testFailedStopKeepsRetryableState, testFailedCloseRemainsVisible, testIdleCloseStillRequestsIdempotentStop,
         testEndedOperationWithPendingRestoreOffersRestoreRetry, testFailedStopReportsAbandonedRestoreInsteadOfCleanup,
@@ -357,7 +424,10 @@ async function testApplyTimeoutReleasesControlsAndReportsFailure() {
         testLateOpenResponseCannotOverwriteStop, testLostStartResponseKeepsServerOwnerRetryable,
         testApplyDrainsStartBeforeSaving, testStalledStartCancellationTimesOutAndCanRetry,
         testApplyPreventsNewStartUntilResponseCompletes, testStalledStopTimesOutAndCanRetry,
-        testCloseAbortsStalledApplyAndReopenCanStart, testApplyTimeoutReleasesControlsAndReportsFailure];
+        testCloseAbortsStalledApplyAndReopenCanStart, testApplyTimeoutReleasesControlsAndReportsFailure,
+        testApplySendsTheOutputTheReadingBelongsTo, testTheNoiseStartOutputWinsOverThePanelOpenOutput,
+        testAnAutomaticResultCarriesItsOutputToTheSave, testNoSaveWithoutAKnownOutput,
+        testAnOutputChangeIsReportedAndNothingIsClaimedSaved, testReopeningForgetsTheEarlierOutput];
     let failed = 0;
     for (const test of tests) {
         try { await test(); console.log(`${test.name}: ok`); }

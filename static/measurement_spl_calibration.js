@@ -27,6 +27,8 @@
     let splCalibrationApplyController = null;
     let splCalibrationOperationGeneration = 0;
     let splCalibrationModeText = '';
+    // The output the panel measures and saves for; the server refuses a save for any other output.
+    let splCalibrationOutputProfile = null;
 
     function init(overrides) {
         deps = Object.assign(deps, overrides || {});
@@ -69,6 +71,14 @@
         return splCalibrationRestorePending?.output_muted === false
             ? 'Audio not restored. Retry restore.'
             : 'Audio not restored. Output muted. Retry restore.';
+    }
+
+    function rememberSplCalibrationOutput(profile) {
+        splCalibrationOutputProfile = profile?.id ? { id: String(profile.id), label: String(profile.label || '') } : null;
+    }
+
+    function splCalibrationOutputName() {
+        return splCalibrationOutputProfile?.label ? ` for ${splCalibrationOutputProfile.label}` : '';
     }
 
     function applySplCalibrationServerState(data) {
@@ -182,6 +192,7 @@
 
     async function openSplCalibration() {
         const generation = splCalibrationOperationGeneration;
+        splCalibrationOutputProfile = null;
         setSplCalibrationStatus();
         deps.getElements().splCalibrationPanel?.classList.remove('hidden');
         deps.openModal(deps.getElements().splCalibrationPanel, {
@@ -193,6 +204,7 @@
             if (generation !== splCalibrationOperationGeneration) return;
             if (!response.ok) throw new Error(data.detail || 'Failed to load SPL calibration');
             applySplCalibrationServerState(data);
+            rememberSplCalibrationOutput(data.output_profile);
             splCalibrationAutomaticAvailable = !!data.automatic?.available;
             resetSplCalibrationNoiseButton();
             splCalibrationModeText = splCalibrationModeLabel(data);
@@ -253,13 +265,14 @@
                 const { response, data } = await requestSplCalibrationStart('/api/measurements/spl-calibration/automatic', { method: 'POST' });
                 if (generation !== splCalibrationOperationGeneration) return;
                 if (!response.ok) throw new Error(data.detail || 'Automatic UMIK SPL measurement failed');
+                if (data.output_profile?.id) rememberSplCalibrationOutput(data.output_profile);
                 if (deps.getElements().splCalibrationMeasured) {
                     deps.getElements().splCalibrationMeasured.value = Number(data.measured_spl_db).toFixed(1);
                 }
                 splCalibrationNoiseActive = false;
                 if (deps.getElements().splCalibrationNoise) deps.getElements().splCalibrationNoise.textContent = 'Start noise';
                 setSplCalibrationActionLine();
-                setSplCalibrationStatus(`${data.microphone_model} measured ${Number(data.measured_spl_db).toFixed(1)} dB SPL · Loudness offset ${formatSignedDb(data.required_adjustment_db)}. Save / Apply to use it.`);
+                setSplCalibrationStatus(`${data.microphone_model} measured ${Number(data.measured_spl_db).toFixed(1)} dB SPL · Loudness offset ${formatSignedDb(data.required_adjustment_db)}. Save / Apply to use it${splCalibrationOutputName()}.`);
                 return;
             }
             const { response, data } = await requestSplCalibrationStart('/api/measurements/spl-calibration/noise', {
@@ -269,6 +282,7 @@
             });
             if (generation !== splCalibrationOperationGeneration) return;
             if (!response.ok) throw new Error(data.detail || 'Calibration noise failed');
+            if (data.output_profile?.id) rememberSplCalibrationOutput(data.output_profile);
             splCalibrationNoiseActive = true;
             if (deps.getElements().splCalibrationNoise) deps.getElements().splCalibrationNoise.textContent = 'Stop noise';
             setSplCalibrationActionLine('Noise playing. Read the C/Slow meter after about 1 s, average over about 3 s.');
@@ -302,6 +316,11 @@
             setSplCalibrationStatus('Enter the measured C/Slow SPL value.');
             return;
         }
+        const outputProfile = splCalibrationOutputProfile;
+        if (!outputProfile) {
+            setSplCalibrationStatus('The output could not be identified. Reopen SPL Calibration and measure again.');
+            return;
+        }
         splCalibrationApplying = true;
         const controller = new root.AbortController();
         splCalibrationApplyController = controller;
@@ -315,14 +334,14 @@
             const { response, data } = await requestSplCalibration('/api/measurements/spl-calibration/apply', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ measured_spl_db: measured }),
+                body: JSON.stringify({ measured_spl_db: measured, output_profile_id: outputProfile.id }),
             }, controller);
             if (generation !== splCalibrationOperationGeneration) return;
             if (!response.ok) throw new Error(data.detail || 'Failed to apply SPL calibration');
             splCalibrationNoiseActive = false;
             if (deps.getElements().splCalibrationNoise) deps.getElements().splCalibrationNoise.textContent = 'Start noise';
             setSplCalibrationActionLine();
-            const offsetText = `Saved: ${measured.toFixed(1)} dB SPL measured · Loudness offset ${formatSignedDb(data.required_adjustment_db)}`;
+            const offsetText = `Saved${splCalibrationOutputName()}: ${measured.toFixed(1)} dB SPL measured · Loudness offset ${formatSignedDb(data.required_adjustment_db)}`;
             setSplCalibrationStatus(data.calibrated
                 ? `${offsetText} · within 1 dB of target.`
                 : `${offsetText}. Only affects playback with Loudness on.`);

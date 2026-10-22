@@ -3323,6 +3323,8 @@ async function saveAudioOutputSelection(key) {
         renderSettingsPanel();
         const modeAdjustment = data.output_mode?.mode_adjustment;
         await fetchOutputSystemCatalog(true);
+        // The Loudness calibration belongs to the output: read the extras of the new one.
+        await EffectsUI.fetchEffects().catch(() => null);
         if (modeAdjustment?.message) {
             showToast(modeAdjustment.message, 'info');
         } else {
@@ -3341,8 +3343,12 @@ async function fetchAudioOutputOverview() {
         if (!resp.ok) throw new Error('Failed to fetch audio outputs');
         const data = await resp.json();
         if (state.settings.audioOutputs.pendingSelectionKey) return;
+        const previousOutput = state.settings.audioOutputs.output_mode?.effective_output_key;
         state.settings.audioOutputs = audioOutputsState(data);
         renderSettingsPanel();
+        const currentOutput = state.settings.audioOutputs.output_mode?.effective_output_key;
+        // An output that changed on its own (unplugged, fallen back) brings its own calibration.
+        if (previousOutput && currentOutput && previousOutput !== currentOutput) void EffectsUI.fetchEffects();
         renderSubwooferPanel();
         MeasurementFlows.syncAutoSubButton();
         MeasurementFlows.syncSpeakerAlignButton();

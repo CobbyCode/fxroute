@@ -4453,7 +4453,7 @@
         if (p === '/api/measurements/spl-calibration/noise' && post) {
             if (body.enabled) {
                 S.spl.noiseActive = true;
-                return j({ status: 'playing', settle_seconds: 1.0, average_seconds: 3.0 });
+                return j({ status: 'playing', settle_seconds: 1.0, average_seconds: 3.0, output_profile: { ...S.SPL_OUTPUT_PROFILE } });
             }
             S.spl.noiseActive = false;
             return j({ status: 'stopped' });
@@ -4463,10 +4463,20 @@
             return j(result);
         }
         if (p === '/api/measurements/spl-calibration/apply' && post) {
+            // Like the backend: the reading must belong to the output that renders now.
+            const measuredFor = String(body.output_profile_id || '').trim();
+            if (!measuredFor) return err('output_profile_id is required', 400);
+            if (measuredFor !== S.SPL_OUTPUT_PROFILE.id) {
+                return err('The output changed since the measurement. Measure again for the current output.', 409);
+            }
             const result = S.splApplyCalibration(body.measured_spl_db);
             if (result.error) return err(result.error, 400);
-            // Like the backend, the applied calibration lives in the loudness extras.
+            // Like the backend, the applied calibration lives in the loudness extras, per output.
             dspExtras.loudness.params.calibration = result.calibration;
+            dspExtras.loudness.params.calibrationProfiles = {
+                ...(dspExtras.loudness.params.calibrationProfiles || {}),
+                [S.SPL_OUTPUT_PROFILE.id]: result.calibration,
+            };
             syncDspToState();
             return j(result);
         }

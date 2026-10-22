@@ -218,6 +218,7 @@ class AsyncBoundaryTests(unittest.IsolatedAsyncioTestCase):
                 patch.object(spl, "_spl_auto_capability", return_value={"available": True,
                     "selected_input": {"node_name": "mic"}, "microphone_model": "UMIK-1"}), \
                 patch.object(spl, "_register_operation", AsyncMock()), \
+                patch.object(spl, "_spl_output_profile", self.probe({"id": "dev", "label": "Dev"})), \
                 patch.object(spl.subprocess, "run", side_effect=pactl_result), \
                 patch.object(spl.subprocess, "Popen", side_effect=RuntimeError("recorder boundary")):
             with self.assertRaises(main.HTTPException) as caught:
@@ -332,7 +333,7 @@ class AsyncBoundaryTests(unittest.IsolatedAsyncioTestCase):
         self.assert_off_loop()
 
     async def test_spl_profile_and_capability_reads_off_loop(self):
-        manager = SimpleNamespace(load_global_extras=lambda: {"loudness": {}})
+        manager = SimpleNamespace(load_global_extras=lambda device_id=None: {"loudness": {}})
         deps = SimpleNamespace(require_dsp_manager=lambda: manager, get_dsp_manager=lambda: manager,
                                get_measurement_session=lambda: None)
         with patch.object(spl, "_dependencies", return_value=deps), \

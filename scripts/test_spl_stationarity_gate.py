@@ -77,6 +77,9 @@ class SplStationarityGateTest(unittest.TestCase):
         self.addCleanup(setattr, spl_calibration._runtime, "dependencies", original)
         self.addCleanup(setattr, spl_calibration._runtime, "operation", None)
         support.configure(support.FakeMeasurementStore(self.calibration, supports_sample_count=True))
+        profile = mock.patch.object(spl_calibration, "_spl_output_profile", return_value={"id": "dev", "label": "Dev"})
+        profile.start()
+        self.addCleanup(profile.stop)
 
     def levels(self, mono, profile=None, calibration=None):
         return spl_calibration._spl_window_levels(
@@ -112,7 +115,8 @@ class SplStationarityGateTest(unittest.TestCase):
         self.assertEqual(result["measured_spl_db"], round(previous, 2))
         self.assertEqual(result["averaging_seconds"], 3.0)
         self.assertEqual(set(result), {"status", "measured_spl_db", "required_adjustment_db", "weighting",
-                                       "averaging_seconds", "level_drift_db", "microphone_model", "serial_number"})
+                                       "averaging_seconds", "level_drift_db", "output_profile",
+                                       "microphone_model", "serial_number"})
 
     def test_noise_that_starts_in_time_is_accepted(self):
         for onset in (0.0, 1.0, 1.8, 2.0):

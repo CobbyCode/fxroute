@@ -150,6 +150,10 @@ class SplCalibrationLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.state_env = mock.patch.dict(os.environ, {"XDG_STATE_HOME": self.state_home.name})
         self.state_env.start()
         self.restore_record = pathlib.Path(self.state_home.name) / "fxroute" / "spl-calibration-restore.json"
+        # The output identity comes from the live overview, which these tests do not have.
+        self.profile_patch = mock.patch.object(
+            spl_calibration, "_spl_output_profile", return_value={"id": "dev", "label": "Dev"})
+        self.profile_patch.start()
 
     async def asyncTearDown(self):
         if spl_calibration._runtime.operation is not None:
@@ -162,6 +166,7 @@ class SplCalibrationLifecycleTests(unittest.IsolatedAsyncioTestCase):
         spl_calibration._runtime.operation = None
         spl_calibration._runtime.operation_lock = None
         spl_calibration._runtime.unrestored = None
+        self.profile_patch.stop()
         self.state_env.stop()
         self.state_home.cleanup()
 
@@ -251,6 +256,7 @@ class SplCalibrationLifecycleTests(unittest.IsolatedAsyncioTestCase):
                 for _ in range(3):
                     result = await spl_calibration.set_spl_calibration_noise(FakeRequest())
                     self.assertEqual(result["status"], "playing")
+                    self.assertEqual(result["output_profile"], {"id": "dev", "label": "Dev"})
                     operation = spl_calibration._runtime.operation
                     results = await asyncio.gather(
                         spl_calibration.set_spl_calibration_noise(FakeRequest(False)),
@@ -1024,11 +1030,13 @@ class SplCalibrationApplyLockTests(unittest.IsolatedAsyncioTestCase):
          main.measurement_session) = self.previous_runtime
 
     class Request:
-        def __init__(self, measured):
-            self._measured = measured
+        def __init__(self, measured, output_profile_id="dev"):
+            self._body = {"measured_spl_db": measured}
+            if output_profile_id is not None:
+                self._body["output_profile_id"] = output_profile_id
 
         async def json(self):
-            return {"measured_spl_db": self._measured}
+            return dict(self._body)
 
     async def test_apply_is_refused_while_a_measurement_owns_the_graph(self):
         self.session.has_active_jobs = True
@@ -1055,6 +1063,66 @@ class SplCalibrationApplyLockTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.applied[-1]["loudness"]["params"]["calibration"], calibration)
         self.assertEqual(self.applied[-1]["loudness"]["params"]["calibrationProfiles"]["dev"],
                          calibration)
+        self.assertEqual(result["output_profile"], {"id": "dev", "label": "Dev"})
+
+    async def apply(self, request, overview=None):
+        with mock.patch.object(spl_calibration, "get_audio_output_overview",
+                               return_value=overview or self.OVERVIEW), \
+                mock.patch.object(spl_calibration, "_stop_active_operation", mock.AsyncMock()):
+            return await spl_calibration.apply_spl_calibration(request)
+
+    async def test_apply_without_the_measured_output_is_refused(self):
+        with self.assertRaises(Exception) as raised:
+            await self.apply(self.Request(79.0, output_profile_id=None))
+        self.assertEqual(raised.exception.status_code, 400)
+        self.assertIn("output_profile_id", raised.exception.detail)
+        self.assertEqual(self.applied, [])
+
+    async def test_apply_after_the_output_changed_is_refused_and_changes_nothing(self):
+        before = self.manager.load_global_extras()
+        with self.assertRaises(Exception) as raised:
+            await self.apply(self.Request(79.0, output_profile_id="other-output"))
+        self.assertEqual(raised.exception.status_code, 409)
+        self.assertIn("The output changed since the measurement", raised.exception.detail)
+        self.assertEqual(self.applied, [])
+        self.assertEqual(self.manager.load_global_extras(), before)
+
+    async def test_apply_without_a_selected_output_is_refused(self):
+        with self.assertRaises(Exception) as raised:
+            await self.apply(self.Request(79.0), overview={"selected_output": None})
+        self.assertEqual(raised.exception.status_code, 409)
+        self.assertEqual(self.applied, [])
+
+    async def test_apply_keeps_the_calibration_of_every_other_output(self):
+        other = {"outputProfileId": "other-output", "requiredAdjustmentDb": -3.0, "measuredSplDb": 86.0,
+                 "createdAt": "2026-09-01T00:00:00+00:00"}
+        extras = self.manager.load_global_extras()
+        extras["loudness"]["params"]["calibrationProfiles"] = {"other-output": other}
+        self.manager.save_global_extras(extras)
+        result = await self.apply(self.Request(79.0))
+        profiles = self.applied[-1]["loudness"]["params"]["calibrationProfiles"]
+        self.assertEqual(sorted(profiles), ["dev", "other-output"])
+        self.assertEqual(profiles["other-output"]["requiredAdjustmentDb"], -3.0)
+        self.assertEqual(profiles["dev"]["requiredAdjustmentDb"], 4.0)
+        self.assertEqual(result["calibration"]["outputProfileId"], "dev")
+
+    async def test_apply_stores_a_usb_output_under_its_device_identity(self):
+        usb = "alsa_output.usb-Focusrite_Scarlett-00"
+        overview = {"output_mode": {"effective_output_key": f"{usb}.pro-output-0"},
+                    "selected_output": {"key": f"{usb}.pro-output-0", "target_label": "Scarlett"}}
+        result = await self.apply(self.Request(79.0, output_profile_id=f"{usb}.multichannel-output"), overview)
+        self.assertEqual(result["output_profile"], {"id": usb, "label": "Scarlett"})
+        self.assertEqual(list(self.applied[-1]["loudness"]["params"]["calibrationProfiles"]), [usb])
+        self.assertEqual(result["calibration"]["outputProfileId"], usb)
+
+    async def test_apply_for_another_output_leaves_the_current_outputs_work_point_alone(self):
+        await self.apply(self.Request(79.0))
+        saved = self.applied[-1]
+        self.manager.save_global_extras(saved)
+        self.manager.active_device_reader = lambda: "second"
+        self.assertEqual(self.manager.load_global_extras()["loudness"]["params"]["calibration"], {})
+        self.manager.active_device_reader = lambda: "dev"
+        self.assertEqual(self.manager.load_global_extras()["loudness"]["params"]["calibration"]["requiredAdjustmentDb"], 4.0)
 
 
 if __name__ == "__main__":

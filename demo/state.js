@@ -1763,6 +1763,8 @@
     }
 
     // ── SPL calibration state ───────────────────────────────────────────
+    // The demo has one output; a calibration belongs to it, like the product's per-output record.
+    const SPL_OUTPUT_PROFILE = Object.freeze({ id: 'demo-output-profile', label: 'Demo Output' });
     const spl = {
         noiseActive: false,
         operationActive: false,
@@ -1782,10 +1784,7 @@
             target_spl_db: spl.targetSplDb,
             noise_lufs: -23.0,
             meter_hint: 'C-weighted / Slow',
-            output_profile: {
-                id: 'demo-output-profile',
-                label: 'Demo Output',
-            },
+            output_profile: { ...SPL_OUTPUT_PROFILE },
             loudness: {
                 enabled: false,
                 params: {
@@ -1829,6 +1828,7 @@
             weighting: 'C',
             averaging_seconds: 3.0,
             level_drift_db: 0.05,
+            output_profile: { ...SPL_OUTPUT_PROFILE },
             microphone_model: spl.microphoneModel,
             serial_number: spl.serialNumber,
         };
@@ -1845,8 +1845,8 @@
         spl.operationActive = false;
         spl.measuredSplDb = measured;
         spl.calibration = {
-            outputProfileId: 'demo-output-profile',
-            outputProfileLabel: 'Demo Output',
+            outputProfileId: SPL_OUTPUT_PROFILE.id,
+            outputProfileLabel: SPL_OUTPUT_PROFILE.label,
             targetSplDb: spl.targetSplDb,
             measuredSplDb: measured,
             requiredAdjustmentDb: adjustment,
@@ -1862,6 +1862,7 @@
             required_adjustment_db: adjustment,
             calibrated,
             calibration: spl.calibration,
+            output_profile: { ...SPL_OUTPUT_PROFILE },
         };
     }
 
@@ -2004,6 +2005,7 @@
         mergeMeasurements,
         // spl calibration helpers (consumed by routes.js)
         spl,
+        SPL_OUTPUT_PROFILE,
         splCalibrationPayload,
         splMeasureAutomatic,
         splApplyCalibration,

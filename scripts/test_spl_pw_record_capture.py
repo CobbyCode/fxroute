@@ -235,7 +235,8 @@ def calibration_file(directory):
     return cal
 
 
-def main_test():
+@mock.patch.object(spl_calibration, "_spl_output_profile", return_value={"id": "dev", "label": "Dev"})
+def main_test(_output_profile):
     with tempfile.TemporaryDirectory() as directory:
         cal = calibration_file(directory)
 
@@ -321,6 +322,7 @@ def main_test():
         assert spawned["proc"].argv[spawned["proc"].argv.index("--sample-count") + 1] == "240000"
         assert spawned["proc"].terminated is False, "sample-count path must not terminate"
         assert result["status"] == "ok", result
+        assert result["output_profile"] == {"id": "dev", "label": "Dev"}, result
         print("sample-count path unchanged: ok")
 
     print("SPL pw-record capture variants: ok")

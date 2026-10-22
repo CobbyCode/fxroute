@@ -70,6 +70,25 @@ async function main() {
     assert.match(text(overview.overviewHtml(overview.summarize(null, extras({ measuredSplDb: 74, requiredAdjustmentDb: 9 }), null))),
         /SPL 74\.0 dB \+9\.0 dB$/);
 
+    // The extras carry the calibration of the output that renders. An output without a record of its own
+    // shows the default and names the outputs that are calibrated; a hostile name cannot reach the markup.
+    const others = (calibration, profiles) => ({ loudness: { params: { calibration, calibrationProfiles: profiles } } });
+    const profiles = {
+        'out-a': { outputProfileId: 'out-a', outputProfileLabel: 'Desk <Amp>', measuredSplDb: 74, requiredAdjustmentDb: 9 },
+        'out-b': { outputProfileId: 'out-b', outputProfileLabel: 'Living "Room"', measuredSplDb: 80.2, requiredAdjustmentDb: 2.8 },
+        'out-c': { outputProfileId: 'out-c', outputProfileLabel: 'No reading' },
+    };
+    const uncalibrated = overview.summarize(null, others({}, profiles), null).spl;
+    assert.deepEqual(uncalibrated, { db: 83, isDefault: true, offsetDb: null, otherOutputs: ['Desk <Amp>', 'Living "Room"'] });
+    const uncalibratedHtml = overview.overviewHtml(overview.summarize(null, others({}, profiles), null));
+    assert.match(uncalibratedHtml, /effects-cal-tag">default</);
+    assert.match(uncalibratedHtml, /not calibrated for this output, default reference \(calibrated: Desk &lt;Amp&gt;, Living &quot;Room&quot;\)/);
+    assert.doesNotMatch(uncalibratedHtml, /<Amp>|"Room"/);
+    assert.deepEqual(overview.summarize(null, others(profiles['out-b'], profiles), null).spl,
+        { db: 80.2, isDefault: false, offsetDb: 2.8 }, 'the output that renders shows its own value, not the others');
+    assert.doesNotMatch(overview.overviewHtml(overview.summarize(null, others(profiles['out-b'], profiles), null)), /calibrated: /);
+    assert.match(overview.overviewHtml(overview.summarize(null, extras({}), null)), /SPL Calibration: not calibrated, default reference/);
+
     // Rendering and the delay poll.
     const host = { innerHTML: '', textContent: '' };
     let writes = 0;
