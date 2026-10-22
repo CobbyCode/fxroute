@@ -197,8 +197,9 @@ class RemoteVolumePickupTranslator:
                     self.observe_activation()
                 return
             # Still the owner: the write was interrupted before it committed;
-            # keep the value pending so the drain retries it.
-            self._pending_value = value
+            # retry it unless a newer gesture is already pending.
+            if self._pending_value is None:
+                self._pending_value = value
             raise
         except Exception:
             # Absolute writes are idempotent: a failed write (or a failed
@@ -208,7 +209,8 @@ class RemoteVolumePickupTranslator:
                 if epoch == self._activation_epoch:
                     self.observe_activation()
                 return
-            self._pending_value = value
+            if self._pending_value is None:
+                self._pending_value = value
             raise
         finally:
             if not apply_task.done():
