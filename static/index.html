@@ -13,7 +13,7 @@
     <link rel="apple-touch-icon" sizes="180x180" href="/static/apple-touch-icon.png?v=0.9.12">
     <link rel="manifest" href="/static/site.webmanifest?v=0.9.12">
     <meta name="theme-color" content="#0b1120">
-    <link rel="stylesheet" href="/static/style.css?v=0.9.335">
+    <link rel="stylesheet" href="/static/style.css?v=0.9.336">
 </head>
 <body>
     <h1 class="visually-hidden">FXRoute</h1>
@@ -521,12 +521,16 @@
                         <div class="album-detail-meta detail-hero-meta">
                             <div class="album-detail-title-row detail-hero-title-row">
                                 <h2 id="playlist-detail-name" class="album-detail-name detail-hero-title"></h2>
+                                <button id="playlist-favorite-toggle" class="album-favorite-toggle active" type="button" aria-label="Delete playlist" data-tooltip="Delete playlist"><svg class="fav-heart" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg></button>
                             </div>
                             <p class="album-detail-artist">Playlist</p>
                             <p id="playlist-detail-count" class="album-detail-count"></p>
                             <div id="playlist-detail-info" class="album-detail-facts playlist-detail-info"></div>
                         </div>
-                        <button id="playlist-detail-back" class="album-detail-back" type="button" aria-label="Back">← Back</button>
+                        <div class="detail-hero-actions">
+                            <button id="playlist-detail-download" class="detail-hero-action" type="button" aria-label="Export playlist as M3U8" data-tooltip="Export playlist as M3U8"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/><path d="M12 15V3"/></svg></button>
+                            <button id="playlist-detail-back" class="album-detail-back" type="button" aria-label="Back">← Back</button>
+                        </div>
                     </div>
                     <div id="playlist-detail-tracks" class="album-detail-tracks tracks-list"></div>
                 </div>
@@ -2066,13 +2070,13 @@
     <script src="/static/measurement_spl_calibration.js?v=0.9.5"></script>
     <script src="/static/measurement_level_match.js?v=0.9.6"></script>
     <script src="/static/measurement_polarity_check.js?v=0.9.5"></script>
-    <script src="/static/library_ui.js?v=0.9.19"></script>
+    <script src="/static/library_ui.js?v=0.9.20"></script>
     <script src="/static/playback_core.js?v=0.9.10"></script>
     <script src="/static/playback_ui.js?v=0.9.10"></script>
     <script src="/static/streaming_runtime.js?v=0.9.2"></script>
     <script src="/static/av_sync.js?v=0.9.2"></script>
     <script src="/static/calibration_overview.js?v=0.9.3"></script>
-    <script src="/static/app.js?v=0.9.325"></script>
-    <script src="/static/streaming.js?v=0.9.89"></script>
+    <script src="/static/app.js?v=0.9.326"></script>
+    <script src="/static/streaming.js?v=0.9.90"></script>
 </body>
 </html>

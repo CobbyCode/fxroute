@@ -1258,10 +1258,21 @@
         });
     }
 
+    // Un-hearting a TIDAL playlist removes it from the Library Playlists, so
+    // it asks first like deleting a local playlist does.
+    function confirmTidalPlaylistRemoval(idStr) {
+        const item = tidalLibraryItems('playlists').find((entry) => String(entry.id) === idStr);
+        const name = (item && item.name) || (String(state.tidal.detailId) === idStr ? state.tidal.detailTitle : '');
+        return confirm(name
+            ? 'Remove playlist "' + name + '" from TIDAL favorites?'
+            : 'Remove this playlist from TIDAL favorites?');
+    }
+
     async function toggleTidalFavorite(type, id) {
         const idStr = String(id);
         const current = isTidalFavorite(type, idStr);
         const next = !current;
+        if (type === 'playlists' && current && !confirmTidalPlaylistRemoval(idStr)) return;
         try {
             const resp = await fetch('/api/streaming/tidal/' + type + '/' + encodeURIComponent(idStr) + '/favorite', {
                 method: 'POST',

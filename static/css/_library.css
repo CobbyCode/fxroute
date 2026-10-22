@@ -614,6 +614,49 @@
     backdrop-filter: blur(10px);
     -webkit-backdrop-filter: blur(10px);
 }
+/* Header actions beside Back (playlist export). The group takes the back
+   cell and Back stays its outer item, so Back keeps its lone position. */
+.album-detail--hero .detail-hero-header .detail-hero-actions {
+    grid-area: back;
+    align-self: start;
+    justify-self: end;
+    display: flex;
+    align-items: flex-start;
+    gap: 0.5rem;
+}
+.album-detail--hero .detail-hero-header .detail-hero-action {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 38px;
+    height: 38px;
+    padding: 0;
+    border: 1px solid rgba(255, 255, 255, 0.13);
+    border-radius: 7px;
+    background: rgba(7, 10, 13, 0.34);
+    color: var(--text-secondary);
+    cursor: pointer;
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    transition: color 0.15s var(--ease), border-color 0.15s var(--ease), background 0.15s var(--ease), transform 0.1s var(--ease);
+    -webkit-tap-highlight-color: transparent;
+}
+.album-detail--hero .detail-hero-header .detail-hero-action svg {
+    width: 18px;
+    height: 18px;
+}
+.album-detail--hero .detail-hero-header .detail-hero-action:hover {
+    color: var(--text-primary);
+    border-color: rgba(255, 255, 255, 0.16);
+    background: rgba(255, 255, 255, 0.04);
+}
+.album-detail--hero .detail-hero-header .detail-hero-action:active {
+    transform: translateY(1px);
+}
+.album-detail--hero .detail-hero-header .detail-hero-action:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}
 .streaming-detail--hero #tidal-detail-play {
     min-height: 42px;
     margin-top: 0.25rem;
@@ -939,11 +982,6 @@
     color: var(--text-muted);
     font-size: 0.84rem;
 }
-.playlist-item {
-    position: relative;
-}
-.playlist-download-btn,
-.playlist-delete-btn,
 .folder-action-btn--delete {
     flex: 0 0 auto;
     align-self: center;
@@ -962,19 +1000,11 @@
     padding: 0;
     transition: color .12s var(--ease), border-color .12s var(--ease), background .12s var(--ease);
 }
-.playlist-download-btn:hover {
-    color: var(--accent);
-    border-color: var(--accent);
-    background: var(--accent-dim);
-}
-.playlist-delete-btn:hover,
 .folder-action-btn--delete:hover {
     color: var(--danger);
     border-color: var(--danger);
     background: var(--danger-dim);
 }
-.playlist-download-btn:focus-visible,
-.playlist-delete-btn:focus-visible,
 .folder-action-btn--delete:focus-visible {
     outline: 2px solid var(--accent);
     outline-offset: 2px;
@@ -1152,8 +1182,7 @@
     font-size: 0.78rem;
     color: var(--text-muted);
 }
-#tracks-list .folder-item,
-#tracks-list .playlist-item {
+#tracks-list .folder-item {
     align-items: center;
 }
 #tracks-list .folder-actions {

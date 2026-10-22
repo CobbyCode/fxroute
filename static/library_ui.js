@@ -708,7 +708,6 @@ function renderTracks() {
     deps.getElements().tracksList.classList.remove('hidden');
     const allTracks = deps.getState().library.tracks || [];
     const filteredTracks = getFilteredTracks();
-    const filteredPlaylists = getFilteredPlaylists();
     const validSelectedIds = allTracks.length > 0
         ? deps.getState().library.selectedTrackIds.filter(id => allTracks.some(track => track.id === id))
         : deps.getState().library.selectedTrackIds;
@@ -720,14 +719,12 @@ function renderTracks() {
     // Tracks lists TIDAL favorite tracks after the local ones; Folders stay local.
     const tidalTracks = deps.getState().library.viewMode === 'tracks' ? tidalLibraryFavorites('tracks') : [];
 
-    // Playlists count as library content: an empty track list must not wipe
-    // them, because a running scan (or a library whose first scan is still
-    // filling the cache) would otherwise read as "nothing here". The shared
-    // scan status renders above the list until the scan finished.
-    if (allTracks.length === 0 && filteredPlaylists.length === 0 && tidalTracks.length === 0) {
+    // Playlists live in their own tab. The shared scan status renders above
+    // the list until the scan finished.
+    if (allTracks.length === 0 && tidalTracks.length === 0) {
         window.FXRouteContentState.set(loadingEl, scanText ? 'loading' : 'empty',
             scanText || (hasSearch
-                ? 'No matching tracks or playlists. Try a broader search.'
+                ? 'No matching tracks. Try a broader search.'
                 : 'No tracks yet. Import a file or URL to get started.'));
         deps.getElements().tracksList.innerHTML = '';
         updateLibrarySelectionUI();
@@ -741,19 +738,15 @@ function renderTracks() {
 
     const folderMode = deps.getState().library.viewMode === 'folders';
     const childFolders = folderMode ? getFolderChildren() : [];
-    if (filteredTracks.length === 0 && childFolders.length === 0 && filteredPlaylists.length === 0 && tidalTracks.length === 0) {
+    if (filteredTracks.length === 0 && childFolders.length === 0 && tidalTracks.length === 0) {
         window.FXRouteContentState.set(loadingEl, 'empty',
-            hasSearch ? 'No matching tracks or playlists. Try a broader search.' : 'No tracks in this folder.');
+            hasSearch ? 'No matching tracks. Try a broader search.' : 'No tracks in this folder.');
         deps.getElements().tracksList.innerHTML = '';
         updateLibrarySelectionUI();
         return;
     }
 
     let html = '';
-
-    if (!folderMode && filteredPlaylists.length > 0) {
-        html += filteredPlaylists.map(localPlaylistRowHtml).join('');
-    }
 
     if (folderMode) {
         html += childFolders.map(folder => `<div class="track-item folder-item" data-folder="${deps.escapeHtml(folder.path)}">
@@ -776,19 +769,6 @@ function renderTracks() {
 
     bindTrackListEvents(deps.getElements().tracksList);
     updateLibrarySelectionUI();
-}
-
-function localPlaylistRowHtml(playlist) {
-    const classes = ['track-item', 'playlist-item'];
-    return `<div class="${classes.join(' ')}" data-playlist-id="${deps.escapeHtml(playlist.id)}">
-        <button class="track-play" data-playlist-id="${deps.escapeHtml(playlist.id)}" type="button" data-tooltip="Play ${deps.escapeHtml(playlist.name)}" aria-label="Play playlist ${deps.escapeHtml(playlist.name)}">▶</button>
-        <div class="track-info">
-            <div class="track-title">${deps.escapeHtml(playlist.name)}</div>
-            <div class="track-artist track-sub">${playlistHasTidal(playlist) ? deps.sourceGlyphHtml('tidal') : ''}${playlist.track_count} track${playlist.track_count === 1 ? '' : 's'}</div>
-        </div>
-        <button class="playlist-download-btn" data-playlist-download="${deps.escapeHtml(playlist.id)}" type="button" aria-label="Export playlist as M3U8" data-tooltip="Export playlist as M3U8">⬇</button>
-        <button class="playlist-delete-btn" data-playlist-delete="${deps.escapeHtml(playlist.id)}" type="button" data-tooltip="Delete playlist" aria-label="Delete playlist"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M10 11v6"/><path d="M14 11v6"/></svg></button>
-    </div>`;
 }
 
 function localTrackRowHtml(track, isSelected, folderMode) {
@@ -838,13 +818,6 @@ function bindTrackListEvents(list) {
     });
     bindTrackFavoriteRowButtons(list);
 
-    list.querySelectorAll('.track-play[data-playlist-id]').forEach(item => {
-        item.addEventListener('click', async (e) => {
-            e.stopPropagation();
-            await loadPlaylistById(item.dataset.playlistId, { autoplay: true });
-        });
-    });
-
     list.querySelectorAll('.track-add[data-track-add]').forEach(btn => {
         btn.addEventListener('click', (e) => {
             e.stopPropagation();
@@ -853,8 +826,8 @@ function bindTrackListEvents(list) {
     });
 
     // Whole-row clicks start the row action like the album-detail rows do,
-    // while selection, favorite and folder/playlist/detail actions keep their
-    // own stopPropagation handlers.
+    // while selection, favorite and folder actions keep their own
+    // stopPropagation handlers.
     list.querySelectorAll('.track-item[data-track-id]').forEach(row => {
         row.addEventListener('click', (e) => {
             if (e.target.closest('.track-add, .track-row-favorite, .track-fav, .track-play')) return;
@@ -865,31 +838,6 @@ function bindTrackListEvents(list) {
         row.addEventListener('click', (e) => {
             if (e.target.closest('.folder-actions, .track-play')) return;
             setLibraryFolder(row.dataset.folder || '');
-        });
-    });
-    list.querySelectorAll('.playlist-item[data-playlist-id]').forEach(row => {
-        row.addEventListener('click', (e) => {
-            if (e.target.closest('.playlist-download-btn, .playlist-delete-btn, .track-play')) return;
-            const rowId = row.dataset.playlistId;
-            if (rowId) void loadPlaylistById(rowId, { autoplay: true });
-        });
-    });
-
-    list.querySelectorAll('.playlist-download-btn[data-playlist-download]').forEach(btn => {
-        btn.addEventListener('click', async (e) => {
-            e.stopPropagation();
-            const playlistId = btn.dataset.playlistDownload;
-            await downloadPlaylistById(playlistId);
-        });
-    });
-    list.querySelectorAll('.playlist-delete-btn[data-playlist-delete]').forEach(btn => {
-        btn.addEventListener('click', (e) => {
-            e.stopPropagation();
-            const playlistId = btn.dataset.playlistDelete;
-            const playlist = deps.getState().playlists.find(p => p.id === playlistId);
-            if (!playlist) return;
-            if (!confirm(`Delete playlist "${playlist.name}"?`)) return;
-            deletePlaylistById(playlistId);
         });
     });
 }
@@ -1024,7 +972,11 @@ function renderAlbums() {
     updatePlaylistSaveRowVisibility();
     if (deps.getElements().libraryFolderPath) deps.getElements().libraryFolderPath.classList.add('hidden');
 
-    if (!deps.getState().library.albumsLoaded) {
+    if (!deps.getState().library.albumsLoaded && showPlaylists) {
+        // Playlists come from their own list: missing albums (a running scan)
+        // only cost the covers, so an existing playlist stays visible.
+        if (!deps.getState().library.albumsError) fetchAlbums();
+    } else if (!deps.getState().library.albumsLoaded) {
         // A failed fetch reports an error state instead of looping: the view
         // only retries on explicit navigation or library refresh.
         if (deps.getState().library.albumsError) {
@@ -1035,7 +987,7 @@ function renderAlbums() {
         // Albums not yet loaded — show loading state and trigger fetch. A
         // running scan reports its progress here for the same reason as in
         // the tracks view: the albums arrive when it is done.
-        window.FXRouteContentState.set(loadingEl, 'loading', formatLibraryScanStatus() || (showPlaylists ? 'Loading playlists…' : 'Loading albums…'));
+        window.FXRouteContentState.set(loadingEl, 'loading', formatLibraryScanStatus() || 'Loading albums…');
         deps.getElements().albumsGrid.classList.add('hidden');
         fetchAlbums();
         return;
@@ -1062,7 +1014,10 @@ function renderAlbums() {
         deps.getElements().albumsGrid.classList.remove('hidden');
         return;
     }
-    window.FXRouteContentState.hide(loadingEl);
+    // Like the tracks view, Playlists keeps the scan status above its cards.
+    const scanText = showPlaylists ? formatLibraryScanStatus() : '';
+    if (scanText) window.FXRouteContentState.set(loadingEl, 'loading', scanText);
+    else window.FXRouteContentState.hide(loadingEl);
 
     const smartHtml = showPlaylists ? `
         <div class="album-card album-card-smart" data-smart-favorite="top40" role="button" tabindex="0">
@@ -1245,19 +1200,22 @@ function bindAlbumGridCards(grid) {
             toggleAlbumCardFavorite(btn.dataset.favId);
         });
     });
-    // Local playlist heart: always active (own playlist); heart-off deletes
-    // the playlist via the existing delete path.
     grid.querySelectorAll('[data-playlist-fav]').forEach((btn) => {
         btn.addEventListener('click', (event) => {
             event.preventDefault();
             event.stopPropagation();
-            const playlistId = btn.dataset.playlistFav;
-            const playlist = deps.getState().playlists.find(p => p.id === playlistId);
-            if (!playlist) return;
-            if (!confirm(`Delete playlist "${playlist.name}"?`)) return;
-            deletePlaylistById(playlistId);
+            confirmDeletePlaylist(btn.dataset.playlistFav);
         });
     });
+}
+
+// Local playlist heart (card and detail): always active (own playlist);
+// heart-off deletes the playlist via the existing delete path.
+function confirmDeletePlaylist(playlistId) {
+    const playlist = deps.getState().playlists.find(p => p.id === playlistId);
+    if (!playlist) return;
+    if (!confirm(`Delete playlist "${playlist.name}"?`)) return;
+    deletePlaylistById(playlistId);
 }
 
 // -- Artists -------------------------------------------------------------------
@@ -3560,6 +3518,9 @@ async function deletePlaylistById(playlistId) {
         const resp = await fetch(`/api/playlists/${encodeURIComponent(playlistId)}`, { method: 'DELETE' });
         const data = await resp.json().catch(() => ({}));
         if (!resp.ok) throw new Error(data.detail || 'Delete failed');
+        // Deleted from its own detail: the refresh returns to the Playlists.
+        const library = deps.getState().library;
+        if (library.playlistDetail?.playlist?.id === playlistId) library.playlistDetail = null;
         await Promise.all([fetchPlaylists(), fetchTracks()]);
         // renderTracks is called by both fetchPlaylists() and fetchTracks()
         deps.showToast(`Deleted: ${playlist.name}`, 'success');
@@ -4097,6 +4058,19 @@ function setupLibraryActions() {
     }
     if (deps.getElements().playlistDetailBack) {
         deps.getElements().playlistDetailBack.addEventListener('click', () => closePlaylistDetail());
+    }
+    const openPlaylistId = () => deps.getState().library.playlistDetail?.playlist?.id;
+    if (deps.getElements().playlistDetailDownload) {
+        deps.getElements().playlistDetailDownload.addEventListener('click', () => {
+            const playlistId = openPlaylistId();
+            if (playlistId) void downloadPlaylistById(playlistId);
+        });
+    }
+    if (deps.getElements().playlistFavoriteToggle) {
+        deps.getElements().playlistFavoriteToggle.addEventListener('click', () => {
+            const playlistId = openPlaylistId();
+            if (playlistId) confirmDeletePlaylist(playlistId);
+        });
     }
     deps.getElements().toggleImportBtn.addEventListener('click', () => {
         const shouldOpen = deps.getElements().libraryImportPanel.classList.contains('hidden');

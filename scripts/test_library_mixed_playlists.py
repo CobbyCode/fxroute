@@ -7,11 +7,12 @@ Covers:
 * a mixed selection saves one local playlist in the order the tracks were
   added (local ids and ``tidal:<id>`` references interleaved) with the
   references' display data, and both selections end;
-* such a playlist keeps its order, carries the TIDAL glyph on its card and row
-  and plays as one queue (``queue_refs``) from a local or a TIDAL row;
+* such a playlist keeps its order, carries the TIDAL glyph on its card (the
+  Tracks tab lists no playlist rows) and plays as one queue (``queue_refs``)
+  from a local or a TIDAL row;
 * what the server had to leave out is told to the user ("Starting 2/3 ...");
 * Favorite Tracks plays its local and TIDAL tracks as one queue;
-* the M3U8 export names the TIDAL titles it leaves out;
+* the M3U8 export of the playlist detail names the TIDAL titles it leaves out;
 * not connected: TIDAL entries stay listed (dimmed, from the saved data) and a
   server refusal reads "Connect TIDAL ...";
 * TIDAL not installed: the entries stay listed but cannot be played.
@@ -83,6 +84,7 @@ def _stub(tidal_mode, play_status=200):
 window.__plays = [];
 window.__saved = [];
 window.__summary = null;
+window.__exports = [];
 window.__playlists = {json.dumps([ROAD_MIX, LOCAL_MIX])};
 const realFetch = window.fetch.bind(window);
 window.fetch = (url, opts) => {{
@@ -103,6 +105,7 @@ window.fetch = (url, opts) => {{
     }}
     if (u.endsWith('/api/playlists')) return json(window.__playlists);
     if (/\\/api\\/playlists\\/[^/]+\\/export$/.test(u)) {{
+        window.__exports.push(u);
         return Promise.resolve(new Response('#EXTM3U\\n', {{
             status: 200,
             headers: {{ 'Content-Type': 'audio/x-mpegurl', 'Content-Disposition': 'attachment; filename="Road-Mix.m3u8"', 'X-FXRoute-Skipped-Tidal': '1' }},
@@ -201,9 +204,8 @@ def _run():
             check("saving ends both selections",
                   page.locator("#tracks-list .track-add.is-active").count() == 0
                   and page.locator("#tracks-list .streaming-add.is-active").count() == 0)
-            check("the playlist list shows the new mixed playlist with the TIDAL glyph",
-                  page.locator('.playlist-item[data-playlist-id="saved-1"] .source-glyph--tidal').count() == 1
-                  and page.locator('.playlist-item[data-playlist-id="local-mix"] .source-glyph').count() == 0)
+            check("the Tracks tab lists no playlist rows",
+                  page.locator("#tracks-list [data-playlist-id]").count() == 0)
 
             # Local and TIDAL tracks interleave: the order of adding wins, not
             # "local first".
@@ -226,6 +228,7 @@ def _run():
             page.wait_for_selector('#albums-grid .playlist-card[data-playlist-id="road-mix"]')
             check("a mixed playlist card carries the TIDAL glyph",
                   page.locator('.playlist-card[data-playlist-id="road-mix"] .source-glyph--tidal').count() == 1
+                  and page.locator('.playlist-card[data-playlist-id="saved-1"] .source-glyph--tidal').count() == 1
                   and page.locator('.playlist-card[data-playlist-id="local-mix"] .source-glyph').count() == 0)
             page.click('.playlist-card[data-playlist-id="road-mix"]')
             page.wait_for_selector("#playlist-detail:not(.hidden) #playlist-detail-tracks .streaming-result")
@@ -266,10 +269,11 @@ def _run():
                   any(text == "Starting 2/3 tracks — TIDAL is not connected" for text in _toasts(page)))
             page.evaluate("window.__summary = null")
 
-            # The M3U8 export says what it leaves out.
-            page.click("#library-view-tracks")
-            page.wait_for_selector('.playlist-item[data-playlist-id="road-mix"] .playlist-download-btn')
-            page.click('.playlist-item[data-playlist-id="road-mix"] .playlist-download-btn')
+            # The M3U8 export of the open detail says what it leaves out.
+            page.click("#playlist-detail-download")
+            page.wait_for_function("window.__exports.length === 1")
+            check("the detail export requests the open playlist",
+                  page.evaluate("window.__exports[0]").endswith("/api/playlists/road-mix/export"))
             page.wait_for_function("Array.from(document.querySelectorAll('.toast')).some(t => t.textContent.includes('not included'))")
             check("the export toast names the omitted TIDAL tracks",
                   any("1 TIDAL track not included" in text for text in _toasts(page)))

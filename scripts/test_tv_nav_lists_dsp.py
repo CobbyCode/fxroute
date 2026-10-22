@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: AGPL-3.0-only
-"""Remote navigation in track lists (album detail) and DSP effect groups.
+"""Remote navigation in track lists (album and playlist detail) and DSP effect groups.
 
 Track rows: Up/Down step between the tracks' Play buttons, Left/Right stay
 inside one track (Play, Plus, heart), entering a list lands on the first
@@ -166,23 +166,27 @@ def run():
                 assert page.evaluate("document.activeElement.classList.contains('tv-nav-focus')")
                 assert is_play(press(page, 'ArrowDown'), 'trk2')
 
-            def playlist_rows(page):
+            def playlist_detail_header(page):
                 page.evaluate("""() => {
                     switchTab('library');
-                    state.playlists = [{id: 'pl0', name: 'List', track_count: 2}, {id: 'pl1', name: 'Other', track_count: 1}];
-                    Object.assign(state.library, {viewMode: 'tracks', tracks: [], searchQuery: '',
-                        albumDetail: null, playlistDetail: null});
-                    FXRouteLibraryUI.renderLibraryView();
+                    state.playlists = [{id: 'pl0', name: 'List', track_ids: ['trk0', 'trk1'], track_count: 2}];
+                    Object.assign(state.library, {viewMode: 'playlists', albumsLoaded: true, albums: [],
+                        tracks: ['trk0', 'trk1'].map(id => ({id, title: id, artist: 'Artist', duration: 60, favorite: false})),
+                        searchQuery: '', albumDetail: null, playlistDetail: null});
+                    FXRouteLibraryUI.openPlaylistDetail('pl0');
                 }""")
-                page.wait_for_selector('#tracks-list .playlist-item:nth-child(2) .track-play')
-                page.focus('#tracks-list .playlist-item:nth-child(1) .track-play')
-                state = press(page, 'ArrowRight')
-                assert page.evaluate("!!document.activeElement.closest('.playlist-item[data-playlist-id=pl0]')"), \
-                    f'Right must stay in the playlist row: {state}'
-                page.focus('#tracks-list .playlist-item:nth-child(1) .playlist-delete-btn')
-                press(page, 'ArrowDown')
-                assert page.evaluate("document.activeElement.matches('.playlist-item[data-playlist-id=pl1] .track-play')"), \
-                    'Down must land on the next row Play'
+                page.wait_for_selector('#playlist-detail-tracks .track-item:nth-child(2) .track-play')
+                page.focus('#playlist-detail-back')
+                assert is_play(press(page, 'ArrowDown'), 'trk0'), 'Down from Back must enter on the first Play'
+                page.focus('#playlist-detail-back')
+                assert press(page, 'ArrowLeft')['id'] == 'playlist-detail-download', 'Left from Back reaches the export'
+                assert press(page, 'ArrowRight')['id'] == 'playlist-detail-back'
+                page.focus('#playlist-detail-download')
+                assert press(page, 'ArrowLeft')['id'] == 'playlist-favorite-toggle', 'Left from the export reaches the heart'
+                # Backspace still means Back, not the export left of it.
+                page.focus('#playlist-detail-tracks .track-item:nth-child(1) .track-play')
+                page.keyboard.press('Backspace')
+                page.wait_for_selector('#playlist-detail', state='hidden')
 
             UPMIXER_ORDER = ['effects-upmixer-enabled', 'effects-upmixer-mode', 'effects-upmixer-fft-size',
                              'minus', 'effects-upmixer-surround', 'plus']
@@ -254,7 +258,7 @@ def run():
             scenario('album detail rows step on Play buttons', album_rows)
             scenario('detail Back stays out of the track navigation', back_button)
             scenario('track heart keeps focus through its request', heart_keeps_focus)
-            scenario('playlist rows keep Left/Right inside the row', playlist_rows)
+            scenario('playlist detail header: Back, export and heart', playlist_detail_header)
             scenario('upmixer Left retraces Right', upmixer_symmetry)
             scenario('upmixer Left never jumps into Loudness', upmixer_no_group_jump)
             scenario('DSP Left retraces Right across cards', trail_across_cards)

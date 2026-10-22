@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Library empty-state contract while a library scan is running.
 
-A scan fills the library cache over seconds. The Albums and the
-Tracks/Playlists surfaces must not report "No albums found" / "No tracks yet"
-while it runs: they show the shared library scan status (same source and
-progress line the tracks view already used) and only fall back to the empty
-message once the scan finished and the library really has no content. An
-existing playlist is content, so an empty track list must not wipe it.
+A scan fills the library cache over seconds. The Albums and Tracks surfaces
+must not report "No albums found" / "No tracks yet" while it runs: they show
+the shared library scan status (same source and progress line the tracks view
+already used) and only fall back to the empty message once the scan finished
+and the library really has no content. Playlists live in their own tab, which
+keeps an existing playlist while the track list is still empty.
 
 Runs the real rendered page (static server + stubbed library API) in headless
 Chromium. Skips cleanly when playwright or a browser is not available.
@@ -128,19 +128,26 @@ def _run():
                 empty_samples.append("content-state--empty" in content_state()["cls"])
             check("scanning: no empty state at any sample while the scan runs", not any(empty_samples))
 
-            # --- during the scan: tracks keep the scan status and the playlist
+            # --- during the scan: tracks keep the scan status, no playlist rows
             page.evaluate("document.getElementById('library-view-tracks').click()")
             page.wait_for_timeout(1600)
             tracks = content_state()
             check("scanning: tracks view keeps the shared scan status", "Scanning library" in tracks["text"])
             check(
-                "scanning: an empty track list does not wipe the existing playlist",
-                page.locator('#tracks-list .playlist-item[data-playlist-id="pl-1"]').count() == 1,
+                "scanning: tracks view lists no playlist rows",
+                page.locator('#tracks-list [data-playlist-id]').count() == 0,
             )
             check(
                 "scanning: tracks view does not claim the library is empty",
                 "No tracks yet" not in tracks["text"],
             )
+            page.evaluate("document.getElementById('library-view-playlists').click()")
+            page.wait_for_timeout(600)
+            check(
+                "scanning: an empty track list does not wipe the existing playlist",
+                page.locator('#albums-grid:not(.hidden) .playlist-card[data-playlist-id="pl-1"]').count() == 1,
+            )
+            check("scanning: playlists view keeps the shared scan status", "Scanning library" in content_state()["text"])
 
             # --- scan finished, library really empty: now the empty state is due
             page.evaluate("document.getElementById('library-view-albums').click()")

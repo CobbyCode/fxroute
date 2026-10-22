@@ -1156,6 +1156,8 @@ const elements = {
     albumDiscover: document.getElementById('album-discover'),
     playlistDetail: document.getElementById('playlist-detail'),
     playlistDetailBack: document.getElementById('playlist-detail-back'),
+    playlistDetailDownload: document.getElementById('playlist-detail-download'),
+    playlistFavoriteToggle: document.getElementById('playlist-favorite-toggle'),
     playlistDetailCover: document.getElementById('playlist-detail-cover'),
     playlistDetailBackdrop: document.getElementById('playlist-detail-backdrop'),
     playlistDetailName: document.getElementById('playlist-detail-name'),

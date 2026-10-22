@@ -2090,6 +2090,11 @@
     .streaming-detail--hero .detail-hero-header .album-detail-back {
         justify-self: start;
     }
+    /* Back sits at the left edge here, so the actions follow on its right. */
+    .album-detail--hero .detail-hero-header .detail-hero-actions {
+        justify-self: start;
+        flex-direction: row-reverse;
+    }
     .streaming-detail--hero #tidal-detail-play {
         width: 100%;
     }
