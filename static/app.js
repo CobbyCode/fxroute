@@ -6,8 +6,10 @@
 const CONFIG = {
     wsUrl: null, // will be set dynamically
     reconnectInterval: 3000,
+    maxReconnectInterval: 30000,
+    wsConnectTimeout: 15000,
+    wsHeartbeatInterval: 25000,
     offlineIndicatorDelay: 1500,
-    maxReconnectAttempts: 10,
 };
 const MeasurementDsp = window.FXRouteMeasurementDsp || {};
 const HybridMeasurement = window.FXRouteHybridMeasurement || {};
@@ -1621,26 +1623,73 @@ function setMeasurementSweepMenuOpen(shouldOpen) {
 function setupWebSocket() {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     CONFIG.wsUrl = `${protocol}//${window.location.host}/ws`;
+    window.addEventListener('online', connectWebSocket);
+    document.addEventListener('visibilitychange', () => {
+        if (!document.hidden) {
+            if (state.wsConnected) void resyncAfterReconnect();
+            connectWebSocket();
+        }
+    });
     connectWebSocket();
 }
 function connectWebSocket() {
-    if (reconnectAttempts >= CONFIG.maxReconnectAttempts) {
-        showToast('WebSocket reconnection failed. Please refresh.', 'error');
+    if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
         return;
     }
     if (reconnectTimer) {
         clearTimeout(reconnectTimer);
         reconnectTimer = null;
     }
-    if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
+    const serial = ++wsConnectSerial;
+    let socket;
+    try {
+        socket = new WebSocket(CONFIG.wsUrl);
+    } catch (err) {
+        console.error('WebSocket connection failed:', err);
+        scheduleOfflineIndicator();
+        PlaybackCore.startMetadataPolling();
+        scheduleReconnect();
         return;
     }
-    const serial = ++wsConnectSerial;
-    const socket = new WebSocket(CONFIG.wsUrl);
     ws = socket;
+    let awaitingPong = false;
+    const isCurrent = () => serial === wsConnectSerial && ws === socket;
+    const disconnect = () => {
+        if (!isCurrent()) return;
+        clearTimeout(watchdogTimer);
+        ws = null;
+        state.wsConnected = false;
+        scheduleOfflineIndicator();
+        PlaybackCore.stopPeakStatusPolling();
+        PlaybackCore.startMetadataPolling();
+        scheduleReconnect();
+    };
+    const closeUnresponsiveSocket = () => {
+        if (!isCurrent()) return;
+        // Do not wait for onclose: a half-open transport can delay it indefinitely.
+        disconnect();
+        socket.close();
+    };
+    const heartbeat = () => {
+        if (!isCurrent()) return;
+        if (awaitingPong) {
+            closeUnresponsiveSocket();
+            return;
+        }
+        awaitingPong = true;
+        try {
+            socket.send('ping'); // The existing server replies with {type: 'pong'}.
+            watchdogTimer = setTimeout(heartbeat, CONFIG.wsHeartbeatInterval);
+        } catch (err) {
+            closeUnresponsiveSocket();
+        }
+    };
+    let watchdogTimer = setTimeout(closeUnresponsiveSocket, CONFIG.wsConnectTimeout);
     socket.onopen = () => {
-        if (serial !== wsConnectSerial || ws !== socket) return;
+        if (!isCurrent()) return;
         console.log('WebSocket connected');
+        clearTimeout(watchdogTimer);
+        watchdogTimer = setTimeout(heartbeat, CONFIG.wsHeartbeatInterval);
         state.wsConnected = true;
         reconnectAttempts = 0;
         if (offlineIndicatorTimer) {
@@ -1651,30 +1700,26 @@ function connectWebSocket() {
         elements.offlineIndicator.classList.add('hidden');
         PlaybackCore.stopMetadataPolling();
         PlaybackCore.startPeakStatusPolling();
-        void PlaybackCore.resyncPlaybackAfterReconnect();
-        // Source pushes sent while the socket was down or not yet ready are
-        // lost; the revision check keeps a newer push that lands first.
-        void fetchAudioSourceOverview();
+        void resyncAfterReconnect();
         if (isMeasurementPanelOpen()) void MeasurementFlows.recoverAutoSubJob();
     };
     socket.onclose = (event) => {
-        if (ws === socket) ws = null;
         console.log('WebSocket disconnected', { code: event.code, reason: event.reason, wasClean: event.wasClean, serial });
-        if (serial !== wsConnectSerial) return;
-        state.wsConnected = false;
-        scheduleOfflineIndicator();
-        PlaybackCore.stopPeakStatusPolling();
-        PlaybackCore.startMetadataPolling();
-        scheduleReconnect();
+        disconnect();
     };
     socket.onerror = (err) => {
-        if (serial !== wsConnectSerial) return;
+        if (!isCurrent()) return;
         console.error('WebSocket error:', err);
+        closeUnresponsiveSocket();
     };
     socket.onmessage = (event) => {
-        if (serial !== wsConnectSerial) return;
+        if (!isCurrent()) return;
         try {
             const message = JSON.parse(event.data);
+            if (message.type === 'pong') {
+                awaitingPong = false;
+                return;
+            }
             handleWebSocketMessage(message);
         } catch (e) {
             console.error('Failed to parse WS message:', e);
@@ -1683,13 +1728,31 @@ function connectWebSocket() {
 }
 function scheduleReconnect() {
     if (reconnectTimer) return;
-    const delay = reconnectAttempts === 0 ? 0 : CONFIG.reconnectInterval;
+    const delay = Math.min(CONFIG.reconnectInterval * (2 ** reconnectAttempts), CONFIG.maxReconnectInterval);
     reconnectAttempts++;
     console.log(`Reconnecting in ${delay}ms (attempt ${reconnectAttempts})`);
     reconnectTimer = setTimeout(() => {
         reconnectTimer = null;
         connectWebSocket();
     }, delay);
+}
+async function resyncAfterReconnect() {
+    // The server init only includes playback/providers; recover pushes missed
+    // during downtime through the same read APIs used by initial loading.
+    // Isolate failures so one unavailable subsystem cannot block the others.
+    const refreshes = [
+        () => PlaybackCore.resyncPlaybackAfterReconnect(),
+        () => fetchAudioSourceOverview(),
+        () => EffectsUI.fetchEffects(),
+        () => LibraryUI.fetchTracks(), // Also reloads scan status and albums.
+        () => LibraryUI.fetchPlaylists(),
+        () => LibraryUI.fetchDownloadStatus(),
+        () => radioModule.fetchStations(),
+        () => fetchAudioOutputOverview(),
+        () => fetchOutputSystemCatalog(true),
+        () => window.FXRouteSrcSettings.refresh(),
+    ];
+    await Promise.allSettled(refreshes.map(refresh => Promise.resolve().then(refresh)));
 }
 function scheduleOfflineIndicator() {
     if (offlineIndicatorTimer) return;
