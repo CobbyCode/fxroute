@@ -447,6 +447,11 @@ static float run_biquad(biquad *b, float value) {
     float output = value * b->b0 + b->z1;
     b->z1 = value * b->b1 - b->a1 * output + b->z2;
     b->z2 = value * b->b2 - b->a2 * output;
+    /* A bad sample must not poison IIR history or downstream filters. */
+    if (!isfinite(output) || !isfinite(b->z1) || !isfinite(b->z2)) {
+        b->z1 = b->z2 = 0.0f;
+        return 0.0f;
+    }
     /* Idle states stall in denormals, which slows every sample on x86. */
     if (fabsf(b->z1) < 1e-30f && fabsf(b->z2) < 1e-30f) b->z1 = b->z2 = 0.0f;
     return output;
