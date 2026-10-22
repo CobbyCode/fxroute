@@ -41,7 +41,7 @@ window.fetch = (url, opts = {}) => {
 LIBRARY_SETUP = """() => {
     switchTab('library');
     Object.assign(state.library, {viewMode:'albums', albumsLoaded:true,
-        tracks:[], showFavoriteAlbums:false, searchQuery:'', albumDetail:null, playlistDetail:null,
+        tracks:[], searchQuery:'', albumDetail:null, playlistDetail:null,
         albums:Array.from({length:8},(_,i)=>({id:'nav'+i,name:'Album '+i,artist:'Artist',favorite:false}))});
     FXRouteLibraryUI.renderAlbums();
 }"""
@@ -50,7 +50,7 @@ LIBRARY_SETUP = """() => {
 TIDAL_SETUP = """async () => {
     switchTab('library');
     Object.assign(state.library, {viewMode:'albums', albumsLoaded:true,
-        tracks:[], showFavoriteAlbums:false, searchQuery:'', albumDetail:null, playlistDetail:null, albums:[]});
+        tracks:[], searchQuery:'', albumDetail:null, playlistDetail:null, albums:[]});
     window.navTidalEnabled = true;
     await FXRouteStreaming.refreshEnabledFlags();
     FXRouteStreaming.renderProvider('tidal', {installed:true, available:true, authenticated:true, capabilities:{}, status:'Stopped', user:{id:'7'}});
@@ -213,7 +213,7 @@ def run():
             def favorite_refresh(page, surface):
                 grid = setup(page, surface)
                 if surface == 'library':
-                    page.evaluate("state.playlists=[]; state.library.showFavoriteAlbums=true; state.library.albums.forEach(a=>a.favorite=true); FXRouteLibraryUI.renderAlbums()")
+                    page.evaluate("state.playlists=[]; state.library.viewMode='favorites'; state.library.albums.forEach(a=>a.favorite=true); FXRouteLibraryUI.renderFavorites()")
                     card = '[data-album-id="nav1"]'
                     next_card = '[data-album-id="nav2"]'
                 else:

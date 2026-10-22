@@ -726,7 +726,6 @@ let state = {
         albums: [],
         albumsLoaded: false,
         albumLayout: LibraryUI.readStoredViewMode('library-albums'),
-        showFavoriteAlbums: false,
         albumDetail: null,
         playlistDetail: null,
         // A TIDAL album/playlist/artist detail is open in the Library.
@@ -1132,8 +1131,9 @@ const elements = {
     refreshLibraryBtn: document.getElementById('refresh-library'),
     libraryViewTracksBtn: document.getElementById('library-view-tracks'),
     libraryViewArtistsBtn: document.getElementById('library-view-artists'),
-    libraryViewFoldersBtn: document.getElementById('library-view-folders'),
+    libraryViewPlaylistsBtn: document.getElementById('library-view-playlists'),
     libraryViewFavoritesBtn: document.getElementById('library-view-favorites'),
+    libraryViewFoldersBtn: document.getElementById('library-view-folders'),
     libraryViewAlbumsBtn: document.getElementById('library-view-albums'),
     libraryFolderPath: document.getElementById('library-folder-path'),
     libraryViewToggle: document.querySelector('.library-view-toggle'),

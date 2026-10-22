@@ -221,8 +221,8 @@ def _run():
                   interleaved["track_ids"] == ["local_C/two.flac", "tidal:9001", "local_A/one.flac"])
             page.wait_for_selector("#playlist-save-row.hidden", state="attached")
 
-            # Favorites: the card carries the glyph; the detail keeps the order.
-            page.click("#library-view-favorites")
+            # Playlists: the card carries the glyph; the detail keeps the order.
+            page.click("#library-view-playlists")
             page.wait_for_selector('#albums-grid .playlist-card[data-playlist-id="road-mix"]')
             check("a mixed playlist card carries the TIDAL glyph",
                   page.locator('.playlist-card[data-playlist-id="road-mix"] .source-glyph--tidal').count() == 1
@@ -275,7 +275,7 @@ def _run():
                   any("1 TIDAL track not included" in text for text in _toasts(page)))
 
             # Favorite Tracks plays local and TIDAL favorites as one queue.
-            page.click("#library-view-favorites")
+            page.click("#library-view-playlists")
             page.click('#albums-grid [data-smart-favorite="favorite-tracks"]')
             page.wait_for_selector("#album-detail:not(.hidden) #album-detail-tracks .streaming-result")
             before = page.evaluate("window.__plays.length")
@@ -295,7 +295,7 @@ def _run():
 
             # --- installed, not connected -------------------------------------
             page, errors = _open_library(browser, "signed-out", play_status=401)
-            page.click("#library-view-favorites")
+            page.click("#library-view-playlists")
             page.wait_for_selector('#albums-grid .playlist-card[data-playlist-id="road-mix"]')
             page.click('.playlist-card[data-playlist-id="road-mix"]')
             page.wait_for_selector("#playlist-detail-tracks .streaming-result")
@@ -315,7 +315,7 @@ def _run():
 
             # --- not installed -------------------------------------------------
             page, errors = _open_library(browser, "absent")
-            page.click("#library-view-favorites")
+            page.click("#library-view-playlists")
             page.wait_for_selector('#albums-grid .playlist-card[data-playlist-id="road-mix"]')
             page.click('.playlist-card[data-playlist-id="road-mix"]')
             page.wait_for_selector("#playlist-detail-tracks .track-item.is-unavailable")

@@ -728,9 +728,11 @@
 }
 .library-tidal-status.is-connected .library-tidal-status-dot { display: inline-block; }
 /* Search results: "In your library" and "TIDAL" sections under the result
-   type tabs. The grids inside keep the regular tile rhythm. */
+   type tabs. Favorites uses the same sections (Albums, Tracks, Artists).
+   The grids inside keep the regular tile rhythm. */
 .albums-grid.is-search-results,
-#tracks-list.is-search-results {
+#tracks-list.is-search-results,
+#tracks-list.is-favorites {
     display: block;
 }
 .library-search-section + .library-search-section {

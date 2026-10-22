@@ -38,7 +38,7 @@ window.fetch = (url, opts = {}) => {
 LIBRARY_SETUP = """() => {
     switchTab('library');
     Object.assign(state.library, {viewMode:'albums', albumsLoaded:true,
-        tracks:[], showFavoriteAlbums:false, searchQuery:'', albumDetail:null, playlistDetail:null,
+        tracks:[], searchQuery:'', albumDetail:null, playlistDetail:null,
         albums:Array.from({length:4},(_,i)=>({id:'alb'+i,name:'Album '+i,artist:'Artist',favorite:false}))});
     FXRouteLibraryUI.renderAlbums();
 }"""

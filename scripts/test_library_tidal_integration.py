@@ -5,9 +5,10 @@
 Covers the Library side of the TIDAL merge:
 
 * connected: TIDAL favorite albums join the Albums grid in backend order and
-  carry the TIDAL glyph; Favorites shows both smart playlists, local and
-  TIDAL playlists and favorite albums of both sources; Tracks appends the
-  TIDAL favorite tracks; Favorite Tracks lists local and TIDAL favorites;
+  carry the TIDAL glyph; Playlists shows both Smart Mixes, local and TIDAL
+  playlists with their hearts; Favorites shows only the hearted albums and
+  tracks of both sources and drops an un-hearted one at once; Tracks appends
+  the TIDAL favorite tracks; Favorite Tracks lists local and TIDAL favorites;
 * a TIDAL tile opens its detail inside the Library and Back returns to the
   grid; an un-hearted TIDAL album leaves the grid at once;
 * the save row follows the selection: TIDAL-only offers Save as new and Add
@@ -88,6 +89,7 @@ def _stub(tidal_mode, album_count):
     ]}
     return f"""
 window.__fetchLog = [];
+window.__favoritePosts = [];
 window.__tidalAlbums = {json.dumps(tidal_albums)};
 const realFetch = window.fetch.bind(window);
 window.fetch = (url, opts) => {{
@@ -97,10 +99,17 @@ window.fetch = (url, opts) => {{
         status: 200,
         headers: {{ 'Content-Type': 'application/json' }},
     }}));
+    const localFavorite = u.match(/\\/api\\/(album|track)s\\/([^/]+)\\/favorite$/);
+    if (localFavorite && opts && opts.method === 'POST') {{
+        const favorite = JSON.parse(opts.body).favorite;
+        window.__favoritePosts.push([localFavorite[1], decodeURIComponent(localFavorite[2]), favorite]);
+        return json({{ favorite }});
+    }}
     if (u.endsWith('/api/tracks')) return json({json.dumps(TRACKS)});
     if (u.endsWith('/api/library/status')) return json({{ ready: true, scanning: false }});
     if (u.endsWith('/api/playlists')) return json({json.dumps(PLAYLISTS)});
     if (u.endsWith('/api/albums')) return json({json.dumps(ALBUMS)});
+    if (u.endsWith('/api/albums/alb-a/tracks')) return json({json.dumps(TRACKS[:1])});
     if (/\\/api\\/albums\\/[^/]+\\/discover/.test(u)) return json({{ items: [] }});
     if (u.includes('/api/streaming/providers/discovery')) return json({json.dumps(discovery)});
     if (u.includes('/api/streaming/tidal/status')) return json({json.dumps(status)});
@@ -211,12 +220,21 @@ def _run():
             check("connected header button reads TIDAL",
                   button.locator(".library-tidal-status-label").inner_text() == "TIDAL")
 
-            page.click("#library-view-favorites")
+            tabs = page.eval_on_selector_all(".library-view-toggle .view-tab", "els => els.map(e => e.textContent)")
+            check(f"the view tabs read Albums, Tracks, Artists, Playlists, Favorites, Folders ({tabs})",
+                  tabs == ["Albums", "Tracks", "Artists", "Playlists", "Favorites", "Folders"])
+
+            page.click("#library-view-playlists")
             page.wait_for_selector('#albums-grid [data-smart-favorite="favorite-tracks"]')
             names = page.eval_on_selector_all("#albums-grid .album-card .album-name", "els => els.map(e => e.textContent)")
-            check(f"Favorites lists smart playlists, both playlists and both favorite albums ({names})",
-                  names[:4] == ["Top 40", "Favorite Tracks", "Local Mix", "Tidal Mix"]
-                  and "Alpha Album" in names and "Tidal Album 0" in names and "Charlie Album" not in names)
+            check(f"Playlists lists the Smart Mixes, the local and the TIDAL playlists, no albums ({names})",
+                  names == ["Top 40", "Favorite Tracks", "Local Mix", "Tidal Mix"])
+            check("Playlists is the active tab",
+                  page.locator(".library-view-toggle .view-tab.active").all_inner_texts() == ["Playlists"])
+            check("the playlist hearts stay: local (delete) and TIDAL favorite",
+                  page.locator('#albums-grid [data-playlist-fav="local-mix"].is-active').count() == 1
+                  and page.locator('#albums-grid [data-tidal-id="tp1"] .streaming-fav.is-active').count() == 1)
+            check("Playlists offers the grid/list layout toggle", page.locator("#library-view-mode-list").is_visible())
 
             page.click('#albums-grid [data-smart-favorite="favorite-tracks"]')
             page.wait_for_selector("#album-detail:not(.hidden)")
@@ -227,6 +245,56 @@ def _run():
             check("Favorite Tracks counts both sources",
                   page.locator("#album-detail-count").inner_text().startswith("2 tracks"))
             page.click("#album-detail-back")
+            page.wait_for_selector('#albums-grid:not(.hidden) [data-smart-favorite="top40"]')
+            check("Back from a Smart Mix returns to Playlists",
+                  page.locator("#library-view-playlists.active").count() == 1)
+            page.click('#albums-grid .playlist-card[data-playlist-id="local-mix"]')
+            page.wait_for_selector("#playlist-detail:not(.hidden)")
+            page.click("#playlist-detail-back")
+            page.wait_for_selector('#albums-grid:not(.hidden) .playlist-card[data-playlist-id="local-mix"]')
+            check("Back from a playlist returns to Playlists",
+                  page.locator("#library-view-playlists.active").count() == 1)
+
+            # Favorites: hearted albums and tracks of both sources, no playlists.
+            page.click("#library-view-favorites")
+            page.wait_for_selector('#tracks-list [data-favorites-section="albums"] .album-card')
+            sections = page.eval_on_selector_all("#tracks-list [data-favorites-section]",
+                                                 "els => els.map(e => e.dataset.favoritesSection)")
+            check(f"Favorites has an Albums and a Tracks section (no favorite artists here) ({sections})",
+                  sections == ["albums", "tracks"])
+            fav_albums = page.eval_on_selector_all('#tracks-list [data-favorites-section="albums"] .album-name',
+                                                   "els => els.map(e => e.textContent)")
+            check(f"Favorites lists the hearted albums of both sources only ({fav_albums})",
+                  fav_albums == ["Alpha Album", "Tidal Album 0", "Tidal Album 1"])
+            track_section = '#tracks-list [data-favorites-section="tracks"]'
+            check("Favorites lists the hearted local and TIDAL tracks",
+                  page.eval_on_selector_all(f"{track_section} .track-item[data-track-id]", "els => els.map(e => e.dataset.trackId)")
+                  == ["local_A/one.flac"]
+                  and page.locator(f"{track_section} .streaming-result").count() == 1)
+            check("Favorites shows no playlists and no Smart Mixes",
+                  page.locator("#tracks-list .playlist-card, #tracks-list [data-smart-favorite]").count() == 0
+                  and page.locator("#albums-grid").is_hidden())
+            check("Favorites is the active tab",
+                  page.locator(".library-view-toggle .view-tab.active").all_inner_texts() == ["Favorites"])
+            page.click('#tracks-list .album-card:not([data-tidal-kind])[data-album-id="alb-a"]')
+            page.wait_for_function("document.querySelector('#album-detail-name').textContent === 'Alpha Album'")
+            page.click("#album-detail-back")
+            page.wait_for_selector('#tracks-list:not(.hidden) [data-favorites-section="albums"]')
+            check("Back from an album returns to Favorites", page.locator("#library-view-favorites.active").count() == 1)
+
+            # Un-hearting in Favorites drops the item at once, for every kind.
+            page.click('#tracks-list .album-card-fav[data-fav-id="alb-a"]')
+            page.wait_for_function("!document.querySelector('#tracks-list [data-album-id=\"alb-a\"]')")
+            page.click('#tracks-list [data-tidal-id="ta0"] .streaming-fav')
+            page.wait_for_function("!document.querySelector('#tracks-list [data-tidal-id=\"ta0\"]')")
+            page.click(f'{track_section} .track-item[data-track-id="local_A/one.flac"] .track-row-favorite')
+            page.wait_for_function("!document.querySelector('#tracks-list .track-item[data-track-id=\"local_A/one.flac\"]')")
+            check("an un-hearted local album, TIDAL album and local track leave Favorites",
+                  page.evaluate("window.__favoritePosts") == [["album", "alb-a", False], ["track", "local_A/one.flac", False]]
+                  and page.locator('#tracks-list [data-favorites-section="albums"] .album-card').count() == 1)
+            page.click("#library-view-albums")
+            page.wait_for_selector('#albums-grid .album-card[data-album-id="alb-a"]')
+            check("an un-hearted album stays in Albums", True)
 
             page.click("#library-view-tracks")
             page.wait_for_selector("#tracks-list .streaming-result")

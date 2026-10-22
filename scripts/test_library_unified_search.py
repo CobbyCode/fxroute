@@ -4,9 +4,10 @@
 
 Covers:
 
-* a query in Albums/Tracks/Artists/Favorites opens a results view with the
-  type tabs Albums / Tracks / Artists / Playlists (starting at the category
-  the search was typed in) in place of the view tabs;
+* a query in Albums/Tracks/Artists/Playlists/Favorites opens a results view
+  with the type tabs Albums / Tracks / Artists / Playlists (starting at the
+  category the search was typed in, Albums for Favorites) in place of the
+  view tabs;
 * every type lists "In your library" (local items and TIDAL favorites) first,
   then "TIDAL" (catalog results without what the library section lists);
 * one debounced catalog request for all four types, kept per query, and a
@@ -313,12 +314,25 @@ def _run():
             check("typed in Tracks the search starts at Tracks",
                   page.locator("#library-search-type-tracks.active").count() == 1)
             page.fill("#library-search", "")
-            page.click("#library-view-favorites")
+            page.click("#library-view-playlists")
             page.wait_for_selector("#albums-grid .album-card")
             page.fill("#library-search", "alpha")
-            check("typed in Favorites the search starts at Playlists",
+            check("typed in Playlists the search starts at Playlists",
                   page.locator("#library-search-type-playlists.active").count() == 1)
             page.fill("#library-search", "")
+            page.wait_for_selector("#library-view-playlists.active")
+            check("clearing the search returns to Playlists", page.locator("#albums-grid [data-smart-favorite]").count() == 2)
+            page.click("#library-view-favorites")
+            page.wait_for_selector("#tracks-list.is-favorites:not(.hidden)")
+            page.fill("#library-search", "alpha")
+            check("typed in Favorites the search starts at Albums",
+                  page.locator("#library-search-type-albums.active").count() == 1
+                  and page.locator("#tracks-list").is_hidden())
+            page.fill("#library-search", "")
+            page.wait_for_selector("#library-view-favorites.active")
+            check("clearing the search returns to Favorites",
+                  page.locator("#tracks-list.is-favorites:not(.hidden) [data-favorites-section]").count() > 0
+                  and page.locator("#tab-library [data-search-section]").count() == 0)
 
             page.click("#library-view-albums")
             page.fill("#library-search", "alpha")

@@ -220,6 +220,10 @@ let lastDownloadStatus = null;
 
 const LIBRARY_SCAN_POLL_INTERVAL_MS = 1200;
 
+// Library view tabs in tab order. Albums, Artists, Playlists and Favorites are
+// tile views (grids with detail pages); Tracks and Folders are lists.
+const LIBRARY_VIEW_MODES = ['albums', 'tracks', 'artists', 'playlists', 'favorites', 'folders'];
+
 const FAVORITE_TRACKS_ID = 'smart_favorite_tracks';
 const FAVORITE_TRACKS_COVER = '/static/FavoriteTracks.svg?v=1';
 
@@ -438,6 +442,7 @@ async function toggleTrackFavoriteById(trackId) {
         updateTrackFavoriteCaches(track.id, !!data.favorite);
         renderTrackFavoriteButton(deps.getState().playback.current_track);
         syncTrackFavoriteRowButtons(track.id);
+        refreshFavoritesView();
     } catch (error) {
         deps.showToast(error.message || 'Failed to update track favorite', 'error');
     } finally {
@@ -577,10 +582,9 @@ function getFolderChildren() {
 }
 
 function renderLibraryView() {
-    const mode = deps.getState().library.viewMode;
     if (searchResultsActive()) {
         renderSearchResults();
-    } else if (mode === 'albums' || mode === 'artists') {
+    } else if (isTileViewMode()) {
         if (deps.getState().library.albumDetail) {
             // Re-open the album detail if we were viewing one; the smart
             // playlists and artist pages rebuild through their own loaders.
@@ -594,14 +598,20 @@ function renderLibraryView() {
             const playlistId = deps.getState().library.playlistDetail.playlist.id;
             deps.getState().library.playlistDetail = null;
             openPlaylistDetail(playlistId);
-        } else if (mode === 'artists') {
-            renderArtists();
         } else {
-            renderAlbums();
+            renderTileView();
         }
     } else {
         renderTracks();
     }
+}
+
+// The collection of the current tile view (no detail open).
+function renderTileView() {
+    const mode = deps.getState().library.viewMode;
+    if (mode === 'artists') renderArtists();
+    else if (mode === 'favorites') renderFavorites();
+    else renderAlbums();
 }
 
 function renderLibraryViewButtons() {
@@ -618,31 +628,21 @@ function renderLibraryViewButtons() {
             button.setAttribute('aria-pressed', active ? 'true' : 'false');
         });
     }
-    const favActive = mode === 'albums' && !!deps.getState().library.showFavoriteAlbums;
-    if (deps.getElements().libraryViewTracksBtn) {
-        const active = mode === 'tracks';
-        deps.getElements().libraryViewTracksBtn.classList.toggle('active', active);
-        deps.getElements().libraryViewTracksBtn.setAttribute('aria-pressed', active ? 'true' : 'false');
-    }
-    if (deps.getElements().libraryViewArtistsBtn) {
-        const active = mode === 'artists';
-        deps.getElements().libraryViewArtistsBtn.classList.toggle('active', active);
-        deps.getElements().libraryViewArtistsBtn.setAttribute('aria-pressed', active ? 'true' : 'false');
-    }
-    if (deps.getElements().libraryViewFoldersBtn) {
-        const active = mode === 'folders';
-        deps.getElements().libraryViewFoldersBtn.classList.toggle('active', active);
-        deps.getElements().libraryViewFoldersBtn.setAttribute('aria-pressed', active ? 'true' : 'false');
-    }
-    if (deps.getElements().libraryViewFavoritesBtn) {
-        deps.getElements().libraryViewFavoritesBtn.classList.toggle('active', favActive);
-        deps.getElements().libraryViewFavoritesBtn.setAttribute('aria-pressed', favActive ? 'true' : 'false');
-    }
-    if (deps.getElements().libraryViewAlbumsBtn) {
-        const active = mode === 'albums' && !deps.getState().library.showFavoriteAlbums;
-        deps.getElements().libraryViewAlbumsBtn.classList.toggle('active', active);
-        deps.getElements().libraryViewAlbumsBtn.setAttribute('aria-pressed', active ? 'true' : 'false');
-    }
+    const els = deps.getElements();
+    const buttons = {
+        albums: els.libraryViewAlbumsBtn,
+        tracks: els.libraryViewTracksBtn,
+        artists: els.libraryViewArtistsBtn,
+        playlists: els.libraryViewPlaylistsBtn,
+        favorites: els.libraryViewFavoritesBtn,
+        folders: els.libraryViewFoldersBtn,
+    };
+    Object.entries(buttons).forEach(([viewMode, button]) => {
+        if (!button) return;
+        const active = mode === viewMode;
+        button.classList.toggle('active', active);
+        button.setAttribute('aria-pressed', active ? 'true' : 'false');
+    });
 }
 
 function renderLibraryFolderPath() {
@@ -696,7 +696,7 @@ function renderTracks() {
         renderSearchResults();
         return;
     }
-    deps.getElements().tracksList.classList.remove('is-search-results');
+    deps.getElements().tracksList.classList.remove('is-search-results', 'is-favorites');
     renderLibraryViewButtons();
     updateLibraryViewModeToggle();
     renderLibraryFolderPath();
@@ -896,32 +896,21 @@ function bindTrackListEvents(list) {
 
 function setLibraryViewMode(mode) {
     leaveTidalLibraryDetail();
-    deps.getState().library.searchType = null;
-    // Favorites is a tab but reuses the albums view with the existing
-    // favorites filter (same position as the Playlists tab in TIDAL: fourth tab).
-    if (mode === 'favorites') {
-        deps.getState().library.viewMode = 'albums';
-        deps.getState().library.showFavoriteAlbums = true;
-    } else {
-        deps.getState().library.viewMode = mode === 'folders' ? 'folders' : mode === 'albums' ? 'albums' : mode === 'artists' ? 'artists' : 'tracks';
-        if (mode === 'albums') deps.getState().library.showFavoriteAlbums = false;
-    }
+    const library = deps.getState().library;
+    library.searchType = null;
+    library.viewMode = LIBRARY_VIEW_MODES.includes(mode) ? mode : 'tracks';
     albumReturnArtistKey = '';
-    if (deps.getState().library.viewMode === 'tracks') deps.getState().library.currentFolder = '';
-    if (deps.getState().library.viewMode === 'artists') {
-        deps.getState().library.albumDetail = null;
-        deps.getState().library.playlistDetail = null;
-        renderArtists();
-    } else if (deps.getState().library.viewMode === 'albums') {
-        deps.getState().library.albumDetail = null;
-        deps.getState().library.playlistDetail = null;
-        if (!deps.getState().library.albumsLoaded) {
+    if (library.viewMode === 'tracks') library.currentFolder = '';
+    if (library.viewMode === 'tracks' || library.viewMode === 'folders') {
+        renderTracks();
+    } else {
+        library.albumDetail = null;
+        library.playlistDetail = null;
+        if (library.viewMode === 'albums' && !library.albumsLoaded) {
             fetchAlbums();
         } else {
-            renderAlbums();
+            renderTileView();
         }
-    } else {
-        renderTracks();
     }
     updateLibrarySearchPlaceholder();
 }
@@ -951,11 +940,11 @@ function setAlbumLayout(mode) {
     renderLibraryView();
 }
 
-// Albums and Artists are tile collections sharing grid, layout toggle and
-// detail pages.
+// Albums, Artists, Playlists and Favorites are tile collections sharing grid,
+// layout toggle and detail pages.
 function isTileViewMode() {
     if (searchResultsActive()) return searchResultType() !== 'tracks';
-    return ['albums', 'artists'].includes(deps.getState().library.viewMode);
+    return ['albums', 'artists', 'playlists', 'favorites'].includes(deps.getState().library.viewMode);
 }
 
 function updateLibraryViewModeToggle() {
@@ -1009,6 +998,7 @@ async function fetchAlbums() {
     }
 }
 
+// The albums grid of the Albums and the Playlists tab.
 function renderAlbums() {
     // An open TIDAL detail owns the content area; background refreshes must
     // not bring the grid back underneath it.
@@ -1023,6 +1013,9 @@ function renderAlbums() {
     updateLibrarySelectionUI();
     const loadingEl = document.querySelector('#tab-library .content-state');
     const query = (deps.getState().library.searchQuery || '').trim().toLowerCase();
+    // Playlists shows the Smart Mixes, the local playlists and the TIDAL
+    // favorite playlists; Albums the local and the TIDAL favorite albums.
+    const showPlaylists = deps.getState().library.viewMode === 'playlists';
 
     // Hide tracks list + detail views, show albums grid
     deps.getElements().tracksList.classList.add('hidden');
@@ -1042,29 +1035,18 @@ function renderAlbums() {
         // Albums not yet loaded — show loading state and trigger fetch. A
         // running scan reports its progress here for the same reason as in
         // the tracks view: the albums arrive when it is done.
-        window.FXRouteContentState.set(loadingEl, 'loading', formatLibraryScanStatus() || 'Loading albums…');
+        window.FXRouteContentState.set(loadingEl, 'loading', formatLibraryScanStatus() || (showPlaylists ? 'Loading playlists…' : 'Loading albums…'));
         deps.getElements().albumsGrid.classList.add('hidden');
         fetchAlbums();
         return;
     }
 
-    let albums = deps.getState().library.albums || [];
-    if (query) {
-        albums = albums.filter(albumMatchesLibraryQuery);
-    }
-    if (deps.getState().library.showFavoriteAlbums) {
-        albums = albums.filter(album => !!album.favorite);
-    }
-    const showSmartFavorites = deps.getState().library.showFavoriteAlbums;
-    // Playlists live with the personal collections (Favorites), not in the
-    // plain albums overview.
-    const playlists = showSmartFavorites ? getFilteredPlaylists() : [];
-    // TIDAL favorites join the same grids: favorite albums in Albums and
-    // Favorites, favorite playlists next to the local ones in Favorites.
-    const tidalAlbums = tidalLibraryFavorites('albums');
-    const tidalPlaylists = showSmartFavorites ? tidalLibraryFavorites('playlists') : [];
+    const albums = showPlaylists ? [] : (deps.getState().library.albums || []).filter(albumMatchesLibraryQuery);
+    const playlists = showPlaylists ? getFilteredPlaylists() : [];
+    const tidalAlbums = showPlaylists ? [] : tidalLibraryFavorites('albums');
+    const tidalPlaylists = showPlaylists ? tidalLibraryFavorites('playlists') : [];
 
-    if (albums.length === 0 && tidalAlbums.length === 0 && playlists.length === 0 && !showSmartFavorites) {
+    if (albums.length === 0 && tidalAlbums.length === 0 && !showPlaylists) {
         // A running scan is not an empty library: the shared library scan
         // status stays visible until the scan actually finished, so the empty
         // message never reports "no albums" while the scan is still filling
@@ -1082,7 +1064,7 @@ function renderAlbums() {
     }
     window.FXRouteContentState.hide(loadingEl);
 
-    const smartHtml = showSmartFavorites ? `
+    const smartHtml = showPlaylists ? `
         <div class="album-card album-card-smart" data-smart-favorite="top40" role="button" tabindex="0">
             <div class="album-art-wrap">
                 <div class="album-smart-badge">Smart Mix</div>
@@ -1114,6 +1096,95 @@ function renderAlbums() {
     deps.getElements().albumsGrid.classList.remove('hidden');
 
     bindAlbumGridCards(deps.getElements().albumsGrid);
+}
+
+// Favorites: the hearted albums, tracks and artists of both sources, one
+// section per kind. It renders into the tracks list, so the track rows keep
+// their list styling; the album and artist grids nest inside it.
+function renderFavorites() {
+    const library = deps.getState().library;
+    if (library.tidalDetailOpen) return;
+    if (searchResultsActive()) {
+        renderSearchResults();
+        return;
+    }
+    const els = deps.getElements();
+    const list = els.tracksList;
+    const loadingEl = document.querySelector('#tab-library .content-state');
+    renderLibraryViewButtons();
+    updateLibraryViewModeToggle();
+    // The grid may still hold the markup of another view or search results.
+    els.albumsGrid.classList.add('hidden');
+    els.albumsGrid.classList.remove('is-search-results');
+    els.albumsGrid.innerHTML = '';
+    els.albumDetail.classList.add('hidden');
+    if (els.playlistDetail) els.playlistDetail.classList.add('hidden');
+    if (els.libraryFolderPath) els.libraryFolderPath.classList.add('hidden');
+    list.classList.remove('is-search-results');
+    list.classList.add('is-favorites');
+    updatePlaylistSaveRowVisibility();
+    updateLibrarySelectionUI();
+
+    // The favorite flags of the local albums come with the album list.
+    if (!library.albumsLoaded) {
+        list.classList.add('hidden');
+        if (library.albumsError) {
+            window.FXRouteContentState.set(loadingEl, 'error', library.albumsError);
+        } else {
+            window.FXRouteContentState.set(loadingEl, 'loading', formatLibraryScanStatus() || 'Loading favorites…');
+            fetchAlbums();
+        }
+        return;
+    }
+
+    const albums = (library.albums || []).filter(album => !!album.favorite);
+    const tidalAlbums = tidalLibraryFavorites('albums');
+    const tracks = (library.tracks || []).filter(track => track && track.favorite);
+    const tidalTracks = tidalLibraryFavorites('tracks');
+    const artists = getArtistEntries().filter(view => !!view.tidal);
+    list.classList.remove('hidden');
+    if (!albums.length && !tidalAlbums.length && !tracks.length && !tidalTracks.length && !artists.length) {
+        const scanText = formatLibraryScanStatus();
+        window.FXRouteContentState.set(loadingEl, scanText ? 'loading' : 'empty',
+            scanText || 'No favorites yet. Use the heart on an album or a track.');
+        list.innerHTML = '';
+        return;
+    }
+    window.FXRouteContentState.hide(loadingEl);
+
+    const section = (kind, label, body) => `<section class="library-search-section" data-favorites-section="${kind}">`
+        + `${searchSectionHeadingHtml(label)}${body}</section>`;
+    const selectedIds = new Set(library.selectedTrackIds);
+    let html = '';
+    if (albums.length || tidalAlbums.length) {
+        html += section('albums', 'Albums', `<div class="${searchGridClass()}">${albumCardsHtml(albums, tidalAlbums)}</div>`);
+    }
+    if (tracks.length || tidalTracks.length) {
+        html += section('tracks', 'Tracks', `<div class="library-search-rows">`
+            + `${tracks.map(track => localTrackRowHtml(track, selectedIds.has(track.id), false)).join('')}</div>`);
+    }
+    if (artists.length) {
+        html += section('artists', 'Artists', `<div class="${searchGridClass()}">${artists.map(artistCardHtml).join('')}</div>`);
+    }
+    list.innerHTML = html;
+    // Each section binds its own cards: the album binding would also catch
+    // the artist cards, and a TIDAL heart bound twice toggles back.
+    const albumSection = list.querySelector('[data-favorites-section="albums"]');
+    const trackSection = list.querySelector('[data-favorites-section="tracks"]');
+    const artistSection = list.querySelector('[data-favorites-section="artists"]');
+    if (albumSection) bindAlbumGridCards(albumSection);
+    if (trackSection) {
+        appendTidalTrackRows(trackSection.querySelector('.library-search-rows'), tidalTracks);
+        bindTrackListEvents(trackSection);
+    }
+    if (artistSection) bindArtistGridCards(artistSection);
+}
+
+// The Favorites view drops an un-hearted item at once.
+function refreshFavoritesView() {
+    const library = deps.getState().library;
+    if (library.viewMode !== 'favorites' || library.albumDetail || library.playlistDetail) return;
+    renderFavorites();
 }
 
 // Local playlists and TIDAL favorite playlists as grid cards.
@@ -2313,10 +2384,8 @@ async function toggleAlbumCardFavorite(albumId) {
             btn.setAttribute('data-tooltip', f ? 'Remove from favorites' : 'Add to favorites');
         });
         // The Favorites view must drop an unfavorited album immediately;
-        // re-render the grid so the filter stays authoritative.
-        if (deps.getState().library.showFavoriteAlbums && !deps.getState().library.albumDetail) {
-            renderAlbums();
-        }
+        // re-render it so the filter stays authoritative.
+        refreshFavoritesView();
         deps.showToast(stored.favorite ? 'Added to favorites' : 'Removed from favorites', 'success');
     } catch (e) {
         deps.showToast(e.message || 'Failed to update favorite', 'error');
@@ -2526,7 +2595,7 @@ function renderPlaylistDetailTracks() {
 
 function closePlaylistDetail() {
     deps.getState().library.playlistDetail = null;
-    renderAlbums();
+    renderLibraryView();
 }
 
 async function playTrackInPlaylist(trackId) {
@@ -2844,9 +2913,8 @@ function searchResultsActive() {
 function searchResultType() {
     const library = deps.getState().library;
     if (!SEARCH_RESULT_TYPES.includes(library.searchType)) {
-        if (library.viewMode === 'tracks') library.searchType = 'tracks';
-        else if (library.viewMode === 'artists') library.searchType = 'artists';
-        else library.searchType = library.showFavoriteAlbums ? 'playlists' : 'albums';
+        // Favorites starts at its first section, Albums.
+        library.searchType = SEARCH_RESULT_TYPES.includes(library.viewMode) ? library.viewMode : 'albums';
     }
     return library.searchType;
 }
@@ -3020,6 +3088,7 @@ function renderSearchResults() {
     const unused = tiles ? els.tracksList : els.albumsGrid;
     unused.innerHTML = '';
     unused.classList.remove('is-search-results');
+    els.tracksList.classList.remove('is-favorites');
     updatePlaylistSaveRowVisibility();
     // Albums and artists come from the album list.
     if ((type === 'albums' || type === 'artists') && !library.albumsLoaded) {
@@ -3104,10 +3173,8 @@ function setLibrarySearchQuery(value) {
         renderAlbumDetailTracks();
     } else if (isTileViewMode() && library.playlistDetail) {
         renderPlaylistDetailTracks();
-    } else if (library.viewMode === 'artists') {
-        renderArtists();
-    } else if (library.viewMode === 'albums') {
-        renderAlbums();
+    } else if (isTileViewMode()) {
+        renderTileView();
     } else {
         renderTracks();
     }
@@ -3123,10 +3190,16 @@ function updateLibrarySearchPlaceholder() {
     if (!deps.getElements().librarySearchInput) return;
     const compact = window.matchMedia && window.matchMedia("(max-width: 600px)").matches;
     const isArtists = deps.getState().library.viewMode === "artists";
-    const isAlbums = deps.getState().library.viewMode === "albums";
+    const isPlaylists = deps.getState().library.viewMode === "playlists";
+    const isAlbums = ["albums", "favorites"].includes(deps.getState().library.viewMode);
     if (isArtists) {
         deps.getElements().librarySearchInput.placeholder = "Search artists…";
         deps.getElements().librarySearchInput.setAttribute('aria-label', "Search artists");
+        return;
+    }
+    if (isPlaylists) {
+        deps.getElements().librarySearchInput.placeholder = "Search playlists…";
+        deps.getElements().librarySearchInput.setAttribute('aria-label', "Search playlists");
         return;
     }
     const fullText = isAlbums
@@ -3965,9 +4038,8 @@ function scheduleTidalLibraryRender() {
             syncArtistDetailHeart();
             return;
         }
-        if (library.viewMode === 'albums') renderAlbums();
-        else if (library.viewMode === 'artists') renderArtists();
-        else if (library.viewMode === 'tracks') renderTracks();
+        if (library.viewMode === 'tracks') renderTracks();
+        else if (library.viewMode !== 'folders') renderTileView();
     }, 60);
 }
 
@@ -4002,11 +4074,14 @@ function setupLibraryActions() {
     if (deps.getElements().libraryViewArtistsBtn) {
         deps.getElements().libraryViewArtistsBtn.addEventListener('click', () => setLibraryViewMode('artists'));
     }
-    if (deps.getElements().libraryViewFoldersBtn) {
-        deps.getElements().libraryViewFoldersBtn.addEventListener('click', () => setLibraryViewMode('folders'));
+    if (deps.getElements().libraryViewPlaylistsBtn) {
+        deps.getElements().libraryViewPlaylistsBtn.addEventListener('click', () => setLibraryViewMode('playlists'));
     }
     if (deps.getElements().libraryViewFavoritesBtn) {
         deps.getElements().libraryViewFavoritesBtn.addEventListener('click', () => setLibraryViewMode('favorites'));
+    }
+    if (deps.getElements().libraryViewFoldersBtn) {
+        deps.getElements().libraryViewFoldersBtn.addEventListener('click', () => setLibraryViewMode('folders'));
     }
     if (deps.getElements().libraryViewAlbumsBtn) {
         deps.getElements().libraryViewAlbumsBtn.addEventListener('click', () => setLibraryViewMode('albums'));
@@ -4180,6 +4255,7 @@ function setupLibraryActions() {
         renderArtists,
         openArtistDetail,
         renderAlbums,
+        renderFavorites,
         renderLibraryFolderPath,
         renderLibraryModeButtons,
         renderLibraryView,

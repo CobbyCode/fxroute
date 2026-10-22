@@ -295,11 +295,14 @@
         ctx.navRect = rectOf(element);
         const card = navigationCard(element);
         const anchor = card?.parentElement.closest('[id]');
+        // Counted over the whole anchor like the restore: Favorites and the
+        // search results nest several grids in one anchor.
         ctx.cardFocus = card ? {
             anchor,
             anchorParent: anchor?.parentElement,
             key: cardKey(card),
-            index: Array.from(card.parentElement.children).filter(item => item.matches(CARD_SELECTOR)).indexOf(card),
+            index: Array.from(anchor ? anchor.querySelectorAll(CARD_SELECTOR) : card.parentElement.children)
+                .filter(item => item.matches(CARD_SELECTOR)).indexOf(card),
             favorite: element.matches(CARD_FAVORITE_SELECTOR),
         } : null;
         const row = trackRow(element);

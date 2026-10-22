@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Playwright geometry contract for the shared compact view tabs.
 
-Library ``Albums / Tracks / Artists / Folders / Favorites`` and the search
+Library ``Albums / Tracks / Artists / Playlists / Favorites / Folders`` and the search
 result types ``Albums / Tracks / Artists / Playlists`` (which replace them
 while a search is active) must render through one shared ``.view-tab``
 component: equal visible height, equal horizontal padding and one identical
@@ -115,7 +115,7 @@ def _run():
                 # Library view tabs.
                 activate("library")
                 lib_heights = heights("#tab-library .library-view-toggle .view-tab")
-                check(f"[{width}px] library renders five view tabs", len(lib_heights) == 5)
+                check(f"[{width}px] library renders six view tabs", len(lib_heights) == 6)
                 check(f"[{width}px] library view tabs share one height",
                       max(lib_heights) - min(lib_heights) <= 0.5)
                 check(f"[{width}px] library view tabs keep a touchable height (>=36px)",

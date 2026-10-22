@@ -4,7 +4,8 @@
 
 Covers:
 
-* the Artists tab sits between Tracks and Folders; artists come from the local
+* the Artists tab sits between Tracks and Playlists; Favorites lists the
+  hearted artists and opens their pages; artists come from the local
   metadata (album artist, the track artist for compilations, never "Various
   Artists") and work without TIDAL;
 * connected: a TIDAL favorite artist merges into the local entry of the same
@@ -215,8 +216,8 @@ def _run():
             page, errors = _open_library(browser, "connected")
             page.wait_for_selector('#albums-grid .artist-card[data-artist-key="echo"]')
             tabs = page.eval_on_selector_all(".library-view-toggle .view-tab", "els => els.map(e => e.textContent)")
-            check(f"Artists sits between Tracks and Folders ({tabs})",
-                  tabs == ["Albums", "Tracks", "Artists", "Folders", "Favorites"])
+            check(f"Artists sits between Tracks and Playlists, Folders comes last ({tabs})",
+                  tabs == ["Albums", "Tracks", "Artists", "Playlists", "Favorites", "Folders"])
             names = _names(page)
             check(f"artists merge by accent-folded name, compilations by track artist ({names})",
                   names == ["Alpha", "Charlie", "Delta", "Echo", "Foxtrot", "Zoë"])
@@ -239,6 +240,26 @@ def _run():
                   and {"name": "Alpha", "mbid": "mb-alpha"} in json.loads(matches[0][1])["artists"])
             check("an unmapped local artist has no TIDAL heart",
                   page.locator('.artist-card[data-artist-key="charlie"] .streaming-fav').count() == 0)
+
+            # Favorites lists the hearted artists; a merged one opens its local page.
+            page.click("#library-view-favorites")
+            page.wait_for_selector('#tracks-list [data-favorites-section="artists"] .artist-card')
+            fav_artists = page.eval_on_selector_all('#tracks-list [data-favorites-section="artists"] .album-name',
+                                                    "els => els.map(e => e.textContent)")
+            check(f"Favorites lists the hearted artists only ({fav_artists})", fav_artists == ["Echo", "Zoë"])
+            sections = page.eval_on_selector_all("#tracks-list [data-favorites-section]",
+                                                 "els => els.map(e => e.dataset.favoritesSection)")
+            check(f"without a hearted album Favorites shows Tracks and Artists ({sections})", sections == ["tracks", "artists"])
+            page.click('#tracks-list .artist-card[data-artist-key="zoe"]')
+            page.wait_for_function("document.querySelector('#album-detail-name').textContent === 'Zoë'")
+            check("a merged favorite artist opens the local artist page",
+                  page.locator(".artist-detail-albums .album-card").count() == 1)
+            page.click("#album-detail-back")
+            page.wait_for_selector('#tracks-list:not(.hidden) [data-favorites-section="artists"]')
+            check("Back from the artist page returns to Favorites",
+                  page.locator("#library-view-favorites.active").count() == 1)
+            page.click("#library-view-artists")
+            page.wait_for_function("document.querySelectorAll('#albums-grid .artist-card').length === 6")
 
             # Search filters the artist grid.
             page.fill("#library-search", "cha")

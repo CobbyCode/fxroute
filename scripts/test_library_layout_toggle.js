@@ -34,10 +34,11 @@ const renderTracks = extractFunction(js, 'renderTracks');
 assert.ok(renderTracks.includes('updateLibraryViewModeToggle()'),
     'Tracks/Folders rendering must synchronize the Library layout toggle');
 
-// The tile collections (Albums, Artists) share the layout toggle; nothing else does.
+// The tile collections (Albums, Artists, Playlists, Favorites) share the layout
+// toggle; Tracks and Folders do not.
 const tileMode = extractFunction(js, 'isTileViewMode');
-assert.ok(tileMode.includes("['albums', 'artists'].includes(deps.getState().library.viewMode)"),
-    'only the Albums and Artists views are tile collections');
+assert.ok(tileMode.includes("['albums', 'artists', 'playlists', 'favorites'].includes(deps.getState().library.viewMode)"),
+    'only the Albums, Artists, Playlists and Favorites views are tile collections');
 const updateToggle = extractFunction(js, 'updateLibraryViewModeToggle');
 assert.ok(updateToggle.includes('isTileViewMode()'),
     'the Library layout toggle must be restricted to the tile views');

@@ -384,15 +384,15 @@ def run():
 
             def library_search_row(page):
                 page.click('#tab-btn-library')
-                page.wait_for_selector('#library-view-favorites')
+                page.wait_for_selector('#library-view-folders')
                 page.focus('#tab-btn-library')
                 page.keyboard.press('ArrowDown')
-                page.focus('#library-view-favorites')
+                page.focus('#library-view-folders')
                 page.keyboard.press('ArrowRight')
                 assert page.evaluate('document.activeElement.id') == 'library-search', (
                     f"Right from the view tabs left the row for {page.evaluate('document.activeElement.id')}")
                 page.keyboard.press('ArrowLeft')
-                assert page.evaluate('document.activeElement.id') == 'library-view-favorites'
+                assert page.evaluate('document.activeElement.id') == 'library-view-folders'
 
             def home_stays_on_tab(page):
                 page.click('#tab-btn-library')
