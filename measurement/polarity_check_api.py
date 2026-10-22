@@ -36,8 +36,9 @@ class PolarityCheckDeps:
     get_session: Callable[[], Any]
     auto_sub_active: Callable[[], bool]
     get_output_state: Callable[[], dict]
-    # Engine configuration of the rendered plan a frozen target describes; raises
-    # ``polarity_guard.PathUnavailable`` when the live plan no longer matches it.
+    # Engine configuration of the rendered plan a frozen target describes (plus the resolver of
+    # its Global convolver kernels); raises ``polarity_guard.PathUnavailable`` when the live plan
+    # no longer matches it.
     resolve_dsp_path: Callable[[dict], dict]
 
 
@@ -84,7 +85,8 @@ async def _judge_path(dependencies: PolarityCheckDeps, target: dict, unit: dict)
     try:
         path = await asyncio.to_thread(dependencies.resolve_dsp_path, target)
         return await asyncio.to_thread(
-            polarity_guard.assess_unit, path["config"], unit, sample_rate_hz=target["sample_rate_hz"])
+            polarity_guard.assess_unit, path["config"], unit, sample_rate_hz=target["sample_rate_hz"],
+            kernel_path=path.get("kernel_path"))
     except polarity_guard.PathUnavailable as exc:
         return polarity_guard.unknown_result(exc.stage)
     except Exception as exc:

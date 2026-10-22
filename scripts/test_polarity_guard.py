@@ -2,7 +2,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 """Polarity Check guard: the rendered DSP path of a unit against the detector's measured band."""
 
+import struct
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -62,6 +64,39 @@ def stage(kind, **extra):
 
 def assess(cfg, subject=None, rate=RATE):
     return guard.assess_unit(cfg, subject or unit("main_l"), sample_rate_hz=rate)
+
+
+def write_wav(path, frames, rate):
+    """A float32 IEEE WAV of a (frames,) or (frames, channels) array."""
+    frames = np.asarray(frames, dtype="<f4")
+    frames = frames.reshape(frames.shape[0], -1)
+    data = frames.tobytes()
+    block = frames.shape[1] * 4
+    fmt = struct.pack("<HHIIHH", 3, frames.shape[1], rate, rate * block, block, 32)
+    body = b"WAVE" + b"fmt " + struct.pack("<I", 16) + fmt + b"data" + struct.pack("<I", len(data)) + data
+    Path(path).write_bytes(b"RIFF" + struct.pack("<I", len(body)) + body)
+    return str(path)
+
+
+def phase_swing_ir(rate, *, swing=3.0, latency_ms=20.0, taps=16384):
+    """An all-pass IR whose phase swings by `swing` radians around 8 kHz, shifted by a fixed latency.
+
+    The continuous phase spec is the same at every rate, so the same IR stored at two rates is the same filter.
+    """
+    frequency = np.arange(taps // 2 + 1) * rate / taps
+    spectrum = np.exp(1j * swing * np.exp(-0.5 * ((frequency - 8000.0) / 2500.0) ** 2))
+    return np.roll(np.fft.irfft(spectrum, taps), int(round(latency_ms / 1000.0 * rate)))
+
+
+def dirac_ir(rate, latency_ms=0.0, taps=16384):
+    ir = np.zeros(taps)
+    ir[int(round(latency_ms / 1000.0 * rate))] = 1.0
+    return ir
+
+
+def detector_cos(ir, rate=RATE):
+    padded = np.concatenate((np.zeros(2400), ir, np.zeros(2 * rate)))
+    return polarity.analyze_ir_polarity(padded, rate, int(np.argmax(np.abs(padded))))["phase_cos"]
 
 
 def lowpass_filter(values, coefficients):
@@ -180,14 +215,6 @@ class StagesOutsideTheAllowListAreUnknownTest(unittest.TestCase):
         result = assess(config(output("main_l"), chain=[equalizer(band("bell", 30_000.0, 3.0))]))
         self.assertEqual(result["state"], guard.UNKNOWN)
 
-    def test_a_convolver_is_not_modelled_by_the_core(self):
-        conv = {"id": "conv", "type": "convolver", "enabled": True, "params": {"kernel": "/lib/room.wav"}}
-        self.assertEqual(assess(config(output("main_l"), chain=[conv])),
-                         {"state": "unknown", "dsp_cos": None, "stage": "global convolver room.wav"})
-        oconv = {"path": "/lib/room.wav", "channel": 0, "wet_db": 0.0, "dry_db": -100.0,
-                 "input_gain_db": 0.0, "output_gain_db": 0.0}
-        self.assertEqual(assess(config(output("main_l", oconv=oconv)))["stage"], "main_l convolver")
-
     def test_a_malformed_path_is_unknown_and_never_raises(self):
         cases = ((config(output("main_l")), unit("ghost")),
                  (config({"name": "main_l", "routes": []}), unit("main_l")),
@@ -273,6 +300,139 @@ class SurroundGroupsTest(unittest.TestCase):
         right = config(output("main_r", source=1), chain=[dual])
         self.assertEqual(assess(left, unit("main_l"))["state"], guard.ROTATES)
         self.assertEqual(assess(right, unit("main_r"))["state"], guard.OK)
+
+
+class ConvolverTest(unittest.TestCase):
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.directory = Path(directory.name)
+
+    def wav(self, name, frames, rate=RATE):
+        return write_wav(self.directory / name, frames, rate)
+
+    def oconv(self, path, *, channel=0, wet_db=0.0, dry_db=-100.0, input_gain_db=0.0, output_gain_db=0.0):
+        return {"path": path, "channel": channel, "wet_db": wet_db, "dry_db": dry_db,
+                "input_gain_db": input_gain_db, "output_gain_db": output_gain_db}
+
+    def global_convolver(self, kernel="room.wav", **params):
+        return {"id": "conv", "type": "convolver", "enabled": True, "params": {"kernel": kernel, **params}}
+
+    def assess_global(self, chain, kernels, subject=None, rate=RATE, outputs=None):
+        return guard.assess_unit(config(*(outputs or [output("main_l")]), chain=chain), subject or unit("main_l"),
+                                 sample_rate_hz=rate, kernel_path=lambda kernel: kernels[kernel])
+
+    def test_a_flat_phase_ir_is_ok_in_the_area_bank_and_in_global(self):
+        correction = dirac_ir(RATE, taps=8192)
+        for coefficients in (native_peq_coefficients("bell", 80.0, RATE, 2.0, 6.0),
+                             native_peq_coefficients("bell", 200.0, RATE, 1.0, -4.0)):
+            correction = lowpass_filter(correction, coefficients)
+        for label, ir in (("dirac", dirac_ir(RATE)), ("delayed dirac", dirac_ir(RATE, 85.0)),
+                          ("minimum phase correction", correction)):
+            path = self.wav(f"{label}.wav".replace(" ", "_"), ir)
+            with self.subTest(label, stage="area bank"):
+                result = assess(config(output("main_l", oconv=self.oconv(path))))
+                self.assertEqual(result["state"], guard.OK, result)
+            with self.subTest(label, stage="global"):
+                result = self.assess_global([self.global_convolver()], {"room.wav": path})
+                self.assertEqual(result["state"], guard.OK, result)
+
+    def test_a_mixed_phase_ir_that_swings_the_band_is_withheld(self):
+        path = self.wav("swing.wav", phase_swing_ir(RATE))
+        for stage, result, name in (
+                ("area bank", assess(config(output("main_l", oconv=self.oconv(path)))), "main_l convolver swing.wav"),
+                ("global", self.assess_global([self.global_convolver("swing.wav")], {"swing.wav": path}),
+                 "global convolver swing.wav")):
+            with self.subTest(stage):
+                self.assertEqual((result["state"], result["stage"]), (guard.ROTATES, name))
+                self.assertAlmostEqual(result["dsp_cos"], detector_cos(phase_swing_ir(RATE)), delta=0.01)
+
+    def test_the_model_reads_what_the_detector_reads_behind_the_ir(self):
+        for swing in (0.5, 1.5, 3.0, 4.5):
+            ir = phase_swing_ir(RATE, swing=swing, latency_ms=85.0)
+            path = self.wav(f"swing{swing}.wav", ir)
+            with self.subTest(swing=swing):
+                result = assess(config(output("main_l", oconv=self.oconv(path))))
+                self.assertAlmostEqual(result["dsp_cos"], detector_cos(ir), delta=0.01)
+
+    def test_an_ir_stored_at_another_rate_reads_like_the_same_filter_built_at_the_stream_rate(self):
+        for rate in (44_100, 96_000):
+            stored = self.wav(f"stored{rate}.wav", phase_swing_ir(rate, swing=2.0), rate)
+            direct = self.wav(f"direct{rate}.wav", phase_swing_ir(RATE, swing=2.0))
+            with self.subTest(rate=rate):
+                resampled = assess(config(output("main_l", oconv=self.oconv(stored))))["dsp_cos"]
+                built = assess(config(output("main_l", oconv=self.oconv(direct))))["dsp_cos"]
+                self.assertLessEqual(abs(resampled - built), 0.02)
+
+    def test_the_wet_dry_mix_decides_what_the_path_sounds_like(self):
+        path = self.wav("swing.wav", phase_swing_ir(RATE))
+        dry_only = assess(config(output("main_l", oconv=self.oconv(path, wet_db=-100.0, dry_db=0.0))))
+        wet_only = assess(config(output("main_l", oconv=self.oconv(path, wet_db=0.0, dry_db=-100.0))))
+        self.assertEqual((dry_only["state"], wet_only["state"]), (guard.OK, guard.ROTATES))
+        mixed = assess(config(output("main_l", oconv=self.oconv(path, wet_db=-20.0, dry_db=0.0))))
+        self.assertEqual(mixed["state"], guard.OK)
+
+    def test_the_gains_scale_the_response_but_not_the_phase(self):
+        path = self.wav("dirac.wav", dirac_ir(RATE))
+        result = assess(config(output("main_l", oconv=self.oconv(path, input_gain_db=-12.0, output_gain_db=6.0))))
+        self.assertEqual((result["state"], result["dsp_cos"]), (guard.OK, 1.0))
+
+    def test_an_area_bank_convolver_uses_the_channel_it_names(self):
+        path = self.wav("stereo.wav", np.stack([dirac_ir(RATE), phase_swing_ir(RATE)], axis=1))
+        states = {channel: assess(config(output("main_l", oconv=self.oconv(path, channel=channel))))["state"]
+                  for channel in (0, 1)}
+        self.assertEqual(states, {0: guard.OK, 1: guard.ROTATES})
+        self.assertEqual(assess(config(output("main_l", oconv=self.oconv(path, channel=2))))["state"], guard.UNKNOWN)
+
+    def test_a_two_channel_global_ir_counts_with_its_worse_channel(self):
+        mixed = self.wav("mixed.wav", np.stack([dirac_ir(RATE), phase_swing_ir(RATE)], axis=1))
+        flat = self.wav("flat.wav", np.stack([dirac_ir(RATE), dirac_ir(RATE)], axis=1))
+        self.assertEqual(self.assess_global([self.global_convolver("mixed.wav")], {"mixed.wav": mixed})["state"], guard.ROTATES)
+        self.assertEqual(self.assess_global([self.global_convolver("flat.wav")], {"flat.wav": flat})["state"], guard.OK)
+        mono_swing = self.wav("mono.wav", phase_swing_ir(RATE))
+        self.assertEqual(self.assess_global([self.global_convolver("mono.wav")], {"mono.wav": mono_swing})["state"], guard.ROTATES)
+
+    def test_an_ir_that_cannot_be_read_makes_the_path_unknown(self):
+        junk = self.directory / "junk.wav"
+        junk.write_bytes(b"not a wave file")
+        eight_bit = bytearray(Path(self.wav("ok.wav", dirac_ir(RATE))).read_bytes())
+        eight_bit[34:36] = struct.pack("<H", 8)
+        (self.directory / "eight.wav").write_bytes(bytes(eight_bit))
+        cases = {"missing": str(self.directory / "missing.wav"), "junk": str(junk), "unsupported": str(self.directory / "eight.wav")}
+        for label, path in cases.items():
+            with self.subTest(label, stage="area bank"):
+                self.assertEqual(assess(config(output("main_l", oconv=self.oconv(path)))),
+                                 {"state": "unknown", "dsp_cos": None, "stage": f"main_l convolver {Path(path).name}"})
+            with self.subTest(label, stage="global"):
+                self.assertEqual(self.assess_global([self.global_convolver("x.wav")], {"x.wav": path}),
+                                 {"state": "unknown", "dsp_cos": None, "stage": "global convolver x.wav"})
+
+    def test_a_global_kernel_that_does_not_resolve_makes_the_path_unknown(self):
+        plugin = self.global_convolver("gone.wav")
+        self.assertEqual(guard.assess_unit(config(output("main_l"), chain=[plugin]), unit("main_l"), sample_rate_hz=RATE),
+                         {"state": "unknown", "dsp_cos": None, "stage": "global convolver gone.wav"})
+
+        def resolve(kernel):
+            raise FileNotFoundError(f"IR file not found: {kernel}")
+
+        result = guard.assess_unit(config(output("main_l"), chain=[plugin]), unit("main_l"),
+                                   sample_rate_hz=RATE, kernel_path=resolve)
+        self.assertEqual(result["stage"], "global convolver gone.wav")
+
+    def test_a_surround_global_convolver_acts_on_its_own_group_only(self):
+        path = self.wav("swing.wav", phase_swing_ir(RATE))
+        rear = output("rear_l", source=6, positions=True)
+        for group, expected in (("front", guard.OK), ("rear", guard.ROTATES)):
+            with self.subTest(group=group):
+                plugin = {**self.global_convolver("swing.wav"), "group": group}
+                result = self.assess_global([plugin], {"swing.wav": path}, unit("rear_l"), outputs=[rear])
+                self.assertEqual(result["state"], expected)
+
+    def test_a_long_high_rate_ir_is_modelled_at_the_stream_rate(self):
+        ir = phase_swing_ir(192_000, swing=1.0, taps=65536)
+        path = self.wav("long.wav", ir, 192_000)
+        result = assess(config(output("main_l", oconv=self.oconv(path))), rate=192_000)
+        self.assertAlmostEqual(result["dsp_cos"], detector_cos(ir, 192_000), delta=0.02)
 
 
 class ModelMatchesTheDetectorTest(unittest.TestCase):

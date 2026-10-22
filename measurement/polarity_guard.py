@@ -21,13 +21,14 @@ from __future__ import annotations
 
 import logging
 import math
-from collections.abc import Mapping
-from dataclasses import dataclass
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 import numpy as np
 
-from dsp.native_model import native_peq_coefficients
+from dsp.native_model import native_peq_coefficients, read_ir, resample_ir
 from measurement import polarity
 
 logger = logging.getLogger(__name__)
@@ -84,20 +85,41 @@ class _RolePath:
     stages: tuple[_Stage, ...]
 
 
+@dataclass
+class _Context:
+    """The frequency grid of one model run and the choices that make its variants."""
+
+    rate: int
+    size: int
+    z1: np.ndarray
+    z2: np.ndarray
+    omega: np.ndarray
+    surround: bool
+    kernel_path: Callable[[str], str] | None
+    irs: dict[str, tuple[np.ndarray, int]] = field(default_factory=dict)
+    # A Global stage of a centre or LFE input runs on a pair whose channel is not named here.
+    side: str | None = None
+    # A two-channel Global IR does not say which channel a speaker input uses.
+    ir_channel: int = 0
+    stereo_ir: bool = False
+
+
 def unknown_result(stage: str) -> dict:
     return {"state": UNKNOWN, "dsp_cos": None, "stage": stage}
 
 
-def assess_unit(config: Mapping[str, Any], unit: Mapping[str, Any], *, sample_rate_hz: int) -> dict:
+def assess_unit(config: Mapping[str, Any], unit: Mapping[str, Any], *, sample_rate_hz: int,
+                kernel_path: Callable[[str], str] | None = None) -> dict:
     """Judge the rendered path of one polarity unit.
 
     ``config`` is the engine configuration of the rendered plan (``outputs`` and
-    the Global ``chain``). Returns ``state`` (ok / rotates / unknown), ``dsp_cos``
+    the Global ``chain``); ``kernel_path`` resolves a Global convolver's kernel
+    name to its file. Returns ``state`` (ok / rotates / unknown), ``dsp_cos``
     (carrier phase cosine the detector would read behind an ideal speaker, signed)
     and ``stage`` (the stage that rotates or cannot be modelled, else "").
     """
     try:
-        return _assess(config, unit, sample_rate_hz)
+        return _assess(config, unit, sample_rate_hz, kernel_path)
     except _Unmodelled as exc:
         return unknown_result(exc.stage)
     except (ArithmeticError, KeyError, IndexError, TypeError, ValueError) as exc:
@@ -105,43 +127,37 @@ def assess_unit(config: Mapping[str, Any], unit: Mapping[str, Any], *, sample_ra
         return unknown_result("DSP path")
 
 
-def _assess(config: Mapping[str, Any], unit: Mapping[str, Any], rate: int) -> dict:
+def _assess(config: Mapping[str, Any], unit: Mapping[str, Any], rate: int,
+            kernel_path: Callable[[str], str] | None) -> dict:
     if type(rate) is not int or rate <= 0:
         raise ValueError("Sample rate must be a positive integer")
     outputs = {output["name"]: output for output in config["outputs"]}
     roles = list(unit["roles"])
     if not roles or any(role not in outputs for role in roles):
         raise _Unmodelled("unit roles")
-    surround = any("input_positions" in output for output in outputs.values())
     size = 1 << math.ceil(math.log2(MODEL_SECONDS * rate))
     omega = 2.0 * np.pi * np.arange(size // 2 + 1) / size
     z1 = np.exp(-1j * omega)
-    grid = _Grid(rate=rate, size=size, omega=omega, z1=z1, z2=z1 * z1)
+    context = _Context(rate=rate, size=size, z1=z1, z2=z1 * z1, omega=omega,
+                       surround=any("input_positions" in output for output in outputs.values()),
+                       kernel_path=kernel_path)
     chain = [plugin for plugin in config.get("chain", []) if plugin.get("enabled", True)]
-    # The Global stages of a centre or LFE input run on a pair whose channel is not named here;
-    # both sides are modelled and the less readable one counts.
     ambiguous = any(_driven_input(outputs[role]) in (2, 3) for role in roles)
-    sides = ("left", "right") if ambiguous else (None,)
-    worst: dict | None = None
-    for side in sides:
-        paths = [_role_path(outputs[role], role, chain, grid, surround, side) for role in roles]
-        reading = _read(paths, grid, removed=None)
-        if worst is None or abs(reading) < abs(worst["cos"]):
-            worst = {"cos": reading, "paths": paths}
+    worst: tuple[float, list[_RolePath]] | None = None
+    for side in (("left", "right") if ambiguous else (None,)):
+        for ir_channel in (0, 1):
+            context.side, context.ir_channel, context.stereo_ir = side, ir_channel, False
+            paths = [_role_path(outputs[role], role, chain, context) for role in roles]
+            cos = _read(paths, context, removed=None)
+            if worst is None or abs(cos) < abs(worst[0]):
+                worst = (cos, paths)
+            if not context.stereo_ir:
+                break
     assert worst is not None
-    cos = worst["cos"]
+    cos, paths = worst
     if abs(cos) >= GUARD_MIN_COS:
         return {"state": OK, "dsp_cos": round(cos, 3), "stage": ""}
-    return {"state": ROTATES, "dsp_cos": round(cos, 3), "stage": _culprit(worst["paths"], grid)}
-
-
-@dataclass(frozen=True)
-class _Grid:
-    rate: int
-    size: int
-    omega: np.ndarray
-    z1: np.ndarray
-    z2: np.ndarray
+    return {"state": ROTATES, "dsp_cos": round(cos, 3), "stage": _culprit(paths, context)}
 
 
 def _driven_input(output: Mapping[str, Any]) -> int:
@@ -152,77 +168,123 @@ def _driven_input(output: Mapping[str, Any]) -> int:
     return int(routes[0]["input"])
 
 
-def _biquad(grid: _Grid, coefficients: tuple[float, ...]) -> np.ndarray:
+def _biquad(context: _Context, coefficients: tuple[float, ...]) -> np.ndarray:
     b0, b1, b2, a1, a2 = coefficients
-    return (b0 + b1 * grid.z1 + b2 * grid.z2) / (1.0 + a1 * grid.z1 + a2 * grid.z2)
+    return (b0 + b1 * context.z1 + b2 * context.z2) / (1.0 + a1 * context.z1 + a2 * context.z2)
 
 
-def _role_path(output: Mapping[str, Any], role: str, chain: list[dict], grid: _Grid,
-               surround: bool, side: str | None) -> _RolePath:
+def _role_path(output: Mapping[str, Any], role: str, chain: list[dict], context: _Context) -> _RolePath:
     if output.get("post_crossover_routes") or output.get("crossover_groups") or output.get("crossover_sos"):
         raise _Unmodelled(f"{role} bass bus")
     source = _driven_input(output)
     gain = float(output["routes"][0].get("gain", 1.0))
     level = 10.0 ** (float(output.get("gain_db", 0.0)) / 20.0)
     # The engine rounds the output delay to whole samples.
-    delay_samples = math.floor(float(output.get("delay_ms", 0.0)) * grid.rate / 1000.0 + 0.5)
-    base = (gain * level * (-1.0 if output.get("invert") else 1.0)) * np.exp(-1j * grid.omega * delay_samples)
-    stages = [_Stage(name, response) for name, response in _global_stages(chain, source, grid, surround, side)]
-    stages.extend(_output_stages(output, role, grid))
+    delay_samples = math.floor(float(output.get("delay_ms", 0.0)) * context.rate / 1000.0 + 0.5)
+    base = (gain * level * (-1.0 if output.get("invert") else 1.0)) * np.exp(-1j * context.omega * delay_samples)
+    stages = [_Stage(name, response) for name, response in _global_stages(chain, source, context)]
+    stages.extend(_output_stages(output, role, context))
     return _RolePath(base=base, stages=tuple(stages))
 
 
-def _output_stages(output: Mapping[str, Any], role: str, grid: _Grid) -> list[_Stage]:
+def _output_stages(output: Mapping[str, Any], role: str, context: _Context) -> list[_Stage]:
     """Crossover, area-bank PEQ and convolver of one output."""
     stages = []
     sections = output.get("sos") or []
     if sections:
-        response = np.ones_like(grid.z1)
+        response = np.ones_like(context.z1)
         for section in sections:
-            response = response * _biquad(grid, tuple(float(value) for value in section))
+            response = response * _biquad(context, tuple(float(value) for value in section))
         stages.append(_Stage(f"{role} crossover", response))
     bands = output.get("filters") or []
     if bands:
-        response = np.ones_like(grid.z1)
+        response = np.ones_like(context.z1)
         for band in bands:
             frequency = float(band["frequency_hz"])
-            if not 0.0 < frequency < grid.rate / 2:
+            if not 0.0 < frequency < context.rate / 2:
                 raise _Unmodelled(f"{role} PEQ")
             coefficients = native_peq_coefficients(
-                str(band["type"]), frequency, grid.rate, float(band["q"]), float(band["gain_db"]))
-            response = response * _biquad(grid, coefficients) ** int(band.get("stages", 1))
+                str(band["type"]), frequency, context.rate, float(band["q"]), float(band["gain_db"]))
+            response = response * _biquad(context, coefficients) ** int(band.get("stages", 1))
         stages.append(_Stage(f"{role} PEQ", response))
-    if output.get("oconv"):
-        raise _Unmodelled(f"{role} convolver")
+    oconv = output.get("oconv")
+    if oconv:
+        name = f"{role} convolver {Path(str(oconv.get('path', ''))).name}".rstrip()
+        stages.append(_Stage(name, _convolver_response(oconv, str(oconv.get("path", "")), name,
+                                                       int(oconv.get("channel", 0)), context)))
     return stages
 
 
-def _global_stages(chain: list[dict], source: int, grid: _Grid, surround: bool,
-                   side: str | None) -> list[tuple[str, np.ndarray]]:
+def _read_ir_cached(path: str, context: _Context) -> tuple[np.ndarray, int]:
+    if path not in context.irs:
+        context.irs[path] = read_ir(path)
+    return context.irs[path]
+
+
+def _convolver_response(params: Mapping[str, Any], path: str, name: str, channel: int,
+                        context: _Context) -> np.ndarray:
+    """``input gain * output gain * (dry + wet * IR)`` of a convolver, the IR resampled to the stream rate.
+
+    Both convolvers (area bank and Global) run the same native stage; an IR that
+    cannot be read or has no such channel makes the path unknown.
+    """
+    try:
+        frames, rate_in = _read_ir_cached(path, context)
+        if channel >= frames.shape[1]:
+            raise ValueError("IR channel is out of range")
+        wet, dry, gain_in, gain_out = (
+            10.0 ** (float(params.get(key, default)) / 20.0) for key, default in (
+                ("wet_db", 0.0), ("dry_db", -100.0), ("input_gain_db", 0.0), ("output_gain_db", 0.0)))
+    except (OSError, ValueError, TypeError) as exc:
+        raise _Unmodelled(name) from exc
+    taps = resample_ir(frames[:, channel], rate_in, context.rate)[:context.size]
+    return gain_in * gain_out * (dry + wet * np.fft.rfft(taps, context.size))
+
+
+def _global_stages(chain: list[dict], source: int, context: _Context) -> list[tuple[str, np.ndarray]]:
     """Responses of the enabled Global plugins that act on one engine input."""
-    group = _POSITION_GROUP.get(source) if surround else None
-    channel = side or _POSITION_SIDE.get(source) or "left"
+    group = _POSITION_GROUP.get(source) if context.surround else None
+    side = context.side or _POSITION_SIDE.get(source) or "left"
     stages = []
     for plugin in chain:
         # A Surround Global plugin runs only on the effect pairs of its speaker group.
-        if surround and plugin.get("group") and plugin["group"] != group:
+        if context.surround and plugin.get("group") and plugin["group"] != group:
             continue
         kind = plugin.get("type")
         if kind in NEUTRAL_GLOBAL_STAGES:
             continue
         if kind == "equalizer":
-            response = _global_equalizer(plugin, channel, grid)
+            response = _global_equalizer(plugin, side, context)
             if response is not None:
                 stages.append(("global equalizer", response))
-            continue
-        if kind == "convolver":
-            kernel = str((plugin.get("params") or {}).get("kernel", "")).rsplit("/", 1)[-1]
-            raise _Unmodelled(f"global convolver {kernel}".rstrip())
-        raise _Unmodelled(f"global {str(kind or 'stage').replace('_', ' ')}")
+        elif kind == "convolver":
+            stages.append(_global_convolver(plugin, context))
+        else:
+            raise _Unmodelled(f"global {str(kind or 'stage').replace('_', ' ')}")
     return stages
 
 
-def _global_equalizer(plugin: Mapping[str, Any], channel: str, grid: _Grid) -> np.ndarray | None:
+def _global_convolver(plugin: Mapping[str, Any], context: _Context) -> tuple[str, np.ndarray]:
+    params = plugin.get("params") if isinstance(plugin.get("params"), Mapping) else {}
+    kernel = str(params.get("kernel", ""))
+    name = f"global convolver {Path(kernel).name}".rstrip()
+    if context.kernel_path is None:
+        raise _Unmodelled(name)
+    try:
+        path = str(context.kernel_path(kernel))
+    except (OSError, ValueError, TypeError) as exc:
+        raise _Unmodelled(name) from exc
+    try:
+        channels = _read_ir_cached(path, context)[0].shape[1]
+    except (OSError, ValueError) as exc:
+        raise _Unmodelled(name) from exc
+    # A one-channel IR serves both sides; a stereo IR is modelled per channel, the worse one counts.
+    context.stereo_ir = context.stereo_ir or channels > 1
+    channel = min(context.ir_channel, channels - 1)
+    return name, _convolver_response(params, path, name, channel, context)
+
+
+def _global_equalizer(plugin: Mapping[str, Any], channel: str, context: _Context) -> np.ndarray | None:
     """Response of a Global PEQ for one channel, or None when it leaves the phase alone."""
     params = plugin.get("params") if isinstance(plugin.get("params"), Mapping) else {}
     if params.get("channelMode") == "dual":
@@ -245,36 +307,36 @@ def _global_equalizer(plugin: Mapping[str, Any], channel: str, grid: _Grid) -> n
         if not iir:
             raise _Unmodelled("global equalizer")
         frequency = float(band.get("frequencyHz", 1000.0))
-        if not 0.0 < frequency < grid.rate / 2:
+        if not 0.0 < frequency < context.rate / 2:
             raise _Unmodelled("global equalizer")
-        coefficients = native_peq_coefficients(native, frequency, grid.rate, float(band.get("q", 1.0)), gain_db)
-        shape = _biquad(grid, coefficients)
+        coefficients = native_peq_coefficients(native, frequency, context.rate, float(band.get("q", 1.0)), gain_db)
+        shape = _biquad(context, coefficients)
         response = shape if response is None else response * shape
     return response
 
 
-def _read(paths: list[_RolePath], grid: _Grid, *, removed: str | None) -> float:
+def _read(paths: list[_RolePath], context: _Context, *, removed: str | None) -> float:
     """Carrier phase cosine the detector reads behind the summed paths."""
-    total = np.zeros_like(grid.z1)
+    total = np.zeros_like(context.z1)
     for path in paths:
         response = path.base
         for stage in path.stages:
             if stage.name != removed:
                 response = response * stage.response
         total = total + response
-    impulse = np.roll(np.fft.irfft(total, grid.size), int(LEAD_SECONDS * grid.rate))
+    impulse = np.roll(np.fft.irfft(total, context.size), int(LEAD_SECONDS * context.rate))
     magnitude = np.abs(impulse)
     if float(magnitude.max()) <= 1e-18:
         return 0.0
-    return float(polarity.peak_phase(impulse, grid.rate, int(np.argmax(magnitude)))[0])
+    return float(polarity.peak_phase(impulse, context.rate, int(np.argmax(magnitude)))[0])
 
 
-def _culprit(paths: list[_RolePath], grid: _Grid) -> str:
+def _culprit(paths: list[_RolePath], context: _Context) -> str:
     """The stage whose removal restores the most readable phase."""
     names = list(dict.fromkeys(stage.name for path in paths for stage in path.stages))
-    best, best_cos = "", abs(_read(paths, grid, removed=None))
+    best, best_cos = "", abs(_read(paths, context, removed=None))
     for name in names:
-        candidate = abs(_read(paths, grid, removed=name))
+        candidate = abs(_read(paths, context, removed=name))
         if candidate > best_cos:
             best, best_cos = name, candidate
     return best

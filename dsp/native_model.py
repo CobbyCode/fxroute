@@ -66,14 +66,8 @@ def native_peq_coefficients(
     return b0 / a0, b1 / a0, b2 / a0, a1 / a0, a2 / a0
 
 
-def read_mono_ir(path: str, channel: int) -> np.ndarray:
-    """Read one IR channel as float64 samples, failing closed on bad files.
-
-    Uses the same WAV parsing and kernel-support gate as the manager, so the
-    predictor only ever models IR files the native convolver would load.
-    """
-    if type(channel) is not int or channel < 0:
-        raise ValueError("IR channel must be a non-negative integer")
+def _open_ir(path: str) -> tuple[dict, str]:
+    """Parse an IR file and gate it on the encodings the native convolver loads."""
     name = str(path) or ""
     try:
         params = parse_wav_frames(Path(name))
@@ -83,9 +77,11 @@ def read_mono_ir(path: str, channel: int) -> np.ndarray:
         ensure_kernel_supported_ir(params, Path(name).name)
     except ValueError as exc:
         raise ValueError(f"IR file has an unsupported encoding: {name}") from exc
-    if channel >= params["channels"]:
-        raise ValueError(
-            f"IR channel {channel} exceeds the {params['channels']} channels of {name}")
+    return params, name
+
+
+def _decode_ir(params: dict, name: str) -> np.ndarray:
+    """All channels of a parsed IR as a ``(frames, channels)`` float64 array."""
     data = params["data"]
     if params["format"] == 3:
         samples = np.frombuffer(data, dtype="<f4").astype(np.float64)
@@ -101,4 +97,45 @@ def read_mono_ir(path: str, channel: int) -> np.ndarray:
     frames = params["frames"]
     if samples.size != frames * params["channels"]:
         raise ValueError(f"IR file has truncated frames: {name}")
-    return np.ascontiguousarray(samples.reshape(frames, params["channels"])[:, channel])
+    return samples.reshape(frames, params["channels"])
+
+
+def read_mono_ir(path: str, channel: int) -> np.ndarray:
+    """Read one IR channel as float64 samples, failing closed on bad files.
+
+    Uses the same WAV parsing and kernel-support gate as the manager, so the
+    predictor only ever models IR files the native convolver would load.
+    """
+    if type(channel) is not int or channel < 0:
+        raise ValueError("IR channel must be a non-negative integer")
+    params, name = _open_ir(path)
+    if channel >= params["channels"]:
+        raise ValueError(
+            f"IR channel {channel} exceeds the {params['channels']} channels of {name}")
+    return np.ascontiguousarray(_decode_ir(params, name)[:, channel])
+
+
+def read_ir(path: str) -> tuple[np.ndarray, int]:
+    """Read every IR channel as a ``(frames, channels)`` array with the file's sample rate."""
+    params, name = _open_ir(path)
+    return _decode_ir(params, name), int(params["rate"])
+
+
+def resample_ir(taps: np.ndarray, rate_in: int, rate_out: int) -> np.ndarray:
+    """Model the native convolver's IR rate conversion: band-limited FFT resampling.
+
+    The DC gain (sum of the taps) is kept, so the convolver stays level-stable
+    across rates. The input is zero-padded to a whole number of rate periods so
+    the output length is exact and the arrival stays where it was.
+    """
+    if rate_in == rate_out:
+        return taps
+    divisor = math.gcd(rate_in, rate_out)
+    step_in, step_out = rate_in // divisor, rate_out // divisor
+    count_in = -(-taps.size // step_in) * step_in
+    count_out = count_in // step_in * step_out
+    spectrum = np.fft.rfft(taps, count_in)
+    bins = min(spectrum.size, count_out // 2 + 1)
+    resampled = np.zeros(count_out // 2 + 1, dtype=np.complex128)
+    resampled[:bins] = spectrum[:bins]
+    return np.fft.irfft(resampled, count_out)

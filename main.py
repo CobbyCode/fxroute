@@ -5870,7 +5870,8 @@ def _resolve_polarity_dsp_path(target: dict) -> dict:
 
     Renders the live plan the way the sweep did and returns its engine config
     only while its fingerprint still equals the target's, so the Polarity Check
-    guard never models a path other than the one that was measured.
+    guard never models a path other than the one that was measured. The
+    ``kernel_path`` resolver names the file of a Global convolver kernel.
     """
     service = get_output_service()
     manager = _require_dsp_manager()
@@ -5884,7 +5885,9 @@ def _resolve_polarity_dsp_path(target: dict) -> dict:
     config = manager.compile_engine_config(
         [dict(entry) for entry in layout], preset_name=plan["global"]["preset"], mode=plan["mode"],
         sample_rate_hz=rate, extras_override=plan["global"]["extras"])
-    return {"config": config}
+    library = manager.library("global", plan["mode"])
+    return {"config": config,
+            "kernel_path": lambda kernel: str(manager._resolve_kernel_path(kernel, library))}
 
 
 def _running_output_sample_rate() -> int | None:

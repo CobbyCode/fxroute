@@ -4,15 +4,18 @@
 
 import asyncio
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from fastapi import HTTPException
 
 from dsp.crossover import design_crossover
+import test_polarity_guard as fixtures
 
 from audio.output_state import (default_output_state, set_crossover, set_mode_routing,
                                 set_output_processing, switch_mode)
@@ -227,6 +230,23 @@ class JobTests(unittest.IsolatedAsyncioTestCase):
         job = await self.run_job("high")
         self.assertEqual([row["verdict"] for row in job["result"]["rows"]], ["inconclusive", "reversed"])
         self.assertFalse(job["result"]["all_reversed"])
+
+    async def test_a_global_convolver_is_read_through_the_resolved_kernel_file(self):
+        self.configure(mode_state("stereo", ["main_l", "main_r"]),
+                       {("main_l",): reading("reversed"), ("main_r",): reading("reversed")})
+        with tempfile.TemporaryDirectory() as directory:
+            ir = fixtures.write_wav(Path(directory) / "room.wav", fixtures.phase_swing_ir(48000), 48000)
+            convolver = {"id": "conv", "type": "convolver", "enabled": True, "params": {"kernel": "room.wav"}}
+            self.resolve_path = lambda target: {
+                "config": path_config(neutral_output("main_l"), neutral_output("main_r"), chain=[convolver]),
+                "kernel_path": lambda kernel: ir}
+            api.configure_polarity_check(api.PolarityCheckDeps(
+                get_store=lambda: self.store, get_session=lambda: None, auto_sub_active=lambda: False,
+                get_output_state=lambda: self.state, resolve_dsp_path=self.resolve_path))
+            job = await self.run_job("main")
+        rows = job["result"]["rows"]
+        self.assertEqual([(row["reason"], row["guard"]["stage"]) for row in rows],
+                         [("dsp_filter_in_band", "global convolver room.wav")] * 2)
 
     async def test_an_unmodellable_stage_makes_the_reading_dsp_unknown(self):
         self.configure(mode_state("stereo", ["main_l", "main_r"]),
