@@ -11,7 +11,7 @@ import threading
 import unittest
 from pathlib import Path
 from types import MappingProxyType, SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from audio import device_profiles as profiles
@@ -993,7 +993,7 @@ class TierSessionOwnershipTests(unittest.IsolatedAsyncioTestCase):
         self.lock = asyncio.Lock()
         self.steps = []
 
-    def _runtime(self):
+    def _runtime(self, *, measurement_owned=True):
         from playback.runtime.channel_tier import _RuntimeChannelTierMixin
 
         class TierRuntime(_RuntimeChannelTierMixin):
@@ -1006,11 +1006,12 @@ class TierSessionOwnershipTests(unittest.IsolatedAsyncioTestCase):
                 pass
 
         async def drain_worker(step):
+            self.assertTrue(self.lock.locked(), "Hardware changes require rate-lock ownership")
             step()
 
         return TierRuntime(SimpleNamespace(
             audio_configuration_lock=lambda: self.lock,
-            measurement_audio_graph_owned=lambda: True,
+            measurement_audio_graph_owned=lambda: measurement_owned,
             drain_worker=drain_worker,
             get_audio_output_overview=lambda: {"selected_output": {}},
         ))
@@ -1047,6 +1048,163 @@ class TierSessionOwnershipTests(unittest.IsolatedAsyncioTestCase):
                 self._request("sample-rate-policy"), {"channel_tier_change": self._change()})
         self.assertEqual(self.steps, [])
         self.assertFalse(self.lock.locked())
+
+    async def test_free_session_lock_is_held_through_apply_and_rollback(self):
+        runtime = self._runtime(measurement_owned=False)
+        change = self._change()
+        await runtime._change_tier_hardware(change)
+        self.assertFalse(self.lock.locked())
+        await runtime._change_tier_hardware(change, rollback=True)
+        self.assertEqual(self.steps, ["apply", "rollback"])
+        self.assertFalse(self.lock.locked())
+
+    async def test_configuration_owner_does_not_reacquire_its_session_lock(self):
+        runtime = self._runtime(measurement_owned=False)
+        async with self.lock:
+            for ownership in (DspSyncOwnership.RATE, DspSyncOwnership.RATE_AND_GRAPH):
+                runtime._configuration_ownership = ownership
+                await asyncio.wait_for(runtime._change_tier_hardware(self._change()), 1)
+        self.assertEqual(self.steps, ["apply", "apply"])
+
+    async def test_queued_session_handoff_is_refused_even_before_waiter_claims_lock(self):
+        waiting = asyncio.Event()
+
+        class ObservedLock(asyncio.Lock):
+            async def acquire(self):
+                if self.locked():
+                    waiting.set()
+                return await super().acquire()
+
+        self.lock = ObservedLock()
+        runtime = self._runtime(measurement_owned=False)
+
+        async def session_handoff():
+            async with self.lock:
+                pass
+
+        await self.lock.acquire()
+        handoff = asyncio.create_task(session_handoff())
+        try:
+            await asyncio.wait_for(waiting.wait(), 1)
+            self.lock.release()
+            self.assertFalse(self.lock.locked())
+            async with asyncio.timeout(1):
+                with self.assertRaisesRegex(RuntimeError, "DSP audio configuration is busy"):
+                    await runtime._change_tier_hardware(self._change())
+            await handoff
+        finally:
+            if not handoff.done():
+                handoff.cancel()
+            await asyncio.gather(handoff, return_exceptions=True)
+        self.assertEqual(self.steps, [])
+        self.assertFalse(self.lock.locked())
+
+    async def test_rollback_refuses_busy_session_without_waiting(self):
+        runtime = self._runtime(measurement_owned=False)
+        async with self.lock:
+            task = asyncio.create_task(runtime._change_tier_hardware(self._change(), rollback=True))
+            try:
+                _done, pending = await asyncio.wait({task}, timeout=0.5)
+                self.assertFalse(pending, "Rollback must refuse a busy session, not wait under Coordinator")
+                with self.assertRaisesRegex(RuntimeError, "DSP audio configuration is busy"):
+                    await task
+            finally:
+                if not task.done():
+                    task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+        self.assertEqual(self.steps, [])
+
+
+class TierMeasurementLockInversionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_tier_transition_yields_coordinator_to_measurement_entry(self):
+        import measurement.session as measurement_session
+        from playback.runtime.channel_tier import _RuntimeChannelTierMixin
+        from playback.transition import PlaybackTransitionCoordinator, PlaybackTransitionFailure, TransitionRequest
+        from test_playback_transition_coordinator import FakeRuntime
+
+        session = measurement_session.MeasurementSampleRateSession()
+        playback_entered = asyncio.Event()
+        continue_playback = asyncio.Event()
+        measurement_waiting = asyncio.Event()
+        change = SimpleNamespace(
+            tier={"id": "14ch", "channels": 14, "rates": [88200, 96000]},
+            target_rate=96000, started=False, apply=lambda: self.fail("Busy tier change reached hardware"),
+        )
+
+        class TierRuntime(_RuntimeChannelTierMixin, FakeRuntime):
+            async def read_transition_snapshot(self, request):
+                snapshot = await super().read_transition_snapshot(request)
+                if request.operation == "play":
+                    playback_entered.set()
+                    await continue_playback.wait()
+                    snapshot["channel_tier_change"] = change
+                return snapshot
+
+            def invalidate_gate_sink_resolution(self):
+                pass
+
+        runtime = TierRuntime()
+        runtime._configuration_ownership = DspSyncOwnership.UNOWNED
+        runtime._dsp_runtime = SimpleNamespace(stop=AsyncMock())
+        runtime._deps = SimpleNamespace(
+            audio_configuration_lock=lambda: session.lock,
+            measurement_audio_graph_owned=lambda: session.owns_audio_graph,
+            drain_worker=AsyncMock(),
+            get_audio_output_overview=lambda: {"selected_output": dict(TierCoordinatorTests.PROFILE_14)},
+        )
+        coordinator = PlaybackTransitionCoordinator(runtime, gate_settle_seconds=0)
+
+        async def measurement_transition(request):
+            self.assertTrue(session.lock.locked())
+            self.assertTrue(coordinator.lock.locked())
+            measurement_waiting.set()
+            return await coordinator.execute(request)
+
+        services = SimpleNamespace(
+            get_samplerate_status=lambda: {"force_rate": 48000},
+            coordinator_current_playback_context=AsyncMock(return_value={"source": "local"}),
+            run_coordinated_transition=measurement_transition,
+            get_playback_intent_generation=lambda: 0,
+            get_player_audio_samplerate=lambda: None,
+            get_current_track_info=lambda: None,
+            spotify_target_track_from_state=lambda state: {},
+            spotify_prearm_sample_rate_hz=48000,
+            get_session=lambda: session,
+        )
+        request = TransitionRequest(
+            operation="play", source="local", target_rate=96000,
+            target_url="/music/target.flac", rate_change=True,
+            audio_overview={"selected_output": dict(TierCoordinatorTests.PROFILE_18)},
+        )
+        with patch.object(measurement_session, "_services", services), \
+                patch.object(measurement_session, "_playback_state_before_measurement", None):
+            playback = asyncio.create_task(coordinator.execute(request))
+            measurement = None
+            try:
+                await asyncio.wait_for(playback_entered.wait(), 1)
+                measurement = asyncio.create_task(session.start(48000))
+                await asyncio.wait_for(measurement_waiting.wait(), 1)
+                continue_playback.set()
+                _done, pending = await asyncio.wait({playback, measurement}, timeout=1)
+                self.assertFalse(pending, "Tier change and measurement entry deadlocked on inverted locks")
+                playback_result, measurement_result = await asyncio.gather(
+                    playback, measurement, return_exceptions=True)
+                self.assertIsInstance(playback_result, PlaybackTransitionFailure)
+                self.assertIn("DSP audio configuration is busy", str(playback_result))
+                self.assertEqual(measurement_result, session.generation)
+            finally:
+                continue_playback.set()
+                tasks = [task for task in (playback, measurement) if task is not None]
+                for task in tasks:
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+        self.assertTrue(session.active)
+        self.assertTrue(coordinator.last_result.committed)
+        self.assertFalse(session.lock.locked())
+        self.assertFalse(coordinator.lock.locked())
+        runtime._dsp_runtime.stop.assert_not_awaited()
+        runtime._deps.drain_worker.assert_not_awaited()
 
 
 class TierAdapterMultiPassTests(unittest.IsolatedAsyncioTestCase):

@@ -12,6 +12,7 @@ a measurement.
 import asyncio
 import sys
 import unittest
+from contextlib import ExitStack
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -265,7 +266,7 @@ class ReleaseTierRestoreTests(unittest.IsolatedAsyncioTestCase):
     async def _run_pending_restore(self, *, rate_change=True, session_owned=False, ingress_pending=False,
                                    transition_active=False, carrier_owned=False):
         policy = {"mode": "fixed", "rate": 96000}
-        transition = AsyncMock()
+        transition = AsyncMock(return_value=SimpleNamespace(committed=True))
         orchestrator = SimpleNamespace(sample_rate_policy_request=AsyncMock(
             return_value=SimpleNamespace(rate_change=rate_change)))
         with patch.object(main, "_policy_rate_restore_pending", True), \
@@ -321,6 +322,94 @@ class ReleaseTierRestoreTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(asyncio.CancelledError):
                 await main._digital_clock_guard_loop()
         self.assertEqual(order, ["resync", "restore"])
+
+
+class PendingPolicyRateRetryTests(unittest.IsolatedAsyncioTestCase):
+    """Failed or interrupted restores must remain eligible for the next guard tick."""
+
+    def setUp(self):
+        self.stack = ExitStack()
+        self.addCleanup(self.stack.close)
+        self.lock = asyncio.Lock()
+        self.request = AsyncMock(return_value=SimpleNamespace(rate_change=True))
+        self.transition = AsyncMock(return_value=SimpleNamespace(committed=True))
+        for patcher in (
+            patch.object(main, "_policy_rate_restore_pending", True),
+            patch.object(main, "_ingress_resync_pending", False),
+            patch.object(main, "_surround_carrier_owned", False),
+            patch.object(main, "_measurement_session_owns_live_rate", return_value=False),
+            patch.object(main, "_playback_transition_is_active", return_value=False),
+            patch.object(main, "_source_transition_lock", return_value=self.lock),
+            patch.object(main.samplerate, "load_sample_rate_policy", return_value={"mode": "fixed", "rate": 96000}),
+            patch.object(main.playback_orchestration, "configured", return_value=SimpleNamespace(
+                sample_rate_policy_request=self.request)),
+            patch.object(main, "_transition_sample_rate_policy", self.transition),
+        ):
+            self.stack.enter_context(patcher)
+
+    async def test_request_failure_keeps_pending_and_next_tick_retries(self):
+        self.request.side_effect = [RuntimeError("output unavailable"), SimpleNamespace(rate_change=True)]
+        with self.assertRaisesRegex(RuntimeError, "output unavailable"):
+            await main._restore_pending_policy_rate()
+        self.assertTrue(main._policy_rate_restore_pending)
+        await main._restore_pending_policy_rate()
+        self.assertFalse(main._policy_rate_restore_pending)
+        self.assertEqual(self.request.await_count, 2)
+        self.transition.assert_awaited_once()
+
+    async def test_transition_failure_keeps_pending_and_next_tick_retries(self):
+        self.transition.side_effect = [RuntimeError("device busy"), SimpleNamespace(committed=True)]
+        with self.assertRaisesRegex(RuntimeError, "device busy"):
+            await main._restore_pending_policy_rate()
+        self.assertTrue(main._policy_rate_restore_pending)
+        await main._restore_pending_policy_rate()
+        self.assertFalse(main._policy_rate_restore_pending)
+        self.assertEqual(self.transition.await_count, 2)
+
+    async def test_uncommitted_transition_keeps_pending_for_retry(self):
+        self.transition.side_effect = [SimpleNamespace(committed=False), SimpleNamespace(committed=True)]
+        await main._restore_pending_policy_rate()
+        self.assertTrue(main._policy_rate_restore_pending)
+        await main._restore_pending_policy_rate()
+        self.assertFalse(main._policy_rate_restore_pending)
+        self.assertEqual(self.transition.await_count, 2)
+
+    async def test_cancelled_lock_wait_keeps_pending(self):
+        waiting = asyncio.Event()
+
+        class ObservedLock(asyncio.Lock):
+            async def acquire(self):
+                if self.locked():
+                    waiting.set()
+                return await super().acquire()
+
+        lock = ObservedLock()
+        async with lock:
+            with patch.object(main, "_source_transition_lock", return_value=lock):
+                task = asyncio.create_task(main._restore_pending_policy_rate())
+                try:
+                    await asyncio.wait_for(waiting.wait(), 1)
+                finally:
+                    task.cancel()
+                    with self.assertRaises(asyncio.CancelledError):
+                        await task
+        self.assertTrue(main._policy_rate_restore_pending)
+        self.transition.assert_not_awaited()
+
+    async def test_measurement_claim_while_waiting_keeps_pending(self):
+        with patch.object(main, "_measurement_session_owns_live_rate", side_effect=[False, True]):
+            await main._restore_pending_policy_rate()
+        self.assertTrue(main._policy_rate_restore_pending)
+        self.transition.assert_not_awaited()
+
+    async def test_pending_is_cleared_only_after_transition_commit(self):
+        async def transition(*args, **kwargs):
+            self.assertTrue(main._policy_rate_restore_pending)
+            return SimpleNamespace(committed=True)
+
+        self.transition.side_effect = transition
+        await main._restore_pending_policy_rate()
+        self.assertFalse(main._policy_rate_restore_pending)
 
 
 if __name__ == "__main__":

@@ -219,6 +219,7 @@ let downloadStatusPollTimer = null;
 let lastDownloadStatus = null;
 
 const LIBRARY_SCAN_POLL_INTERVAL_MS = 1200;
+let libraryScanPollTimer = null;
 
 // Library view tabs in tab order. Albums, Artists, Playlists and Favorites are
 // tile views (grids with detail pages); Tracks and Folders are lists.
@@ -452,6 +453,14 @@ async function toggleTrackFavoriteById(trackId) {
     }
 }
 
+function scheduleLibraryStatusPoll() {
+    if (libraryScanPollTimer !== null) return;
+    libraryScanPollTimer = setTimeout(() => {
+        libraryScanPollTimer = null;
+        void fetchLibraryStatus();
+    }, LIBRARY_SCAN_POLL_INTERVAL_MS);
+}
+
 async function fetchLibraryStatus() {
     try {
         const resp = await fetch('/api/library/status');
@@ -462,9 +471,11 @@ async function fetchLibraryStatus() {
         deps.getState().library.scanning = !!status.scanning;
         renderLibraryView();
         if (status.scanning) {
-            setTimeout(fetchLibraryStatus, LIBRARY_SCAN_POLL_INTERVAL_MS);
-        } else if (wasScanning) {
-            await fetchTracks();
+            scheduleLibraryStatusPoll();
+        } else {
+            clearTimeout(libraryScanPollTimer);
+            libraryScanPollTimer = null;
+            if (wasScanning) await fetchTracks();
         }
         return status;
     } catch (e) {
@@ -910,10 +921,14 @@ function updateLibraryViewModeToggle() {
 }
 
 let albumsFetchInFlight = false;
+let albumsRefreshPending = false;
 
-async function fetchAlbums() {
-    if (deps.getState().library.albumsLoaded && deps.getState().library.albums.length > 0) return;
-    if (albumsFetchInFlight) return;
+async function fetchAlbums(force = false) {
+    if (!force && deps.getState().library.albumsLoaded && deps.getState().library.albums.length > 0) return;
+    if (albumsFetchInFlight) {
+        if (force) albumsRefreshPending = true;
+        return;
+    }
     albumsFetchInFlight = true;
     try {
         const res = await fetch('/api/albums');
@@ -943,6 +958,10 @@ async function fetchAlbums() {
         }
     } finally {
         albumsFetchInFlight = false;
+        if (albumsRefreshPending) {
+            albumsRefreshPending = false;
+            void fetchAlbums(true);
+        }
     }
 }
 
@@ -2752,7 +2771,7 @@ async function saveTidalPlaylistFromSelection() {
     try {
         const data = await tidal.createPlaylist(name, trackIds);
         if (els.playlistName) els.playlistName.value = '';
-        deps.showToast(`Saved to TIDAL: ${data?.name || name}`, 'success');
+        deps.showToast(data?.warning || `Saved to TIDAL: ${data?.name || name}`, data?.warning ? 'error' : 'success');
     } catch (e) {
         deps.showToast(tidal.friendlyError(e?.message || e), 'error');
     } finally {
@@ -3342,7 +3361,7 @@ async function refreshLibrary() {
         const data = await resp.json();
         if (!resp.ok || data.status === 'error') throw new Error(data.message || 'Refresh failed');
         deps.getState().library.scanStatus = data;
-        setTimeout(fetchLibraryStatus, LIBRARY_SCAN_POLL_INTERVAL_MS);
+        scheduleLibraryStatusPoll();
     } catch (e) {
         deps.showToast('Failed to refresh library', 'error');
         deps.getState().library.scanning = false;

@@ -24,6 +24,7 @@ from fastapi import APIRouter, HTTPException, Request
 
 import streaming
 from streaming.tidal import auth as tidal_auth
+from streaming.tidal import catalog as tidal_catalog
 from streaming.tidal import playback as tidal_playback
 from streaming.tidal.cache import library_cache as tidal_library_cache
 
@@ -137,6 +138,14 @@ async def _json_object(request: Request) -> dict:
     if not isinstance(body, dict):
         raise HTTPException(status_code=400, detail="Invalid JSON body")
     return body
+
+
+async def _favorite_boolean(request: Request) -> bool:
+    body = await _json_object(request)
+    favorite = body.get("favorite")
+    if not isinstance(favorite, bool):
+        raise HTTPException(status_code=400, detail="favorite must be a boolean")
+    return favorite
 
 
 # ---------------------------------------------------------------------------
@@ -315,6 +324,8 @@ def _streaming_provider(provider_id: str):
 def _tidal_http_error(exc: Exception) -> HTTPException:
     if isinstance(exc, tidal_auth.TidalAuthError):
         return HTTPException(status_code=401, detail=str(exc))
+    if isinstance(exc, tidal_catalog.TidalCatalogError):
+        return HTTPException(status_code=exc.status_code, detail=str(exc))
     if isinstance(exc, tidal_playback.TidalStreamError):
         status = {
             tidal_playback.KIND_AUTH: 401,
@@ -462,52 +473,40 @@ async def api_tidal_library_snapshot(user: str = ""):
 
 @router.post("/api/streaming/{provider_id}/tracks/{track_id}/favorite")
 async def api_streaming_provider_track_favorite(provider_id: str, track_id: str, request: Request):
+    favorite = await _favorite_boolean(request)
     fn = _provider_catalog_method(provider_id, "set_track_favorite")
     try:
-        body = await request.json()
-    except Exception:
-        body = {}
-    try:
-        return await fn(track_id, bool(body.get("favorite", False)))
+        return await fn(track_id, favorite)
     except Exception as exc:
         raise _tidal_http_error(exc) from exc
 
 
 @router.post("/api/streaming/{provider_id}/albums/{album_id}/favorite")
 async def api_streaming_provider_album_favorite(provider_id: str, album_id: str, request: Request):
+    favorite = await _favorite_boolean(request)
     fn = _provider_catalog_method(provider_id, "set_album_favorite")
     try:
-        body = await request.json()
-    except Exception:
-        body = {}
-    try:
-        return await fn(album_id, bool(body.get("favorite", False)))
+        return await fn(album_id, favorite)
     except Exception as exc:
         raise _tidal_http_error(exc) from exc
 
 
 @router.post("/api/streaming/{provider_id}/artists/{artist_id}/favorite")
 async def api_streaming_provider_artist_favorite(provider_id: str, artist_id: str, request: Request):
+    favorite = await _favorite_boolean(request)
     fn = _provider_catalog_method(provider_id, "set_artist_favorite")
     try:
-        body = await request.json()
-    except Exception:
-        body = {}
-    try:
-        return await fn(artist_id, bool(body.get("favorite", False)))
+        return await fn(artist_id, favorite)
     except Exception as exc:
         raise _tidal_http_error(exc) from exc
 
 
 @router.post("/api/streaming/{provider_id}/playlists/{playlist_id}/favorite")
 async def api_streaming_provider_playlist_favorite(provider_id: str, playlist_id: str, request: Request):
+    favorite = await _favorite_boolean(request)
     fn = _provider_catalog_method(provider_id, "set_playlist_favorite")
     try:
-        body = await request.json()
-    except Exception:
-        body = {}
-    try:
-        return await fn(playlist_id, bool(body.get("favorite", False)))
+        return await fn(playlist_id, favorite)
     except Exception as exc:
         raise _tidal_http_error(exc) from exc
 

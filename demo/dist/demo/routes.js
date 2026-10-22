@@ -3697,13 +3697,13 @@
                 }
             } else if (mutation.kind === 'set_level_calibration') {
                 if (!Number.isInteger(mutation.state_revision) || mutation.state_revision !== outputStateStore.revision) {
-                    return { error: 'Level Matching configuration changed; measure again', status: 409 };
+                    return err('Level Matching configuration changed; measure again', 409);
                 }
                 if (mutation.measurement_job_id) {
                     const job = levelMatchJobs[mutation.measurement_job_id];
                     if (!job || job.cancel_requested || job.result.state_revision !== mutation.state_revision
                         || job.result.mode !== mode || JSON.stringify(job.result.values) !== JSON.stringify(mutation.values)) {
-                        return { error: 'Level Matching configuration changed; measure again', status: 409 };
+                        return err('Level Matching configuration changed; measure again', 409);
                     }
                 }
                 if (!mutation.values || typeof mutation.values !== 'object' || !Object.keys(mutation.values).length) {

@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import sqlite3
+import threading
 import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -75,6 +76,7 @@ class LibraryMetadataStore:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.cover_dir.mkdir(parents=True, exist_ok=True)
         self._last_request_at = 0.0
+        self._rate_lock = threading.Lock()
         self._init_schema()
 
     @contextmanager
@@ -757,10 +759,11 @@ class LibraryMetadataStore:
         return response.json()
 
     def _rate_limit(self) -> None:
-        elapsed = time.monotonic() - self._last_request_at
-        if elapsed < 1.1:
-            time.sleep(1.1 - elapsed)
-        self._last_request_at = time.monotonic()
+        with self._rate_lock:
+            elapsed = time.monotonic() - self._last_request_at
+            if elapsed < 1.1:
+                time.sleep(1.1 - elapsed)
+            self._last_request_at = time.monotonic()
 
     def _find_musicbrainz_release(self, album: str, artist: str) -> Optional[dict[str, Any]]:
         """Match a release through the shared enrichment owner.

@@ -373,8 +373,8 @@ async def _run_auto_sub_22_optimize(
              and round(float(candidate.get("sub2_alignment_ms", 0.0)), 2) == round(float(winner.get("sub2_alignment_ms", 0.0)), 2)),
             {},
         )
-        best_sub1 = _auto_sub_clamped_delay(float(winner.get("sub1_alignment_ms", sub1_winner_delay) or sub1_winner_delay))
-        best_sub2 = _auto_sub_clamped_delay(float(winner.get("sub2_alignment_ms", sub2_winner_delay) or sub2_winner_delay))
+        best_sub1 = _auto_sub_winner_delay_ms({"delay_ms": winner.get("sub1_alignment_ms")}, sub1_winner_delay)
+        best_sub2 = _auto_sub_winner_delay_ms({"delay_ms": winner.get("sub2_alignment_ms")}, sub2_winner_delay)
         incumbent_polarities = (str(original_sub1.get("polarity", "normal")), str(original_sub2.get("polarity", "normal")))
         selected_polarities = incumbent_polarities
         polarity_candidates: list[dict[str, Any]] = [dict(gain_winner, delay_ms=0.0)]

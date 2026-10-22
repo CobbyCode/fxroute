@@ -333,6 +333,99 @@ class DSPRuntimeConfigTests(unittest.TestCase):
 
         asyncio.run(exercise())
 
+    def _surround_pair_targets(self):
+        positions = ["FL", "FR", "FC", "LFE", "SL", "SR", "BL", "BR"]
+        rows = tuple({"name": name, "source": channel, "input_positions": positions}
+                     for name, channel in (("main_l", 0), ("main_r", 1), ("rear_l", 6), ("rear_r", 7)))
+        config = DSPRuntimeConfig("surround", "hw", 48000, self.PORTS, rows,
+                                  tuple(enumerate(self.PORTS, 1)), "plan")
+        targets = []
+        for name, group, gain in (("Front", "front", -4), ("Rear", "rear", -4), ("Front changed", "front", -2)):
+            self.manager.create_peq_preset(name, {
+                "enabled": True,
+                "params": {"channelMode": "stereo-linked", "eqMode": "IIR", "bands": [
+                    {"enabled": True, "filterType": "bell", "frequencyHz": 120, "gainDb": gain, "q": 3},
+                ]},
+            }, bank="global", mode="surround", group=group)
+            targets.append(PlannedSyncTarget(config, self.manager.compile_engine_text(
+                list(rows), preset_name={group: name}, mode="surround",
+            )))
+        return targets
+
+    def test_pair_mask_changes_cannot_report_a_successful_live_noop(self):
+        front, rear, _changed = self._surround_pair_targets()
+        self.assertEqual(front.text.replace("pairs 1\n", "pairs 16\n"), rear.text)
+        unscoped = front.text.replace("pairs 1\n", "")
+
+        async def exercise(old, new):
+            runtime = DSPRuntime(self.manager)
+            runtime._config_text = old
+            runtime._control = unittest.mock.AsyncMock()
+            self.assertFalse(await runtime._try_live_update(new))
+            runtime._control.assert_not_awaited()
+            self.assertEqual(runtime._config_text, old)
+
+        for old, new in ((front.text, rear.text), (rear.text, front.text),
+                         (front.text, unscoped), (unscoped, front.text)):
+            with self.subTest(old_mask=[line for line in old.splitlines() if line.startswith("pairs ")],
+                              new_mask=[line for line in new.splitlines() if line.startswith("pairs ")]):
+                asyncio.run(exercise(old, new))
+
+    def test_pair_mask_change_swaps_the_actual_compiled_config_without_rebuilding(self):
+        front, rear, _changed = self._surround_pair_targets()
+
+        async def exercise():
+            with tempfile.TemporaryDirectory() as directory:
+                binary = Path(directory) / "fxroute-dsp"
+                binary.touch()
+                runtime = DSPRuntime(self.manager, binary=binary)
+                process = FakeProcess()
+                runtime._process = process
+                runtime._control_socket = unittest.mock.Mock()
+                runtime._config = front.config
+                runtime._config_text = front.text
+                swapped_texts = []
+
+                async def control(command, **kwargs):
+                    self.assertTrue(command.startswith("swap config "), command)
+                    self.assertTrue(kwargs.get("reply"))
+                    swapped_texts.append(Path(command.split()[2]).read_text())
+                    return "ok\n"
+
+                runtime._control = control
+                runtime._run = unittest.mock.AsyncMock(return_value=CommandResult(0))
+                runtime._stop_orphan_helpers = unittest.mock.AsyncMock()
+                runtime._reconcile_output_links = unittest.mock.AsyncMock()
+                await runtime.sync_rendered(rear)
+                self.assertEqual(swapped_texts, [rear.text])
+                self.assertEqual(runtime._config_text, rear.text)
+                self.assertIs(runtime._process, process)
+
+        asyncio.run(exercise())
+
+    def test_unchanged_pair_mask_still_allows_noop_and_numeric_live_updates(self):
+        front, _rear, changed = self._surround_pair_targets()
+
+        async def exercise():
+            runtime = DSPRuntime(self.manager)
+            runtime._config_text = front.text
+            commands = []
+
+            async def control(command, **kwargs):
+                commands.append(command)
+                return "ok\n"
+
+            runtime._control = control
+            self.assertTrue(await runtime._try_live_update(front.text))
+            self.assertEqual(commands, [])
+            self.assertTrue(await runtime._try_live_update(changed.text))
+            self.assertEqual(commands, [
+                "live begin", "live control equalizer#0 gl_0 0.794328235",
+                "live control equalizer#0 gr_0 0.794328235", "live commit",
+            ])
+
+        asyncio.run(exercise())
+
     def test_failed_stage_aborts_before_atomic_swap(self):
         async def exercise():
             runtime = DSPRuntime(self.manager)

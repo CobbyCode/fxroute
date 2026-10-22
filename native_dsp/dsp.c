@@ -447,6 +447,11 @@ static float run_biquad(biquad *b, float value) {
     float output = value * b->b0 + b->z1;
     b->z1 = value * b->b1 - b->a1 * output + b->z2;
     b->z2 = value * b->b2 - b->a2 * output;
+    /* A bad sample must not poison IIR history or downstream filters. */
+    if (!isfinite(output) || !isfinite(b->z1) || !isfinite(b->z2)) {
+        b->z1 = b->z2 = 0.0f;
+        return 0.0f;
+    }
     /* Idle states stall in denormals, which slows every sample on x86. */
     if (fabsf(b->z1) < 1e-30f && fabsf(b->z2) < 1e-30f) b->z1 = b->z2 = 0.0f;
     return output;
@@ -465,6 +470,82 @@ static char *trim_value(char *value) {
     *end = '\0';
     if (*value == '"' && end > value + 1 && end[-1] == '"') { value++; end[-1] = '\0'; }
     return value;
+}
+
+static int path_hex4(char **cursor, const char *end, unsigned *codepoint) {
+    if (end - *cursor < 4) return -1;
+    unsigned value = 0;
+    for (unsigned i = 0; i < 4; i++) {
+        unsigned char c = (unsigned char)*(*cursor)++;
+        unsigned digit;
+        if (c >= '0' && c <= '9') digit = c - '0';
+        else if (c >= 'a' && c <= 'f') digit = c - 'a' + 10U;
+        else if (c >= 'A' && c <= 'F') digit = c - 'A' + 10U;
+        else return -1;
+        value = (value << 4) | digit;
+    }
+    *codepoint = value;
+    return 0;
+}
+
+/* Python emits IR paths with json.dumps. Decode quoted strings once, only
+ * while loading a config; legacy unquoted paths remain literal. Decoding
+ * in place cannot expand the token, including UTF-16 surrogate pairs. */
+static int parse_path_value(char *raw, char *target, size_t capacity) {
+    while (*raw == ' ' || *raw == '\t') raw++;
+    char *end = raw + strlen(raw);
+    while (end > raw && (end[-1] == ' ' || end[-1] == '\t' || end[-1] == '\r' || end[-1] == '\n')) end--;
+    *end = '\0';
+    char *value = raw;
+    if (*raw == '"') {
+        if (end <= raw + 1 || end[-1] != '"') return -1;
+        value = raw + 1;
+        end--;
+        char *read = value, *write = value;
+        while (read < end) {
+            unsigned char c = (unsigned char)*read++;
+            if (c < 0x20U || c == '"') return -1;
+            if (c != '\\') { *write++ = (char)c; continue; }
+            if (read == end) return -1;
+            c = (unsigned char)*read++;
+            switch (c) {
+            case '"': case '\\': case '/': *write++ = (char)c; break;
+            case 'b': *write++ = '\b'; break;
+            case 'f': *write++ = '\f'; break;
+            case 'n': *write++ = '\n'; break;
+            case 'r': *write++ = '\r'; break;
+            case 't': *write++ = '\t'; break;
+            case 'u': {
+                unsigned codepoint;
+                if (path_hex4(&read, end, &codepoint) || !codepoint) return -1;
+                if (codepoint >= 0xd800U && codepoint <= 0xdbffU) {
+                    unsigned low;
+                    if (end - read < 6 || read[0] != '\\' || read[1] != 'u') return -1;
+                    read += 2;
+                    if (path_hex4(&read, end, &low) || low < 0xdc00U || low > 0xdfffU) return -1;
+                    codepoint = 0x10000U + ((codepoint - 0xd800U) << 10) + low - 0xdc00U;
+                } else if (codepoint >= 0xdc00U && codepoint <= 0xdfffU) return -1;
+                if (codepoint < 0x80U) *write++ = (char)codepoint;
+                else {
+                    if (codepoint >= 0x10000U) {
+                        *write++ = (char)(0xf0U | (codepoint >> 18));
+                        *write++ = (char)(0x80U | ((codepoint >> 12) & 0x3fU));
+                    } else if (codepoint >= 0x800U) *write++ = (char)(0xe0U | (codepoint >> 12));
+                    else *write++ = (char)(0xc0U | (codepoint >> 6));
+                    if (codepoint >= 0x800U) *write++ = (char)(0x80U | ((codepoint >> 6) & 0x3fU));
+                    *write++ = (char)(0x80U | (codepoint & 0x3fU));
+                }
+                break;
+            }
+            default: return -1;
+            }
+        }
+        *write = '\0';
+    }
+    size_t length = strlen(value);
+    if (!length || length >= capacity) return -1;
+    memcpy(target, value, length + 1U);
+    return 0;
 }
 
 _Static_assert(FX_UPMIX_FAST_CHANNELS == FX_UPMIX_HQ_CHANNELS, "both upmixer engines take the same eight positions");
@@ -504,10 +585,11 @@ static float stage_delay_limit(const dsp_stage *stage) {
 }
 
 static int set_native_param(dsp_stage *stage, const char *key, char *raw) {
+    if (stage->kind == STAGE_CONVOLVER && !strcmp(key, "path"))
+        return parse_path_value(raw, stage->argument, sizeof stage->argument);
     char *value = trim_value(raw);
     float number;
     if (stage->kind == STAGE_CONVOLVER) {
-        if (!strcmp(key, "path") && *value) { snprintf(stage->argument, sizeof stage->argument, "%s", value); return 0; }
         if (parse_float_value(value, &number)) return -1;
         if (!strcmp(key, "wet_db")) stage->wet = powf(10.0f, number / 20.0f);
         else if (!strcmp(key, "dry_db")) stage->dry = powf(10.0f, number / 20.0f);
@@ -747,10 +829,9 @@ fxdsp *fxdsp_load(const char *path, char *error, size_t error_size) {
             else if (!stage_section && !post_section && sscanf(p,"peq %u %31s %f %f %f %c",&out,type,&x,&y,&z,&extra)==5 && out<FXDSP_MAX_CHANNELS && d->out[out].filter_count<MAX_BIQUADS && !design(&d->out[out].filters[d->out[out].filter_count],type,d->rate,x,y,z)) d->out[out].filter_count++;
             else if (!stage_section && !post_section && sscanf(p,"sos %u %f %f %f %f %f %c",&out,&b0,&b1,&b2,&a1,&a2,&extra)==6 && out<FXDSP_MAX_CHANNELS && d->out[out].filter_count<MAX_BIQUADS && isfinite(b0) && isfinite(b1) && isfinite(b2) && isfinite(a1) && isfinite(a2) && sos_stable(a1,a2)) { biquad *target=&d->out[out].filters[d->out[out].filter_count++]; target->b0=b0; target->b1=b1; target->b2=b2; target->a1=a1; target->a2=a2; target->z1=target->z2=0.0f; }
             else if (!stage_section && !post_section && sscanf(p,"oconv %u %u %f %f %f %f %n",&out,&in,&x,&y,&z,&route_gain,&consumed)==6 && out<FXDSP_MAX_CHANNELS && !d->out[out].has_conv) {
-                char *conv_path = trim_value(p + consumed);
                 output_state *conv_state = &d->out[out];
-                if (!*conv_path || !isfinite(x) || !isfinite(y) || !isfinite(z) || !isfinite(route_gain) || strlen(conv_path) >= sizeof conv_state->conv_path) goto invalid;
-                snprintf(conv_state->conv_path, sizeof conv_state->conv_path, "%s", conv_path);
+                if (!isfinite(x) || !isfinite(y) || !isfinite(z) || !isfinite(route_gain) ||
+                    parse_path_value(p + consumed, conv_state->conv_path, sizeof conv_state->conv_path)) goto invalid;
                 conv_state->conv_channel = in;
                 conv_state->conv_wet = powf(10.0f, x / 20.0f); conv_state->conv_dry = powf(10.0f, y / 20.0f);
                 conv_state->conv_in_gain = powf(10.0f, z / 20.0f); conv_state->conv_out_gain = powf(10.0f, route_gain / 20.0f);

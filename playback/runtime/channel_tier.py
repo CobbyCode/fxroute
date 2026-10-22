@@ -26,7 +26,12 @@ class _RuntimeChannelTierMixin:
     async def _change_tier_hardware(self, change, *, rollback=False, session_owned=False):
         lock_factory = self._deps.audio_configuration_lock
         take_lock = bool(lock_factory) and not session_owned and not self._configuration_ownership.rate_owned
-        async with lock_factory() if take_lock else nullcontext():
+        lock = lock_factory() if take_lock else None
+        # Coordinator is held: entry/release may own (or be queued for) the
+        # session lock while waiting for Coordinator. Never wait in reverse.
+        if lock is not None and (lock.locked() or any(not waiter.cancelled() for waiter in (lock._waiters or ()))):
+            raise RuntimeError("DSP audio configuration is busy")
+        async with lock if lock is not None else nullcontext():
             if not rollback and not session_owned and self._deps.measurement_audio_graph_owned():
                 raise RuntimeError("Measurement is active; channel-tier switch is locked")
             if self._dsp_runtime is not None:

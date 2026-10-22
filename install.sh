@@ -148,6 +148,7 @@ JOURNAL_GROUP_ADDED_BY_FXROUTE=0
 
 VALIDATION_RESULTS=()
 WARNINGS=()
+HTTP_VALIDATION_FAILED=0
 PACKAGE_MANAGER=""
 PACKAGE_INSTALL_CMD=()
 PKG_REFRESH_DONE=0
@@ -5917,6 +5918,9 @@ configure_optional_maintenance_helpers() {
 }
 
 validate_http() {
+  # Keep collecting diagnostics, but do not let first boot mark a failed
+  # required HTTP check complete. Other historical fail() checks may be optional.
+  HTTP_VALIDATION_FAILED=1
   local env_file="$INSTALL_ROOT/.env"
   local port
   local service_pid=""
@@ -5966,6 +5970,7 @@ validate_http() {
 
   if curl -fsS "http://127.0.0.1:${port}/api/status" >/dev/null 2>&1; then
     pass "HTTP health response"
+    HTTP_VALIDATION_FAILED=0
   else
     fail "HTTP health response"
     warn "FXRoute did not answer on http://127.0.0.1:${port}/api/status yet"
@@ -6252,7 +6257,10 @@ print_summary() {
   lan_ip="$(primary_lan_ip)"
 
   echo
-  if [[ ${#WARNINGS[@]} -eq 0 ]] && ! printf '%s\n' "${VALIDATION_RESULTS[@]}" | grep -q '^FAIL:'; then
+  if [[ "$HTTP_VALIDATION_FAILED" -eq 1 ]]; then
+    echo "FXRoute installation failed: required HTTP validation did not pass"
+    printf '%s\n' "${VALIDATION_RESULTS[@]}" | grep '^FAIL:'
+  elif [[ ${#WARNINGS[@]} -eq 0 ]] && ! printf '%s\n' "${VALIDATION_RESULTS[@]}" | grep -q '^FAIL:'; then
     echo "FXRoute installed successfully"
   elif printf '%s\n' "${VALIDATION_RESULTS[@]}" | grep -q '^FAIL:'; then
     echo "FXRoute installed with warnings"
@@ -7710,6 +7718,9 @@ main() {
   finalize_firewalld_rule_format
   write_install_state
   ensure_target_user_ownership
+  if [[ "$HTTP_VALIDATION_FAILED" -eq 1 ]]; then
+    return 1
+  fi
 }
 
 main "$@"

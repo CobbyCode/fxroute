@@ -32,7 +32,8 @@ class AutoSub22MonoFinalPathTests(unittest.IsolatedAsyncioTestCase):
     async def _run_path(
         self, *, gate_veto, verdict_accepted,
         balance_deltas_db=None, fail_winner_apply=False, fail_restore=False,
-        recheck_dips_override=None,
+        recheck_dips_override=None, keep_incumbent=False, incumbent_pair=(0.0, 0.0),
+        candidate_calls=None, committed_states=None,
     ):
         job_id = "auto-sub-22-mono-path"
         original = {
@@ -40,8 +41,8 @@ class AutoSub22MonoFinalPathTests(unittest.IsolatedAsyncioTestCase):
             "crossover_frequency_hz": 80,
             "main_highpass_enabled": True,
             "subwoofers": {
-                "sub1": {"level_db": 0.0, "alignment_ms": 0.0, "polarity": "normal"},
-                "sub2": {"level_db": 0.0, "alignment_ms": 0.0, "polarity": "normal"},
+                "sub1": {"level_db": 0.0, "alignment_ms": incumbent_pair[0], "polarity": "normal"},
+                "sub2": {"level_db": 0.0, "alignment_ms": incumbent_pair[1], "polarity": "normal"},
             },
         }
         state = copy.deepcopy(original)
@@ -101,11 +102,15 @@ class AutoSub22MonoFinalPathTests(unittest.IsolatedAsyncioTestCase):
             return True
 
         async def commit_service_winner(job):
+            if committed_states is not None:
+                committed_states.append(copy.deepcopy(state))
             job["output_state_context"]["committed_revision"] = 1
             return {"revision": 1}
 
         async def measure_candidate(**kwargs):
             measure_stages.append(str(kwargs["stage"]))
+            if candidate_calls is not None:
+                candidate_calls.append(copy.deepcopy(kwargs))
             # A combined candidate measures L and R, so the production sweep
             # ledger gains one timing entry per side.
             job.setdefault("_sweep_timings", []).extend([
@@ -160,13 +165,14 @@ class AutoSub22MonoFinalPathTests(unittest.IsolatedAsyncioTestCase):
                     "score_R": score, "score_R_pct": round(score * 100.0, 1),
                 })
             results.sort(key=lambda r: r["score"], reverse=True)
-            incumbent = next((r for r in results if key(r) == (0.0, 0.0)), None)
+            incumbent = next((r for r in results if key(r) == incumbent_pair), None)
             return {
                 "winner": results[0], "runner_up": results[1] if len(results) > 1 else None,
                 "results": results, "confidence": "clear",
                 "matrix_winner": results[0], "incumbent_winner": incumbent,
-                "incumbent_score": 0.3355, "accepted_winner": results[0],
-                "incumbent_accepted": False, "reject_reason": "matrix_better",
+                "incumbent_score": 0.3355, "accepted_winner": incumbent if keep_incumbent else results[0],
+                "incumbent_accepted": keep_incumbent,
+                "reject_reason": "incumbent_better" if keep_incumbent else "matrix_better",
             }
 
         def score_combined(rows, **kwargs):
@@ -263,6 +269,33 @@ class AutoSub22MonoFinalPathTests(unittest.IsolatedAsyncioTestCase):
         self.assertAlmostEqual(result["derived_main_delay_ms"], 3.12, places=2)
         self.assertAlmostEqual(result["derived_sub1_delay_ms"], 0.0, places=2)
         self.assertAlmostEqual(result["derived_sub2_delay_ms"], 2.54, places=2)
+
+    async def test_accepted_zero_incumbent_axes_survive_measure_apply_and_commit(self):
+        for pair in ((0.0, 0.0), (0.0, -0.58), (-3.12, 0.0)):
+            with self.subTest(accepted_pair=pair):
+                calls, commits = [], []
+                job, state, _stages = await self._run_path(
+                    gate_veto=False, verdict_accepted=True,
+                    keep_incumbent=True, incumbent_pair=pair,
+                    candidate_calls=calls, committed_states=commits,
+                )
+                self.assertEqual(job["status"], "completed", job.get("error"))
+                result = job["result"]
+                self.assertEqual(
+                    (result["applied_sub1_alignment_ms"], result["applied_sub2_alignment_ms"]), pair,
+                )
+                self.assertEqual(
+                    (result["suggested_sub1_alignment_ms"], result["suggested_sub2_alignment_ms"]), pair,
+                )
+                for stage in ("polarity_check", "gain_after"):
+                    measured = [call for call in calls if call["stage"] == stage]
+                    self.assertTrue(measured, stage)
+                    for call in measured:
+                        self.assertEqual((call["sub1_alignment_ms"], call["sub2_alignment_ms"]), pair)
+                self.assertEqual(len(commits), 1)
+                for snapshot in (state, commits[0]):
+                    self.assertEqual(tuple(snapshot["subwoofers"][sub]["alignment_ms"]
+                                           for sub in ("sub1", "sub2")), pair)
 
     async def test_gate_revert_keeps_incumbent_applied_but_winner_suggested(self):
         job, state, _stages = await self._run_path(gate_veto=True, verdict_accepted=False)

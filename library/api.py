@@ -511,7 +511,7 @@ async def get_album_discover(album_id: str, refresh: bool = False, provider: str
     tracks = await _run_blocking(library_scanner.get_album_tracks, album_id, authoritative=True)
     if not tracks:
         raise HTTPException(status_code=404, detail="Album not found")
-    result = library_scanner.get_album_discover(album_id, force=refresh)
+    result = await _run_blocking(library_scanner.get_album_discover, album_id, force=refresh)
     items = result.get("items") or []
     provider = provider.strip().lower()
     if provider and items:

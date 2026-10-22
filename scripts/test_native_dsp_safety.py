@@ -10,7 +10,7 @@ limits on the config and live paths, matching the real buffer capacity.
 """
 import shlex
 import subprocess
-import tempfile
+import sys
 from pathlib import Path
 
 
@@ -287,7 +287,44 @@ int main(int argc, char **argv) {
     subprocess.run([str(binary), str(tmp_path)], check=True)
 
 
+def test_biquads_recover_after_nonfinite_audio_without_callback_allocations(tmp_path):
+    flags = shlex.split(subprocess.check_output(
+        ["pkg-config", "--cflags", "--libs", "libebur128", "lilv-0", "samplerate",
+         "speexdsp"], text=True))
+    binary = tmp_path / "biquad-safety"
+    sources = ["dsp", "worker_pool", "timing", "autogain", "crystalizer",
+               "upmix_fast", "upmix_hq", "lv2_host", "test_biquad_safety"]
+    subprocess.run([
+        "cc", "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror", "-pedantic",
+        "-I", str(NATIVE), *(str(NATIVE / f"{name}.c") for name in sources),
+        *flags, "-lm", "-pthread", "-Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc,--wrap=free",
+        "-o", str(binary),
+    ], check=True)
+    filters = {
+        "peq": "peq 0 bell 1000 1 6\npeq 0 lowpass 8000 0.707 0\n",
+        "crossover": "xsos 0 0.25 0.25 0 -0.5 0\nxsos 0 0.25 0.25 0 -0.5 0\n",
+        "grouped": "gmatrix 0 1 0 1\ngxsos 0 1 0.25 0.25 0 -0.5 0\n",
+        "cascade": "xsos 0 0.25 0.25 0 -0.5 0\npeq 0 bell 1000 1 6\n",
+        "state-z1": "sos 0 0 4 0 0 0\n",
+        "state-z2": "xsos 0 0 0 4 0 0\n",
+    }
+    failures = []
+    for name, directives in filters.items():
+        for bypass in (0, 1):
+            config = tmp_path / f"{name}-{bypass}.conf"
+            config.write_text(
+                "rate 48000\ninputs 2\noutputs 2\nmatrix 0 0 1\nmatrix 1 1 1\n"
+                + directives + f"output 0 0 0 normal\nbypass {bypass}\n")
+            command = [str(binary), str(config)]
+            if name.startswith("state-"):
+                command.append("history-overflow")
+            result = subprocess.run(command, capture_output=True, text=True)
+            if result.returncode:
+                failures.append(f"{name}/bypass={bypass}: {result.stdout}{result.stderr}")
+    assert not failures, "\n".join(failures)
+
+
+from native_test_runner import run_pytest_style_module
+
 if __name__ == "__main__":
-    with tempfile.TemporaryDirectory(prefix="fxroute-safety-") as directory:
-        test_native_dsp_safety_bounds_hold_and_state_survives_rejection(Path(directory))
-    print("native DSP safety tests passed")
+    sys.exit(run_pytest_style_module(globals()))

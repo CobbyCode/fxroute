@@ -95,6 +95,7 @@ class _LoginSession:
     def __init__(self, url: str, callback_url: str | None) -> None:
         self.url = url
         self.callback_url = callback_url
+        self.finishing = False
 
 
 _login_lock = asyncio.Lock()
@@ -117,7 +118,9 @@ async def begin_login() -> dict[str, Any]:
         raise RuntimeError("qbzd is not installed")
     async with _login_lock:
         if _session is not None:
-            daemon_status = await _daemon_oauth_status()
+            # The finish owner consumes the terminal verdict and clears its
+            # own session; a concurrent observer must not replace that flow.
+            daemon_status = "pending" if _session.finishing else await _daemon_oauth_status()
             if daemon_status == "pending":
                 return {
                     "started": False,
@@ -163,26 +166,36 @@ async def finish_login(pasted: str) -> dict[str, Any]:
     value = str(pasted or "").strip()
     if not value:
         raise ValueError("Paste the redirect URL (or code) from the Qobuz sign-in page")
-    async with _login_lock:
-        session = _session
-        if session is None:
-            daemon_status = await _daemon_oauth_status()
-            if daemon_status == "success":
-                return {"ok": True, "status": "success"}
-            raise RuntimeError("No qbzd login is in progress; start it again")
-        code = _extract_code(value)
-        if not code:
-            raise ValueError("Paste the redirect URL (or code) from the Qobuz sign-in page")
-        callback = await asyncio.to_thread(
-            _http_get, f"/api/auth/oauth/callback?code={urllib.parse.quote(code)}", OAUTH_CALLBACK_TIMEOUT
-        )
-        # The callback answers an HTML page (or an error); the verdict
-        # comes from the OAuth status poll below.
-        _ = callback
+    finish_claimed = False
+    try:
+        async with _login_lock:
+            session = _session
+            if session is None:
+                daemon_status = await _daemon_oauth_status()
+                if daemon_status == "success":
+                    return {"ok": True, "status": "success"}
+                raise RuntimeError("No qbzd login is in progress; start it again")
+            if session.finishing:
+                raise RuntimeError("Finishing qbzd login is already in progress")
+            code = _extract_code(value)
+            if not code:
+                raise ValueError("Paste the redirect URL (or code) from the Qobuz sign-in page")
+            session.finishing = True
+            finish_claimed = True
+            # Keep the bounded callback serialized with daemon start/logout:
+            # an old code must not be submitted to a replacement OAuth flow.
+            # The callback body is HTML; only the status poll gives a verdict.
+            await asyncio.to_thread(
+                _http_get, f"/api/auth/oauth/callback?code={urllib.parse.quote(code)}", OAUTH_CALLBACK_TIMEOUT
+            )
         try:
             async with asyncio.timeout(FINISH_TIMEOUT):
                 while True:
+                    if _session is not session:
+                        return {"ok": False, "status": "cancelled"}
                     daemon_status = await _daemon_oauth_status()
+                    if _session is not session:
+                        return {"ok": False, "status": "cancelled"}
                     if daemon_status == "success":
                         return {"ok": True, "status": "success"}
                     if daemon_status == "error":
@@ -194,8 +207,11 @@ async def finish_login(pasted: str) -> dict[str, Any]:
                     await asyncio.sleep(OAUTH_STATUS_INTERVAL)
         except TimeoutError:
             raise RuntimeError("qbzd login timed out waiting for the browser step") from None
-        finally:
-            _session = None
+    finally:
+        if finish_claimed:
+            async with _login_lock:
+                if _session is session:
+                    _session = None
 
 
 async def state() -> dict[str, Any]:
@@ -205,6 +221,8 @@ async def state() -> dict[str, Any]:
         session = _session
         if session is None:
             return {"in_progress": False}
+        if session.finishing:
+            return {"in_progress": True, "login_url": session.url, "expired": False}
         daemon_status = await _daemon_oauth_status()
         if daemon_status == "pending":
             return {"in_progress": True, "login_url": session.url, "expired": False}

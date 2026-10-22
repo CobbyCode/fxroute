@@ -1587,7 +1587,9 @@ class DSPRuntime:
             elif kind == 'avsync' and len(parts) == 3:
                 shape.append((kind, parts[2]))
                 values.append((kind, float(parts[1]), int(parts[2])))
-            elif kind in {'latency_basis', 'source_basis', 'olatency', 'latency'}:
+            elif kind in {'latency_basis', 'source_basis', 'olatency', 'latency', 'pairs'}:
+                # Pair masks cannot be changed by live commands: use an atomic
+                # config swap instead of silently retaining the old speakers.
                 shape.append((kind, *parts[1:]))
             elif kind in {"sos", "oconv", "xsos", "gxsos", "gmatrix", "postmatrix", "inputs", "surround"} and len(parts) >= 2:
                 # Output-bank lines join the shape with full content: any

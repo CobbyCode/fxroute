@@ -109,6 +109,37 @@ async function testTidalSaveKeepsButtonDisabled() {
     }
 }
 
+async function testTidalPartialSaveShowsWarning() {
+    // Exercise the same save consumer in the canonical and shipped demo asset.
+    for (const library of [Library, require('../demo/dist/static/library_ui.js')]) {
+        const els = makeEls();
+        const state = { library: { tracks: [], selectedTrackIds: [], viewMode: 'flat' }, playlists: [] };
+        const toasts = [];
+        const warning = 'TIDAL playlist "Mix" (pl-new) was created, but adding tracks could not be confirmed. Check this playlist before adding tracks again; do not create it again.';
+        library.init({ getState: () => state, getElements: () => els, showToast: (m, k) => toasts.push([m, k]) });
+        let created = 0;
+        globalThis.FXRouteStreaming = {
+            tidal: {
+                connection: () => ({ authenticated: true }),
+                selectedIds: () => ['t1'],
+                items: () => [],
+                createPlaylist: async () => { created += 1; return { id: 'pl-new', name: 'Mix', warning, seed_status: 'unknown', added_track_ids: null }; },
+                friendlyError: (m) => String(m),
+            },
+        };
+        try {
+            library.updatePlaylistSaveRowVisibility();
+            await library.savePlaylist();
+            assert.deepEqual(toasts.at(-1), [warning, 'error'], 'partial creation must not show full success');
+            assert.equal(els.playlistName.value, '', 'confirmed creation consumes the name even when seeding is uncertain');
+            await library.savePlaylist();
+            assert.equal(created, 1, 'the next Save must not recreate the confirmed playlist');
+        } finally {
+            globalThis.FXRouteStreaming = undefined;
+        }
+    }
+}
+
 function testTidalSearchUsesOneHelper() {
     const items = {
         tracks: [
@@ -153,6 +184,7 @@ function testTidalSearchUsesOneHelper() {
 (async () => {
     await testLocalSaveKeepsButtonDisabled();
     await testTidalSaveKeepsButtonDisabled();
+    await testTidalPartialSaveShowsWarning();
     testTidalSearchUsesOneHelper();
     console.log('library save in flight: ok');
 })().catch((error) => {

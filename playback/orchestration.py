@@ -998,10 +998,10 @@ class PlaybackOrchestrator:
         repair_error = None
         failed_repair = None
 
-        async def repair_links(action):
+        async def repair_links(action, *args, **kwargs):
             nonlocal repair_error, failed_repair, links_reconciled
             try:
-                await action()
+                await action(*args, **kwargs)
                 repair_error = None
                 failed_repair = None
                 links_reconciled = True
@@ -1073,17 +1073,21 @@ class PlaybackOrchestrator:
                     if mode in self._deps.output_mode_subwoofer_modes or diagnosis.get('bypass_only'):
                         await repair_links(self.reconcile_subwoofer_links_only)
                     else:
-                        await repair_links(lambda: self.repair_stereo_output_links_once(diagnosis))
+                        await repair_links(self.repair_stereo_output_links_once, diagnosis)
         final = await self.playback_graph_diagnosis(overview, target_rate=target_rate)
         for _ in range(3):
             if final.get("links_complete") and repair_error is None:
                 break
-            if failed_repair is not None:
-                await repair_links(failed_repair)
-            elif final.get("bypass_only"):
+            # Fresh bypass cleanup takes precedence over a previously failed
+            # repair. Retain its operation, not a closure over an old readback.
+            if final.get("bypass_only"):
                 await repair_links(self.reconcile_subwoofer_links_only)
+            elif failed_repair == self.reconcile_subwoofer_links_only:
+                await repair_links(failed_repair)
+            elif failed_repair == self.repair_stereo_output_links_once:
+                await repair_links(failed_repair, final)
             else:
-                await repair_links(lambda: self.relink_missing_production_links(final, require_source=False))
+                await repair_links(self.relink_missing_production_links, final, require_source=False)
             await self._deps.sleep(self._deps.pipewire_poll_interval_ms * 5 / 1000)
             final = await self.playback_graph_diagnosis(overview, target_rate=target_rate)
         if not final.get("links_complete") or repair_error is not None:

@@ -18,6 +18,7 @@ from ..candidates import (
     _auto_sub_opposite_polarity,
     _auto_sub_polarity_decision,
     _auto_sub_step_ms,
+    _auto_sub_winner_delay_ms,
     _restore_original_config_or_fail_job,
     _auto_sub_sweep_profile,
     _stage_auto_sub_service_state,
@@ -586,7 +587,7 @@ async def _run_auto_sub_optimize(
                         selected_measured = measured_by_placeholder.get(winner_placeholder) or alt
                         final_polarity = opposite
                         gain_winner = selected_measured
-                        applied_delay = _auto_sub_clamped_delay(float(selected_measured.get("delay_ms", applied_delay) or applied_delay))
+                        applied_delay = _auto_sub_winner_delay_ms(selected_measured, applied_delay)
                         polarity_check["accepted"] = True
                         polarity_check["score_gain"] = shared_decision["score_gain"]
                         polarity_check["reason"] = shared_decision["reason"]

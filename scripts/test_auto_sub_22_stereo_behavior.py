@@ -62,7 +62,8 @@ _UNAVAILABLE_CORRECTION = {
 
 class AutoSub22StereoBehaviorTests(unittest.IsolatedAsyncioTestCase):
     async def _run(self, *, verdict, response_correction, gain_deltas,
-                   gain_after_pts="flat", correction_pts="flat"):
+                   gain_after_pts="flat", correction_pts="flat",
+                   scan_delay=None, polarity_refinement=False):
         """Run one stereo scenario.
 
         gain_after_pts/correction_pts select per-side point shapes: "flat",
@@ -162,6 +163,8 @@ class AutoSub22StereoBehaviorTests(unittest.IsolatedAsyncioTestCase):
 
         def score_candidates(rows, **_kwargs):
             scores = {-2.14: 0.6810, -2.54: 0.6810, 0.0: 0.15, 1.0: 0.05}
+            if scan_delay is not None:
+                scores[scan_delay] = 0.8
             results = []
             for row in rows:
                 delay = round(float(row.get("delay_ms", 0.0)), 2)
@@ -230,9 +233,14 @@ class AutoSub22StereoBehaviorTests(unittest.IsolatedAsyncioTestCase):
                 stack.enter_context(patch.object(runner, "_auto_sub_fine_delay_candidates", return_value=[]))
                 stack.enter_context(patch.object(runner, "_auto_sub_remeasure_tiebreak", new=AsyncMock(return_value=None)))
                 stack.enter_context(patch.object(runner, "_auto_sub_polarity_decision", return_value={
-                    "accepted": False, "score_gain": -0.2, "min_score_gain": 0.03,
+                    "accepted": polarity_refinement, "score_gain": -0.2, "min_score_gain": 0.03,
                     "reason": "incumbent_protected_unclear_advantage",
                 }))
+                if polarity_refinement:
+                    stack.enter_context(patch.object(runner, "_auto_sub_select_polarity_shared_winner", return_value={
+                        "accepted": True, "alternative_delay_ms": 2.0,
+                        "score_gain": 0.5, "reason": "test-shared",
+                    }))
                 stack.enter_context(patch.object(runner, "_calculate_auto_sub_gain", side_effect=calc_dispatch))
                 stack.enter_context(patch.object(runner, "_auto_sub_gain_deltas", return_value=gain_deltas))
                 stack.enter_context(patch.object(runner, "_auto_sub_gain_verdict", return_value=verdict))
@@ -249,7 +257,8 @@ class AutoSub22StereoBehaviorTests(unittest.IsolatedAsyncioTestCase):
                     job_id=job_id, input_id="test-input",
                     mic_input_channel="1", reference_input_channel="",
                     calibration_ref="", calibration_filename=None, calibration_bytes=None,
-                    left_scan_delays=[-2.14, 0.0], right_scan_delays=[-2.54, 0.0],
+                    left_scan_delays=[-2.14 if scan_delay is None else scan_delay, 0.0],
+                    right_scan_delays=[-2.54 if scan_delay is None else scan_delay, 0.0],
                     fc=80, original_config_snapshot=original,
                 )
         finally:
@@ -262,6 +271,22 @@ class AutoSub22StereoBehaviorTests(unittest.IsolatedAsyncioTestCase):
         matches = [t for t in traces if t.get("role") == role]
         assert matches, f"missing {role} trace"
         return matches[0]
+
+    async def test_zero_delay_polarity_winners_are_applied_without_fallback(self):
+        job, state, _stages, _levels = await self._run(
+            verdict={"accepted": True, "reason": "test", "channels": {}},
+            response_correction=dict(_UNAVAILABLE_CORRECTION), gain_deltas={},
+            scan_delay=0.39, polarity_refinement=True,
+        )
+        for side, slot in (("left", "sub1"), ("right", "sub2")):
+            with self.subTest(side=side):
+                polarity = job["polarity_check"][side]
+                self.assertEqual(polarity["selected"], "invert")
+                self.assertEqual(polarity["fine_scan"]["winner"]["delay_ms"], 0.0)
+                self.assertEqual(polarity["selected_delay_ms"], 0.0)
+                self.assertEqual(job["result"][f"applied_{slot}_alignment_ms"], 0.0)
+                self.assertEqual(state["subwoofers"][slot]["alignment_ms"], 0.0)
+                self.assertEqual(state["subwoofers"][slot]["polarity"], "invert")
 
     async def test_mixed_verdict_keeps_per_side_finals(self):
         """Accepted left shows gain-after content, rejected right its winner."""

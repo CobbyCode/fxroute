@@ -27,6 +27,43 @@ logger = logging.getLogger(__name__)
 # importable without the dependency; helpers raise TidalAuthError then.
 
 
+class TidalCatalogError(RuntimeError):
+    """A catalog failure that does not imply a lost login."""
+
+    def __init__(self, message: str, status_code: int = 502):
+        super().__init__(message)
+        self.status_code = status_code
+
+
+def _catalog_error(message: str, cause: Exception) -> RuntimeError:
+    # A malformed error body may replace HTTPError with JSONDecodeError while
+    # leaving the actual HTTP rejection in its context. Prefer that evidence
+    # over exception names, including when requests.Response is false-valued.
+    causes = []
+    seen = set()
+    current = cause
+    status = None
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        causes.append(current)
+        response = getattr(current, "response", None)
+        if response is not None and status is None:
+            status = getattr(response, "status_code", None)
+        current = current.__cause__ or current.__context__
+    is_auth_rejection = any(
+        isinstance(error, auth.TidalAuthError) or auth._is_auth_rejection(error) for error in causes
+    )
+    if status == 401 or (status is None and is_auth_rejection):
+        return auth.TidalAuthError(message)
+    exceptions = getattr(auth.tidalapi, "exceptions", None)
+    for name, code in (("ObjectNotFound", 404), ("TooManyRequests", 429)):
+        error_type = getattr(exceptions, name, None)
+        if status is None and isinstance(error_type, type) and any(isinstance(error, error_type) for error in causes):
+            return TidalCatalogError(message, code)
+    # Unknown/transport/5xx failures remain upstream errors.
+    return TidalCatalogError(message, status if status in (400, 403, 404, 422, 429) else 502)
+
+
 def _session() -> Any:
     s = auth.manager.session()
     if s is None:
@@ -265,6 +302,8 @@ def search(query: str, types: list[str] | None = None, limit: int = 25) -> dict:
     ``types`` selects from ``tracks``, ``albums``, ``artists``, ``playlists``
     (default: tracks only).  Returns ``{type: [normalized dict, ...]}``.
     """
+    if limit <= 0:
+        raise TidalCatalogError("TIDAL search limit must be positive", 400)
     _require_tidalapi()
     session = _session()
     selected = [t for t in (types or ["tracks"]) if t in _SEARCH_NORMALIZERS]
@@ -283,7 +322,7 @@ def search(query: str, types: list[str] | None = None, limit: int = 25) -> dict:
     try:
         results = session.search(query, models=models, limit=limit)
     except Exception as exc:  # noqa: BLE001 - tidalapi raises broad types
-        raise auth.TidalAuthError(f"TIDAL search failed: {exc}") from exc
+        raise _catalog_error(f"TIDAL search failed: {exc}", exc) from exc
 
     out: dict[str, list] = {}
     for key in selected:
@@ -304,7 +343,7 @@ def get_track(track_id: str) -> dict:
     try:
         track = session.track(track_id)
     except Exception as exc:  # noqa: BLE001
-        raise auth.TidalAuthError(f"TIDAL track {track_id} lookup failed: {exc}") from exc
+        raise _catalog_error(f"TIDAL track {track_id} lookup failed: {exc}", exc) from exc
     return normalize_track(track)
 
 
@@ -316,12 +355,12 @@ def get_album_tracks(album_id: str) -> list[dict]:
         album = session.album(album_id)
         tracks = album.tracks()
     except Exception as exc:  # noqa: BLE001
-        raise auth.TidalAuthError(f"TIDAL album {album_id} lookup failed: {exc}") from exc
+        raise _catalog_error(f"TIDAL album {album_id} lookup failed: {exc}", exc) from exc
     return [normalize_track(t) for t in tracks]
 
 
 def _cached_or_raise(user_id: str, kind: str, message: str, cause: Exception) -> list | dict:
-    """Return the cached payload for ``kind`` or raise ``TidalAuthError(message)``.
+    """Return the cached payload for ``kind`` or raise a classified error.
 
     A failed live fetch must not empty the visible library: when the last
     successful payload is cached for this account it is served instead, and
@@ -331,7 +370,7 @@ def _cached_or_raise(user_id: str, kind: str, message: str, cause: Exception) ->
     if cached is not None:
         logger.warning("TIDAL %s fetch failed (%s); serving cached data", kind, cause)
         return cached
-    raise auth.TidalAuthError(message) from cause
+    raise _catalog_error(message, cause) from cause
 
 
 def _favorite_collection(favorites: Any, kind: str, limit: int) -> tuple[list, bool]:
@@ -496,9 +535,9 @@ def set_track_favorite(track_id: str, favorite: bool) -> dict:
         favorites = session.user.favorites
         ok = favorites.add_track(str(track_id)) if favorite else favorites.remove_track(str(track_id))
     except Exception as exc:  # noqa: BLE001
-        raise auth.TidalAuthError(f"TIDAL track favorite update failed: {exc}") from exc
+        raise _catalog_error(f"TIDAL track favorite update failed: {exc}", exc) from exc
     if not ok:
-        raise auth.TidalAuthError("TIDAL track favorite update failed")
+        raise TidalCatalogError("TIDAL track favorite update failed")
     _update_cached_favorite_id(user_id, "tracks", str(track_id), bool(favorite))
     return {"type": "track", "id": str(track_id), "favorite": bool(favorite)}
 
@@ -542,12 +581,12 @@ def set_album_favorite(album_id: str, favorite: bool) -> dict:
                 break
             changed.append(target)
     except Exception as exc:  # noqa: BLE001
-        raise auth.TidalAuthError(f"TIDAL album favorite update failed: {exc}") from exc
+        raise _catalog_error(f"TIDAL album favorite update failed: {exc}", exc) from exc
     finally:
         for done in changed:
             _update_cached_favorite_id(user_id, "albums", done, bool(favorite))
     if len(changed) < len(targets):
-        raise auth.TidalAuthError("TIDAL album favorite update failed")
+        raise TidalCatalogError("TIDAL album favorite update failed")
     result = {"type": "album", "id": album_id, "favorite": bool(favorite)}
     if len(changed) > 1:
         result["variant_ids"] = changed
@@ -563,9 +602,9 @@ def set_artist_favorite(artist_id: str, favorite: bool) -> dict:
         favorites = session.user.favorites
         ok = favorites.add_artist(str(artist_id)) if favorite else favorites.remove_artist(str(artist_id))
     except Exception as exc:  # noqa: BLE001
-        raise auth.TidalAuthError(f"TIDAL artist favorite update failed: {exc}") from exc
+        raise _catalog_error(f"TIDAL artist favorite update failed: {exc}", exc) from exc
     if not ok:
-        raise auth.TidalAuthError("TIDAL artist favorite update failed")
+        raise TidalCatalogError("TIDAL artist favorite update failed")
     _update_cached_favorite_id(user_id, "artists", str(artist_id), bool(favorite))
     return {"type": "artist", "id": str(artist_id), "favorite": bool(favorite)}
 
@@ -582,9 +621,9 @@ def set_playlist_favorite(playlist_id: str, favorite: bool) -> dict:
         else:
             ok = favorites.remove_playlist(str(playlist_id))
     except Exception as exc:  # noqa: BLE001
-        raise auth.TidalAuthError(f"TIDAL playlist favorite update failed: {exc}") from exc
+        raise _catalog_error(f"TIDAL playlist favorite update failed: {exc}", exc) from exc
     if not ok:
-        raise auth.TidalAuthError("TIDAL playlist favorite update failed")
+        raise TidalCatalogError("TIDAL playlist favorite update failed")
     _update_cached_favorite_id(user_id, "playlists", str(playlist_id), bool(favorite))
     return {"type": "playlist", "id": str(playlist_id), "favorite": bool(favorite)}
 
@@ -598,7 +637,7 @@ def get_artist(artist_id: str) -> dict:
         albums = artist.get_albums(limit=50)
         top_tracks = artist.get_top_tracks(limit=10)
     except Exception as exc:  # noqa: BLE001
-        raise auth.TidalAuthError(f"TIDAL artist {artist_id} lookup failed: {exc}") from exc
+        raise _catalog_error(f"TIDAL artist {artist_id} lookup failed: {exc}", exc) from exc
     return {
         **normalize_artist(artist),
         "albums": _dedupe_albums([normalize_album(a) for a in albums]),
@@ -613,7 +652,7 @@ def get_album(album_id: str) -> dict:
     try:
         album = session.album(album_id)
     except Exception as exc:  # noqa: BLE001
-        raise auth.TidalAuthError(f"TIDAL album {album_id} lookup failed: {exc}") from exc
+        raise _catalog_error(f"TIDAL album {album_id} lookup failed: {exc}", exc) from exc
     return normalize_album(album)
 
 
@@ -645,7 +684,7 @@ def playlist_tracks(playlist_id: str) -> list[dict]:
         playlist = session.playlist(playlist_id)
         tracks = playlist.tracks()
     except Exception as exc:  # noqa: BLE001
-        raise auth.TidalAuthError(f"TIDAL playlist {playlist_id} lookup failed: {exc}") from exc
+        raise _catalog_error(f"TIDAL playlist {playlist_id} lookup failed: {exc}", exc) from exc
     return [normalize_track(t) for t in tracks]
 
 
@@ -665,7 +704,7 @@ def playlist_detail(playlist_id: str) -> dict:
         playlist = session.playlist(playlist_id)
         tracks = playlist.tracks()
     except Exception as exc:  # noqa: BLE001
-        raise auth.TidalAuthError(f"TIDAL playlist {playlist_id} lookup failed: {exc}") from exc
+        raise _catalog_error(f"TIDAL playlist {playlist_id} lookup failed: {exc}", exc) from exc
     artists: list[dict[str, str]] = []
     seen: set[str] = set()
     for track in tracks:
@@ -691,6 +730,10 @@ def create_playlist(title: str, description: str = "", track_ids: list[str] | No
     also favorited so it appears in My Collection (playlist view = collection
     state).  Both the playlist list and the favorite id caches are dropped so
     the next loads reflect the new entry with an active heart.
+
+    Once created, a seeding failure returns the playlist identity and a warning
+    rather than inviting a duplicate creation. ``added_track_ids=None`` means
+    the write outcome is unknown, not that no tracks were added.
     """
     _require_tidalapi()
     session = _session()
@@ -698,13 +741,33 @@ def create_playlist(title: str, description: str = "", track_ids: list[str] | No
     try:
         playlist = session.user.create_playlist(str(title).strip(), str(description or ""))
     except Exception as exc:  # noqa: BLE001
-        raise auth.TidalAuthError(f"TIDAL playlist creation failed: {exc}") from exc
+        raise _catalog_error(f"TIDAL playlist creation failed: {exc}", exc) from exc
     ids = [str(i) for i in (track_ids or []) if str(i).strip()]
+    pid = str(getattr(playlist, "id", ""))
+    added: list[str] | None = []
+    seed_status = "complete"
+    warning = None
     if ids:
-        _add_items(session, playlist, ids)
+        try:
+            added = _add_items(session, playlist, ids)
+        except Exception as exc:  # creation succeeded; the items write may also have landed
+            logger.warning("TIDAL playlist %s created but seeding is unconfirmed: %s", pid, exc)
+            added = None
+            seed_status = "unknown"
+            warning = (
+                f'TIDAL playlist "{str(title).strip()}" ({pid}) was created, but adding tracks '
+                "could not be confirmed. Check this playlist before adding tracks again; do not create it again."
+            )
+        else:
+            if not set(ids).issubset(added):
+                seed_status = "partial"
+                warning = (
+                    f'TIDAL playlist "{str(title).strip()}" ({pid}) was created, but only '
+                    f"{len(set(ids).intersection(added))} of {len(set(ids))} requested tracks were confirmed. "
+                    "Add missing tracks to this playlist; do not create it again."
+                )
     # Add the new playlist to My Collection (favorites) so it appears under
     # TIDAL → Playlists with an active heart immediately.
-    pid = str(getattr(playlist, "id", ""))
     if pid:
         try:
             session.user.favorites.add_playlist(pid)
@@ -712,7 +775,10 @@ def create_playlist(title: str, description: str = "", track_ids: list[str] | No
         except Exception:
             pass  # playlist creation succeeded; favorite is best-effort
     library_cache.delete(user_id, "playlists")
-    return normalize_playlist(playlist)
+    result = {**normalize_playlist(playlist), "seed_status": seed_status, "added_track_ids": added}
+    if warning:
+        result["warning"] = warning
+    return result
 
 
 def _add_items(session: Any, playlist: Any, track_ids: list[str]) -> list[str]:
@@ -734,8 +800,18 @@ def _add_items(session: Any, playlist: Any, track_ids: list[str]) -> list[str]:
         },
         headers=headers,
     )
-    payload = response.json() if response is not None else {}
-    return [str(i) for i in (payload.get("addedItemIds") or [])]
+    try:
+        payload = response.json() if response is not None else None
+    except ValueError as exc:
+        raise TidalCatalogError("TIDAL playlist update returned invalid JSON") from exc
+    added = payload.get("addedItemIds") if isinstance(payload, dict) else None
+    valid_added_ids = isinstance(added, list) and all(
+        isinstance(item, (str, int)) and not isinstance(item, bool) and str(item).strip()
+        for item in added
+    )
+    if not valid_added_ids:
+        raise TidalCatalogError("TIDAL playlist update returned an invalid track confirmation")
+    return [str(item) for item in added]
 
 
 def add_playlist_tracks(playlist_id: str, track_ids: list[str]) -> dict:
@@ -749,12 +825,12 @@ def add_playlist_tracks(playlist_id: str, track_ids: list[str]) -> dict:
     user_id = _cache_user_id(session)
     ids = [str(i) for i in track_ids if str(i).strip()]
     if not ids:
-        raise auth.TidalAuthError("TIDAL playlist add requires at least one track id")
+        raise TidalCatalogError("TIDAL playlist add requires at least one track id", 400)
     try:
         playlist = session.playlist(str(playlist_id))
         added = _add_items(session, playlist, ids)
     except Exception as exc:  # noqa: BLE001
-        raise auth.TidalAuthError(f"TIDAL playlist update failed: {exc}") from exc
+        raise _catalog_error(f"TIDAL playlist update failed: {exc}", exc) from exc
     library_cache.delete(user_id, "playlists")
     return {
         "playlist_id": str(playlist_id),

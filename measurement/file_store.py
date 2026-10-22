@@ -156,13 +156,13 @@ class MeasurementFileStore:
         return self.read_settings()
 
     def _read_settings_unlocked(self) -> dict[str, Any]:
-        if not self.settings_path.exists():
-            return {}
         try:
             payload = json.loads(self.settings_path.read_text(encoding="utf-8"))
-            return payload if isinstance(payload, dict) else {}
-        except Exception:
+        except FileNotFoundError:
             return {}
+        if not isinstance(payload, dict):
+            raise ValueError("Measurement settings must be a JSON object")
+        return payload
 
     def _write_settings(self, settings: dict[str, Any]) -> None:
         with self._settings_lock:

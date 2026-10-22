@@ -6498,16 +6498,22 @@ async def _restore_pending_policy_rate() -> None:
     if (_measurement_session_owns_live_rate() or _ingress_resync_pending
             or _playback_transition_is_active()):
         return
-    _policy_rate_restore_pending = False
+    # Keep the retry through failures/cancellation until committed or no longer needed.
     async with _source_transition_lock():
-        if _surround_carrier_owned or _measurement_session_owns_live_rate():
+        if _surround_carrier_owned:
+            _policy_rate_restore_pending = False
+            return
+        if _measurement_session_owns_live_rate():
             return
         policy = samplerate.load_sample_rate_policy()
         request = await playback_orchestration.configured().sample_rate_policy_request(
             policy, detail="measurement-release")
         if not request.rate_change:
+            _policy_rate_restore_pending = False
             return
-        await _transition_sample_rate_policy(policy, detail="measurement-release")
+        result = await _transition_sample_rate_policy(policy, detail="measurement-release")
+        if result.committed:
+            _policy_rate_restore_pending = False
 
 
 async def _hold_external_input_carrier(entry: dict) -> None:
