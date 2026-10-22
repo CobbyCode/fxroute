@@ -12,6 +12,7 @@ import tempfile
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
+from dsp import calibration_profiles
 from dsp.native_config import PEQ_Q_MAX, PEQ_Q_MIN
 from dsp.latency import ir_latency, render_av_sync, validate_ir_latency
 from dsp.persistence import DSPPresetLibrary, DSPPresetStore, DSPStateStore, clean_name, kernel_name
@@ -345,18 +346,10 @@ class DSPManager:
         if not -80 <= loudness["volumeDb"] <= 0:
             raise ValueError("loudness.params.volumeDb must be between -80 and 0")
 
-        def normalize_calibration(value: Any) -> Dict[str, Any]:
-            calibration = dict(value) if isinstance(value, dict) else {}
-            adjustment = calibration.get("requiredAdjustmentDb")
-            if isinstance(adjustment, (int, float)):
-                calibration["requiredAdjustmentDb"] = float(adjustment)
-                calibration["calibrated"] = abs(float(adjustment)) <= 1.0
-            return calibration
-
-        loudness["calibration"] = normalize_calibration(loudness.get("calibration"))
+        loudness["calibration"] = calibration_profiles.normalize_record(loudness.get("calibration"))
         raw_profiles = loudness.get("calibrationProfiles") if isinstance(loudness.get("calibrationProfiles"), dict) else {}
         loudness["calibrationProfiles"] = {
-            str(profile_id): normalize_calibration(profile)
+            str(profile_id): calibration_profiles.normalize_record(profile)
             for profile_id, profile in raw_profiles.items()
             if isinstance(profile, dict)
         }
@@ -487,7 +480,8 @@ class DSPManager:
                 "output-gain": 0.0 - plugin_volume_db if definition["enabled"] else 0.0}
 
     def __init__(self, home: Optional[Path] = None,
-                 active_preset_reader: Optional[Callable[[], Optional[str]]] = None):
+                 active_preset_reader: Optional[Callable[[], Optional[str]]] = None,
+                 active_device_reader: Optional[Callable[[], Optional[str]]] = None):
         self.home = Path(home or Path.home())
         self.base_dir = self.home / ".config/fxroute/dsp"
         self.output_dir = self.base_dir / "presets"
@@ -501,6 +495,8 @@ class DSPManager:
         # The Global preset of the active output mode lives in the output
         # state; the composition root installs its reader.
         self.active_preset_reader = active_preset_reader
+        # The output device the applied plan renders to; the composition root installs its reader.
+        self.active_device_reader = active_device_reader
         self.runtime_transition_callback = None
         self.temporary_runtime_transition_callback = None
         self.legacy_extras_candidates = (
@@ -611,8 +607,20 @@ class DSPManager:
         reader = self.active_preset_reader
         return reader() if reader is not None else None
 
-    def load_global_extras(self) -> Dict[str, Any]:
-        return self.normalize_effects_extras(self.state_store.read("extras.json", {}))
+    def get_active_device(self) -> Optional[str]:
+        """Device identity of the output the applied plan renders to (None while unknown)."""
+        reader = self.active_device_reader
+        return reader() if reader is not None else None
+
+    def load_global_extras(self, device_id: Optional[str] = None) -> Dict[str, Any]:
+        """Persisted extras with the Loudness calibration bound to one output device.
+
+        Without ``device_id`` the output of the applied plan is used. An output without
+        a calibration record of its own reads none, never another output's.
+        """
+        extras = self.normalize_effects_extras(self.state_store.read("extras.json", {}))
+        return calibration_profiles.bind_calibration(
+            extras, device_id if device_id is not None else self.get_active_device())
 
     def save_global_extras(self, extras: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         normalized = self.normalize_effects_extras(extras)

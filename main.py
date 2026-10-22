@@ -3132,6 +3132,7 @@ async def lifespan(app: FastAPI):
             logger.warning("Downloader not available: %s", exc)
 
         dsp_manager = await _drain_worker(DSPManager, active_preset_reader=_active_global_preset)
+        dsp_manager.active_device_reader = lambda: get_output_service().applied_device_key()
         configure_output_level_observer(_observe_output_levels)
         volume_read_monitor_task = start_volume_read_monitor()
         runtime.lifecycle_background_tasks.add(volume_read_monitor_task)

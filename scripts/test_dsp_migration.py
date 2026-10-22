@@ -114,13 +114,19 @@ class DSPMigrationTests(unittest.TestCase):
 
     def test_calibration_flows_into_confirmed_work_point_after_migration(self):
         self.write_legacy(LEGACY_EXTRAS)
-        manager = DSPManager(home=self.home)
+        # A calibration belongs to its output: the migrated profile of "out-1" shapes the work
+        # point while out-1 renders, and an output without a profile reads none.
+        manager = DSPManager(home=self.home, active_device_reader=lambda: "out-1")
         extras = manager.load_global_extras()
+        self.assertEqual(extras["loudness"]["params"]["calibration"]["requiredAdjustmentDb"], 0.5)
         payload = manager._loudness_plugin_payload(
             extras["loudness"], extras["autogain"])
+        profile_extras = copy.deepcopy(LEGACY_EXTRAS)
+        profile_extras["loudness"]["params"]["calibration"] = (
+            LEGACY_EXTRAS["loudness"]["params"]["calibrationProfiles"]["out-1"])
         expected = manager._loudness_plugin_payload(
-            manager.normalize_effects_extras(LEGACY_EXTRAS)["loudness"],
-            manager.normalize_effects_extras(LEGACY_EXTRAS)["autogain"])
+            manager.normalize_effects_extras(profile_extras)["loudness"],
+            manager.normalize_effects_extras(profile_extras)["autogain"])
         self.assertTrue(math_isclose(float(payload["volume"]), float(expected["volume"])))
         # The legacy calibration profile is part of the persisted extras, so
         # the confirmed work point reflects it without any runtime mirror.
@@ -131,6 +137,10 @@ class DSPMigrationTests(unittest.TestCase):
             manager.normalize_effects_extras(uncalibrated)["loudness"],
             manager.normalize_effects_extras(uncalibrated)["autogain"])
         self.assertFalse(math_isclose(float(payload["volume"]), float(uncalibrated_payload["volume"])))
+        other = manager.load_global_extras(device_id="out-3")
+        self.assertEqual(other["loudness"]["params"]["calibration"], {})
+        other_payload = manager._loudness_plugin_payload(other["loudness"], other["autogain"])
+        self.assertTrue(math_isclose(float(other_payload["volume"]), float(uncalibrated_payload["volume"])))
 
 
 def math_isclose(a, b):

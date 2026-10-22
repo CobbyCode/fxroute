@@ -27,9 +27,11 @@ from pathlib import Path
 
 from audio.output_state_migration import upgrade_output_state
 from audio.filter_banks import resolve_bank
+from audio.output_routing import device_key
 from audio.output_state_store import OutputStateStore, StateConflictError
 from audio.output_state import default_output_state, validate_output_state
 from common.atomic_write import atomic_write_text
+from dsp.calibration_profiles import bind_calibration
 from dsp.native_config import layout_from_plan
 from dsp.processing_plan import compile_processing_plan
 from dsp.surround_global import preset_group
@@ -139,6 +141,18 @@ class OutputService:
             logger.warning("Discarding an invalid previous output checkpoint")
         atomic_write_text(self._applied_path(),
                           json.dumps(payload, sort_keys=True, allow_nan=False) + "\n")
+
+    def applied_device_key(self) -> str | None:
+        """Device identity of the output the last applied plan rendered to (None when none was).
+
+        A small checkpoint read, no output probing, so it may serve readers that have no plan.
+        """
+        try:
+            payload = json.loads(self._applied_path().read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        output_key = payload.get("output_key") if isinstance(payload, dict) else None
+        return device_key(output_key) if isinstance(output_key, str) and output_key.strip() else None
 
     def load_applied(self, *, output_key: str, channels: int,
                      hardware_ports: list[str]) -> dict:
@@ -263,7 +277,9 @@ class OutputService:
             if extras is None and self._deps.global_extras_loader is not None:
                 extras = self._deps.global_extras_loader()
             if extras is not None:
-                plan["global"]["extras"] = copy.deepcopy(extras)
+                # The plan renders to this output: it carries this output's Loudness calibration,
+                # whichever output the extras were bound to when they were read.
+                plan["global"]["extras"] = bind_calibration(extras, device_key(output_key))
         return plan
 
     def compile_alignment_plan(self, state: dict, *, output_key: str, channels: int,

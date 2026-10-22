@@ -15,6 +15,7 @@ from typing import Any, Awaitable, Callable, Mapping
 from fastapi import HTTPException
 
 from audio.output_context import output_state_device
+from audio.output_routing import device_key
 from audio.output_service import OutputService
 from audio.output_state_store import StateConflictError
 from audio.system_volume import volume_percent_to_db
@@ -73,11 +74,13 @@ class OutputRenderer:
                 raise ValueError("Output playback ports are undiscovered or incomplete")
             manager = self._deps.get_manager()
             token = service.activation_token()
-            base_extras = manager.load_global_extras()
+            # The extras are read for the output being rendered, not for the one applied now.
+            device = device_key(output_key)
+            base_extras = manager.load_global_extras(device_id=device)
 
             def validate_current():
                 service.require_activation_token(token)
-                if manager.load_global_extras() != base_extras:
+                if manager.load_global_extras(device_id=device) != base_extras:
                     raise StateConflictError("Effects extras changed while preparing the DSP graph")
             native = self._deps.get_runtime()
             if native is None:
@@ -236,13 +239,14 @@ class OutputRenderer:
         if service.load()["revision"] != v2["expected_revision"]:
             raise StateConflictError("Output state changed during transition prepare")
         manager = self._deps.get_manager()
-        extras = manager.load_global_extras()
+        device = device_key(v2["output_key"])
+        extras = manager.load_global_extras(device_id=device)
         token = service.activation_token()
         ports = list(v2["target"].config.hardware_ports)
 
         def validate_current():
             service.require_activation_token(token)
-            if manager.load_global_extras() != extras:
+            if manager.load_global_extras(device_id=device) != extras:
                 raise StateConflictError("Effects extras changed during transition prepare")
 
         for key, document in (("target", v2["candidate_state"]), ("previous_target", v2["previous_state"])):

@@ -23,6 +23,7 @@ from audio.input_output_mode import remember_mode, restore_mode
 from audio.output_api import build_output_state_mutation, require_state_mode
 from audio.output_context import output_state_device, output_state_topology
 from audio.output_service import MeasurementActiveError, OutputService
+from audio.output_routing import device_key
 from audio.output_state import effective_crossover_enabled, routing_for_device, seed_device_routing
 from audio.output_topology import MODES
 from audio.output_state_store import StateConflictError
@@ -340,6 +341,7 @@ class OutputApplication:
             raise HTTPException(status_code=409, detail={
                 "code": "output-context-conflict", "message": "Output device or rate changed; retry the edit",
                 "revision": service.load()["revision"]})
+        device = device_key(output_key)
         rendered_extras = None
         # Stage before commit: unrenderable candidates must not poison the head.
         staged_new_target = staged_old_target = None
@@ -347,7 +349,7 @@ class OutputApplication:
         if (live_known and new_plan is not None and self._deps.get_runtime() is not None
                 and (overview.get("output_mode") or {}).get("hardware_playback_ports")):
             manager = self._deps.get_manager()
-            rendered_extras = manager.load_global_extras()
+            rendered_extras = manager.load_global_extras(device_id=device)
             # Refresh both identities under graph ownership after any extras writer.
             for key, document in (("old", state), ("new", candidate)):
                 try:
@@ -403,7 +405,7 @@ class OutputApplication:
             if service.load()["revision"] != expected_revision:
                 raise StateConflictError("Output state changed during output-state activation")
             service.require_activation_token(expected_token)
-            if rendered_extras is not None and manager.load_global_extras() != rendered_extras:
+            if rendered_extras is not None and manager.load_global_extras(device_id=device) != rendered_extras:
                 raise StateConflictError("Effects extras changed during output-state activation")
 
         def require_current():
