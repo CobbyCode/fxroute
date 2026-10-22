@@ -158,6 +158,229 @@ class PlannedDiagnosisTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(diagnosis["links_complete"])
 
 
+class EffectsRepairRecoveryTests(unittest.IsolatedAsyncioTestCase):
+    """Keep real diagnosis/relinking; replace only PipeWire/DSP boundaries."""
+
+    def setUp(self):
+        self.overview = v2_overview()
+        self.overview['output_mode']['mode'] = 'stereo'
+        self.edges = set(v2_edges())
+        self.bypass = ('mpv:output_FL', f'{OUTPUT_KEY}:{PORTS[0]}')
+        self.left_ingress = v2_edges()[0]
+        self.left_output, self.right_output = v2_edges()[2:4]
+        self.output_edge = v2_edges()[-1]
+        self.events = []
+        self.readbacks = 0
+        self.polls = 0
+
+    async def run_pw_link(self, command):
+        if command == '-l':
+            self.readbacks += 1
+        return graph_text(self.edges if command == '-l' else [])
+
+    async def connect_ports(self, sources, target):
+        edge = (sources[0], target)
+        self.events.append(('connect', edge))
+        self.edges.add(edge)
+
+    async def cleanup(self):
+        self.events.append(('cleanup',))
+        self.edges = set(v2_edges())
+
+    async def poll(self, _delay):
+        self.polls += 1
+        await asyncio.sleep(0)
+
+    def make_instance(self, **overrides):
+        return orchestrator({
+            'get_dsp_runtime': lambda: SimpleNamespace(reclean_direct_dsp_links=self.cleanup),
+            'get_dsp_snapshot': lambda: {'active': True, 'config': {'hardware_ports': PORTS}},
+            'helper_argument_sample_rate': lambda _snapshot: 48000,
+            'run_pw_link_command': self.run_pw_link,
+            'connect_ports': self.connect_ports,
+            'sleep': self.poll,
+            **overrides,
+        })
+
+    def request(self):
+        return TransitionRequest(operation='play', source='local', target_rate=48000,
+                                 audio_overview=self.overview)
+
+    async def assert_canonical(self, instance, result):
+        self.assertTrue(result['graph_complete'])
+        self.assertTrue(result['links_reconciled'])
+        diagnosis = await instance.playback_graph_diagnosis(self.overview, target_rate=48000)
+        self.assertTrue(diagnosis['links_complete'], diagnosis['signature'])
+        self.assertEqual(result['graph_signature'], diagnosis['signature'])
+
+    async def test_fresh_bypass_preempts_failed_stereo_repair(self):
+        self.edges.remove(self.output_edge)
+
+        async def stereo_repair(diagnosis):
+            self.events.append(('stereo', diagnosis['bypass_only']))
+            self.edges = set(v2_edges()) | {self.bypass}
+            raise RuntimeError('stereo repair readback not yet canonical')
+
+        instance = self.make_instance(repair_stereo_output_links=stereo_repair)
+        result = await instance.establish_effects_and_helper(self.request())
+
+        await self.assert_canonical(instance, result)
+        self.assertEqual(self.events, [('stereo', False), ('cleanup',)])
+        self.assertEqual(self.polls, 1)
+
+    async def test_fresh_bypass_preempts_failed_generic_repair(self):
+        async def run_pw_link(command):
+            if command == '-l' and self.readbacks == 1:
+                self.edges.remove(self.left_output)
+            return await self.run_pw_link(command)
+
+        async def connect(sources, target):
+            await self.connect_ports(sources, target)
+            self.edges.add(self.bypass)
+            raise RuntimeError('link creation readback lagged')
+
+        instance = self.make_instance(run_pw_link_command=run_pw_link, connect_ports=connect)
+        relink = instance.relink_missing_production_links
+
+        async def record_relink(diagnosis, **kwargs):
+            self.events.append(('generic', diagnosis['bypass_only']))
+            return await relink(diagnosis, **kwargs)
+
+        with mock.patch.object(instance, 'relink_missing_production_links', new=record_relink):
+            result = await instance.establish_effects_and_helper(self.request())
+
+        await self.assert_canonical(instance, result)
+        self.assertEqual(self.events, [('generic', False), ('connect', self.left_output),
+                                       ('cleanup',)])
+        self.assertEqual(self.polls, 2)
+
+    async def test_deferred_stereo_repair_uses_current_diagnosis(self):
+        self.edges.remove(self.output_edge)
+        missing_snapshots = []
+
+        async def stereo_repair(diagnosis):
+            missing = instance.missing_playback_graph_links(diagnosis)
+            missing_snapshots.append(missing)
+            for link in missing:
+                self.edges.add(tuple(link.split(' -> ', 1)))
+            if len(missing_snapshots) == 1:
+                self.edges.remove(self.left_ingress)
+                raise RuntimeError('ingress disappeared during stereo repair')
+            if self.edges != set(v2_edges()):
+                raise RuntimeError('repair used an obsolete missing-link snapshot')
+
+        instance = self.make_instance(repair_stereo_output_links=stereo_repair)
+        result = await instance.establish_effects_and_helper(self.request())
+
+        await self.assert_canonical(instance, result)
+        self.assertEqual(missing_snapshots, [
+            [f'{self.output_edge[0]} -> {self.output_edge[1]}'],
+            [f'{self.left_ingress[0]} -> {self.left_ingress[1]}'],
+        ])
+        self.assertEqual(self.polls, 1)
+
+    async def test_deferred_generic_repair_rebinds_changed_missing_links(self):
+        async def run_pw_link(command):
+            if command == '-l' and self.readbacks == 1:
+                self.edges.remove(self.left_output)
+            return await self.run_pw_link(command)
+
+        async def connect(sources, target):
+            await self.connect_ports(sources, target)
+            if len(self.events) == 1:
+                self.edges.remove(self.right_output)
+                raise RuntimeError('other output link disappeared after link creation')
+
+        instance = self.make_instance(run_pw_link_command=run_pw_link, connect_ports=connect)
+        result = await instance.establish_effects_and_helper(self.request())
+
+        await self.assert_canonical(instance, result)
+        self.assertEqual(self.events, [('connect', self.left_output),
+                                       ('connect', self.right_output)])
+        self.assertEqual(self.polls, 2)
+
+    async def test_failed_bypass_replaces_old_repair_and_survives_diagnosis_change(self):
+        self.edges.remove(self.output_edge)
+
+        async def stereo_repair(_diagnosis):
+            self.events.append(('stereo',))
+            self.edges = set(v2_edges()) | {self.bypass}
+            raise RuntimeError('stereo readback lagged')
+
+        async def cleanup():
+            self.events.append(('cleanup',))
+            if self.events.count(('cleanup',)) == 1:
+                self.edges.discard(self.bypass)
+                self.edges.remove(self.left_ingress)
+                raise RuntimeError('cleanup left temporary link drift')
+            self.edges = set(v2_edges())
+
+        instance = self.make_instance(
+            repair_stereo_output_links=stereo_repair,
+            get_dsp_runtime=lambda: SimpleNamespace(reclean_direct_dsp_links=cleanup))
+        result = await instance.establish_effects_and_helper(self.request())
+
+        await self.assert_canonical(instance, result)
+        self.assertEqual(self.events, [('stereo',), ('cleanup',), ('cleanup',)])
+        self.assertEqual(self.polls, 2)
+
+    async def test_lagged_readback_clears_error_without_reconnecting_existing_link(self):
+        async def run_pw_link(command):
+            if command == '-l' and self.readbacks == 1:
+                self.edges.remove(self.left_output)
+            return await self.run_pw_link(command)
+
+        async def connect(sources, target):
+            await self.connect_ports(sources, target)
+            raise RuntimeError('link exists but confirmation lagged')
+
+        instance = self.make_instance(run_pw_link_command=run_pw_link, connect_ports=connect)
+        result = await instance.establish_effects_and_helper(self.request())
+
+        await self.assert_canonical(instance, result)
+        self.assertEqual(self.events, [('connect', self.left_output)])
+        self.assertEqual(self.polls, 2)
+
+    async def test_generic_repair_failure_remains_bounded_and_chained(self):
+        async def run_pw_link(command):
+            if command == '-l' and self.readbacks == 1:
+                self.edges.remove(self.left_output)
+            return await self.run_pw_link(command)
+
+        failure = RuntimeError('persistent link failure')
+
+        async def connect(sources, target):
+            self.events.append(('failed-connect', (sources[0], target)))
+            raise failure
+
+        instance = self.make_instance(run_pw_link_command=run_pw_link, connect_ports=connect)
+        with self.assertRaisesRegex(RuntimeError, 'canonical topology') as raised:
+            await instance.establish_effects_and_helper(self.request())
+
+        self.assertIs(raised.exception.__cause__, failure)
+        self.assertEqual(self.events, [('failed-connect', self.left_output)] * 3)
+        self.assertEqual(self.polls, 3)
+        self.assertEqual(self.readbacks, 5)
+
+    async def test_cancelled_generic_repair_is_not_saved_or_retried(self):
+        async def run_pw_link(command):
+            if command == '-l' and self.readbacks == 1:
+                self.edges.remove(self.left_output)
+            return await self.run_pw_link(command)
+
+        async def connect(sources, target):
+            self.events.append(('cancelled-connect', (sources[0], target)))
+            raise asyncio.CancelledError
+
+        instance = self.make_instance(run_pw_link_command=run_pw_link, connect_ports=connect)
+        with self.assertRaises(asyncio.CancelledError):
+            await instance.establish_effects_and_helper(self.request())
+
+        self.assertEqual(self.events, [('cancelled-connect', self.left_output)])
+        self.assertEqual(self.polls, 0)
+        self.assertEqual(self.readbacks, 2)
+
+
 class StagingBranchTests(unittest.IsolatedAsyncioTestCase):
     async def test_retry_retains_runtime_repair_after_its_error_changes_the_diagnosis(self):
         for mode in ('stereo', 'surround'):
