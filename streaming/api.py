@@ -24,6 +24,7 @@ from fastapi import APIRouter, HTTPException, Request
 
 import streaming
 from streaming.tidal import auth as tidal_auth
+from streaming.tidal import catalog as tidal_catalog
 from streaming.tidal import playback as tidal_playback
 from streaming.tidal.cache import library_cache as tidal_library_cache
 
@@ -315,6 +316,8 @@ def _streaming_provider(provider_id: str):
 def _tidal_http_error(exc: Exception) -> HTTPException:
     if isinstance(exc, tidal_auth.TidalAuthError):
         return HTTPException(status_code=401, detail=str(exc))
+    if isinstance(exc, tidal_catalog.TidalCatalogError):
+        return HTTPException(status_code=exc.status_code, detail=str(exc))
     if isinstance(exc, tidal_playback.TidalStreamError):
         status = {
             tidal_playback.KIND_AUTH: 401,

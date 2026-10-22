@@ -319,7 +319,7 @@ class CatalogCacheTests(unittest.TestCase):
         session = _session(42, favorites)
         p1, p2, p3 = self._patch_catalog(session, store)
         with p1, p2, p3:
-            with self.assertRaises(auth.TidalAuthError):
+            with self.assertRaises(catalog.TidalCatalogError):
                 catalog.favorites_tracks()
 
     def test_favorite_state_cached_and_fallback(self):
@@ -434,7 +434,7 @@ class CatalogCacheTests(unittest.TestCase):
         favorites_b._fail = True
         p1b, p2b, p3b = self._patch_catalog(_session(99, favorites_b), store)
         with p1b, p2b, p3b:
-            with self.assertRaises(auth.TidalAuthError):
+            with self.assertRaises(catalog.TidalCatalogError):
                 catalog.favorites_tracks()
 
     def test_toggle_updates_cached_ids(self):
@@ -558,7 +558,7 @@ class AlbumVariantFavoriteTests(unittest.TestCase):
         p1, p2, p3 = _patch_catalog(_session(42, favorites), store)
         with p1, p2, p3:
             catalog.favorite_state()
-            with self.assertRaises(auth.TidalAuthError):
+            with self.assertRaises(catalog.TidalCatalogError):
                 catalog.set_album_favorite("B", False)
         self.assertEqual(favorites.removed, ["B"])
         self.assertEqual(store.get("42", "ids")["albums"], ["A"], "only the removed id leaves the cached hearts")
@@ -866,7 +866,7 @@ class PlaylistWriteTests(unittest.TestCase):
         session = FakeWriteSession(fail="create")
         p1, p2, p3 = self._patch_catalog(session, store)
         with p1, p2, p3:
-            with self.assertRaises(auth.TidalAuthError):
+            with self.assertRaises(catalog.TidalCatalogError):
                 catalog.create_playlist("My Mix")
         self.assertEqual(store.get("42", "playlists"), [{"id": "old"}])
 
@@ -888,7 +888,7 @@ class PlaylistWriteTests(unittest.TestCase):
         session = FakeWriteSession()
         p1, p2, p3 = self._patch_catalog(session, store)
         with p1, p2, p3:
-            with self.assertRaises(auth.TidalAuthError):
+            with self.assertRaises(catalog.TidalCatalogError):
                 catalog.add_playlist_tracks("pl9", [])
 
     def test_add_playlist_tracks_failure_keeps_cache(self):
@@ -897,7 +897,7 @@ class PlaylistWriteTests(unittest.TestCase):
         session = FakeWriteSession(fail="add")
         p1, p2, p3 = self._patch_catalog(session, store)
         with p1, p2, p3:
-            with self.assertRaises(auth.TidalAuthError):
+            with self.assertRaises(catalog.TidalCatalogError):
                 catalog.add_playlist_tracks("pl9", ["1"])
         self.assertEqual(store.get("42", "playlists"), [{"id": "p1"}])
 

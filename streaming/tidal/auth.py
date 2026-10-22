@@ -71,6 +71,18 @@ def _new_session(quality: str | None = None) -> "tidalapi.Session":
         raise TidalAuthError("tidalapi is not installed")
     session = tidalapi.Session()
     session.config.quality = quality or DEFAULT_QUALITY
+    # tidalapi labels every non-200 token refresh as AuthenticationError,
+    # including server outages. Preserve those HTTP failures before it parses
+    # the response, without changing its invalid_grant / rejected-token path.
+    def preserve_refresh_transport_error(response, *args, **kwargs):
+        is_refresh_endpoint = response.url == session.config.api_oauth2_token
+        is_transient_failure = response.status_code == 429 or 500 <= response.status_code < 600
+        if is_refresh_endpoint and is_transient_failure:
+            response.raise_for_status()
+
+    request_session = getattr(session, "request_session", None)
+    if request_session is not None:
+        request_session.hooks["response"].append(preserve_refresh_transport_error)
     return session
 
 
