@@ -226,8 +226,8 @@ async function startAutoSubOptimize() {
     }
     const inputId = measurementState.selectedInputId;
 
-    await deps.flushSubwooferSettingsBeforeMeasurement();
-
+    // Claim the start before yielding: a duplicate must not clear this run's
+    // shared state when the backend rejects its extra request.
     measurementState.autoSubInFlight = true;
     measurementState.startInFlight = true;
     measurementState.autoSubCancelRequested = false;
@@ -241,6 +241,7 @@ async function startAutoSubOptimize() {
     deps.renderMeasurementPanel();
 
     try {
+        await deps.flushSubwooferSettingsBeforeMeasurement();
         const formData = new FormData();
         formData.append('input_id', inputId);
         formData.append('input_key', measurementState.selectedInputKey || '');
