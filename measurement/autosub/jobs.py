@@ -21,8 +21,8 @@ from audio.output_topology import SURROUND_POSITIONS
 from common.atomic_write import atomic_write_text
 from fastapi import APIRouter, HTTPException
 
-from dsp.manager import ensure_kernel_supported_ir, parse_wav_frames
 from dsp.native_config import PEQ_Q_MAX, PEQ_Q_MIN
+from dsp.native_model import native_peq_coefficients, read_mono_ir
 
 from .candidates import _restore_original_config_or_fail_job
 from .deps import (
@@ -207,57 +207,6 @@ def _auto_sub_sweep_input_pcm(
     return sweep
 
 
-def _auto_sub_native_peq_coefficients(
-    filter_type: str, frequency_hz: float, sample_rate: int,
-    q: float, gain_db: float,
-) -> tuple[float, float, float, float, float]:
-    """Mirror the native engine's PEQ biquad design (RBJ cookbook, S=1 shelves).
-
-    Returns normalized ``(b0, b1, b2, a1, a2)`` exactly as native_dsp/dsp.c
-    ``design()`` computes them, so the predictor and the engine agree on
-    every bank PEQ response.
-    """
-    frequency = float(frequency_hz)
-    rate = float(int(sample_rate))
-    quality = float(q)
-    gain = float(gain_db)
-    if not quality > 0.0:
-        raise ValueError("PEQ q must be positive")
-    a = 10.0 ** (gain / 40.0)
-    w = 2.0 * math.pi * frequency / rate
-    cs, sn = math.cos(w), math.sin(w)
-    alpha = sn / (2.0 * quality)
-    beta = 2.0 * math.sqrt(a) * alpha
-    if filter_type == "bell":
-        b0, b1, b2, a0, a1, a2 = (1 + alpha * a, -2 * cs, 1 - alpha * a,
-                                  1 + alpha / a, -2 * cs, 1 - alpha / a)
-    elif filter_type == "notch":
-        b0, b1, b2, a0, a1, a2 = (1, -2 * cs, 1, 1 + alpha, -2 * cs, 1 - alpha)
-    elif filter_type == "lowpass":
-        b0, b1, b2, a0, a1, a2 = ((1 - cs) / 2, 1 - cs, (1 - cs) / 2,
-                                  1 + alpha, -2 * cs, 1 - alpha)
-    elif filter_type == "highpass":
-        b0, b1, b2, a0, a1, a2 = ((1 + cs) / 2, -(1 + cs), (1 + cs) / 2,
-                                  1 + alpha, -2 * cs, 1 - alpha)
-    elif filter_type == "lowshelf":
-        b0, b1, b2, a0, a1, a2 = (a * ((a + 1) - (a - 1) * cs + beta),
-                                  2 * a * ((a - 1) - (a + 1) * cs),
-                                  a * ((a + 1) - (a - 1) * cs - beta),
-                                  (a + 1) + (a - 1) * cs + beta,
-                                  -2 * ((a - 1) + (a + 1) * cs),
-                                  (a + 1) + (a - 1) * cs - beta)
-    elif filter_type == "highshelf":
-        b0, b1, b2, a0, a1, a2 = (a * ((a + 1) + (a - 1) * cs + beta),
-                                  -2 * a * ((a - 1) + (a + 1) * cs),
-                                  a * ((a + 1) + (a - 1) * cs - beta),
-                                  (a + 1) - (a - 1) * cs + beta,
-                                  2 * ((a - 1) - (a + 1) * cs),
-                                  (a + 1) - (a - 1) * cs - beta)
-    else:
-        raise ValueError(f"Unsupported PEQ filter type: {filter_type}")
-    return b0 / a0, b1 / a0, b2 / a0, a1 / a0, a2 / a0
-
-
 def _auto_sub_run_plan_biquad(
     values: np.ndarray, coefficients: tuple[float, float, float, float, float],
 ) -> np.ndarray:
@@ -284,44 +233,6 @@ def _auto_sub_run_plan_biquad(
         output[index] = filtered
         index += 1
     return np.array(output, dtype=values.dtype)
-
-
-def _auto_sub_read_mono_ir(path: str, channel: int) -> np.ndarray:
-    """Read one IR channel as float64 samples, failing closed on bad files.
-
-    Uses the same WAV parsing and kernel-support gate as the manager, so the
-    predictor only ever models IR files the native convolver would load.
-    """
-    if type(channel) is not int or channel < 0:
-        raise ValueError("IR channel must be a non-negative integer")
-    name = str(path) or ""
-    try:
-        params = parse_wav_frames(Path(name))
-    except (OSError, ValueError) as exc:
-        raise ValueError(f"IR file is not readable: {name or path}") from exc
-    try:
-        ensure_kernel_supported_ir(params, Path(name).name)
-    except ValueError as exc:
-        raise ValueError(f"IR file has an unsupported encoding: {name}") from exc
-    if channel >= params["channels"]:
-        raise ValueError(
-            f"IR channel {channel} exceeds the {params['channels']} channels of {name}")
-    data = params["data"]
-    if params["format"] == 3:
-        samples = np.frombuffer(data, dtype="<f4").astype(np.float64)
-    elif params["bits"] == 16:
-        samples = np.frombuffer(data, dtype="<i2").astype(np.float64) / 32768.0
-    elif params["bits"] == 32:
-        samples = np.frombuffer(data, dtype="<i4").astype(np.float64) / 2147483648.0
-    else:
-        raw = np.frombuffer(data, dtype=np.uint8).astype(np.int32).reshape(-1, 3)
-        signed = (raw[:, 0] | (raw[:, 1] << 8) | (raw[:, 2] << 16)).astype(np.float64)
-        signed -= 16777216.0 * (signed >= 8388608.0)
-        samples = signed / 8388608.0
-    frames = params["frames"]
-    if samples.size != frames * params["channels"]:
-        raise ValueError(f"IR file has truncated frames: {name}")
-    return np.ascontiguousarray(samples.reshape(frames, params["channels"])[:, channel])
 
 
 def _auto_sub_convolve_mono(signal: np.ndarray, taps: np.ndarray) -> np.ndarray:
@@ -452,7 +363,7 @@ def _auto_sub_validated_layout_output(
                 or not 1 <= int(stages_number) <= 32):
             raise ValueError(f"{prefix} filters[{position}] stages must be a whole number 1..32")
         stages = int(stages_number)
-        coefficients = _auto_sub_native_peq_coefficients(
+        coefficients = native_peq_coefficients(
             raw["type"], frequency, sample_rate, quality, band_gain)
         biquads.extend([coefficients] * stages)
     biquads.extend(_auto_sub_validated_sos(entry.get("sos", []), f"{prefix} sos"))
@@ -470,7 +381,7 @@ def _auto_sub_validated_layout_output(
             raise ValueError(f"{prefix} oconv gains must be numeric") from None
         if not all(math.isfinite(value) for value in gains.values()):
             raise ValueError(f"{prefix} oconv gains must be finite")
-        taps = _auto_sub_read_mono_ir(str(oconv["path"] or ""), oconv["channel"])
+        taps = read_mono_ir(str(oconv["path"] or ""), oconv["channel"])
         convolver = {"taps": taps, **gains}
     return {"routes": normalized_routes, "gain_db": gain_db, "delay_ms": delay_ms,
             "invert": bool(entry.get("invert", False)),

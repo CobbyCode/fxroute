@@ -65,6 +65,33 @@ def analyze_ir_polarity(impulse_response: np.ndarray, sample_rate: int, arrival_
     if arrival_index is None or not 0 <= arrival_index < ir.size:
         return _result(INCONCLUSIVE, 0, 0.0, 0.0, "no_arrival")
 
+    phase_cos, peak, tail = peak_phase(ir, sample_rate, arrival_index)
+    if peak <= 1e-18:
+        return _result(INCONCLUSIVE, 0, 0.0, 0.0, "no_signal")
+    peak_sign = 1 if phase_cos > 0 else -1
+
+    if tail.size < sample_rate * MIN_NOISE_TAIL_SECONDS:
+        return _result(INCONCLUSIVE, peak_sign, phase_cos, 0.0, "weak_signal")
+    noise = float(np.median(tail))
+    snr_db = 20.0 * math.log10(peak / noise) if noise > 0 else 200.0
+
+    if snr_db < MIN_SNR_DB:
+        return _result(INCONCLUSIVE, peak_sign, phase_cos, snr_db, "weak_signal")
+    if abs(phase_cos) < MIN_PHASE_COS:
+        return _result(INCONCLUSIVE, peak_sign, phase_cos, snr_db, "unclear_phase")
+    return _result(CORRECT if peak_sign > 0 else REVERSED, peak_sign, phase_cos, snr_db, "")
+
+
+def peak_phase(impulse_response: np.ndarray, sample_rate: int, arrival_index: int) -> tuple[float, float, np.ndarray]:
+    """Read the carrier phase at the envelope peak around the broadband arrival.
+
+    ``impulse_response`` is a finite IR and ``arrival_index`` lies inside it.
+    Returns ``(phase_cos, peak, tail)``: the carrier phase cosine at the
+    envelope peak (0.0 without a peak), the envelope peak, and the envelope
+    behind the room's early decay, which holds the noise floor.
+    """
+    ir = np.asarray(impulse_response, dtype=np.float64)
+
     def samples(milliseconds: float) -> int:
         return max(1, int(round(sample_rate * milliseconds / 1000.0)))
 
@@ -79,22 +106,8 @@ def analyze_ir_polarity(impulse_response: np.ndarray, sample_rate: int, arrival_
     end = min(envelope.size, arrival_index + samples(SEARCH_AFTER_MS) + 1)
     peak_index = start + int(np.argmax(envelope[start:end]))
     peak = float(envelope[peak_index])
-    if peak <= 1e-18:
-        return _result(INCONCLUSIVE, 0, 0.0, 0.0, "no_signal")
-    phase_cos = float(analytic.real[peak_index]) / peak
-    peak_sign = 1 if phase_cos > 0 else -1
-
-    tail = envelope[arrival_index + samples(NOISE_TAIL_START_MS):]
-    if tail.size < sample_rate * MIN_NOISE_TAIL_SECONDS:
-        return _result(INCONCLUSIVE, peak_sign, phase_cos, 0.0, "weak_signal")
-    noise = float(np.median(tail))
-    snr_db = 20.0 * math.log10(peak / noise) if noise > 0 else 200.0
-
-    if snr_db < MIN_SNR_DB:
-        return _result(INCONCLUSIVE, peak_sign, phase_cos, snr_db, "weak_signal")
-    if abs(phase_cos) < MIN_PHASE_COS:
-        return _result(INCONCLUSIVE, peak_sign, phase_cos, snr_db, "unclear_phase")
-    return _result(CORRECT if peak_sign > 0 else REVERSED, peak_sign, phase_cos, snr_db, "")
+    phase_cos = float(analytic.real[peak_index]) / peak if peak > 1e-18 else 0.0
+    return phase_cos, peak, envelope[arrival_index + samples(NOISE_TAIL_START_MS):]
 
 
 def _band_analytic(ir: np.ndarray, sample_rate: int) -> np.ndarray:
