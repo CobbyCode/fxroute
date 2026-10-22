@@ -48,8 +48,9 @@ def _diffs(points):
 
 class AutoSub21ConfirmationBehaviorTests(unittest.IsolatedAsyncioTestCase):
     async def _run_path(self, gate_veto=False, recheck_outcome="incumbent_kept", wrong_mode=False,
-                                         stub_correction_unavailable=False, stub_gain_deltas="__unset__",
-                                         stub_verdict_accepted=False):
+                                          stub_correction_unavailable=False, stub_gain_deltas="__unset__",
+                                          stub_verdict_accepted=False, scan_delay=-3.12,
+                                          committed_state=None):
         recorded_stages: list[str] = []
         recorded_levels: list[tuple] = []
         job_id = "auto-sub-21-confirmation"
@@ -146,7 +147,7 @@ class AutoSub21ConfirmationBehaviorTests(unittest.IsolatedAsyncioTestCase):
             results = []
             for row in rows:
                 delay = round(float(row.get("delay_ms", 0.0)), 2)
-                score = 0.8 if delay == -3.12 else 0.2
+                score = 0.8 if delay == scan_delay else 0.2
                 results.append({
                     **row, "score": score, "final_score": score,
                     "score_pct": score * 100.0,
@@ -183,6 +184,8 @@ class AutoSub21ConfirmationBehaviorTests(unittest.IsolatedAsyncioTestCase):
             return True
 
         async def commit_service_winner(job):
+            if committed_state is not None:
+                committed_state.update(copy.deepcopy(state))
             job["output_state_context"]["committed_revision"] = 1
             return {"revision": 1}
 
@@ -231,13 +234,27 @@ class AutoSub21ConfirmationBehaviorTests(unittest.IsolatedAsyncioTestCase):
                     job_id=job_id, input_id="test-input", channel="left",
                     mic_input_channel="1", reference_input_channel="",
                     calibration_ref="", calibration_filename=None, calibration_bytes=None,
-                    scan_delays=[-3.12, 0.0], fc=80, current_alignment=0.0,
+                    scan_delays=[scan_delay, 0.0], fc=80, current_alignment=0.0,
                     original_polarity="normal", original_level=0.0,
                     original_highpass=True, original_config_snapshot=original,
                 )
         finally:
             runner._AUTO_SUB_JOBS.pop(job_id, None)
         return job, recorded_stages, recorded_levels
+
+    async def test_zero_delay_polarity_winner_is_committed_without_fallback(self):
+        committed = {}
+        job, _stages, _levels = await self._run_path(
+            scan_delay=0.39, committed_state=committed,
+        )
+        self.assertEqual(job["status"], "completed", job.get("error"))
+        polarity = job["polarity_check"]
+        self.assertTrue(polarity["accepted"])
+        self.assertEqual(polarity["fine_scan"]["winner"]["delay_ms"], 0.0)
+        self.assertEqual(polarity["selected_delay_ms"], 0.0)
+        self.assertEqual(job["result"]["applied_alignment_ms"], 0.0)
+        self.assertEqual(committed["subwoofer"]["sub_alignment_ms"], 0.0)
+        self.assertEqual(committed["subwoofer"]["sub_polarity"], "invert")
 
     async def test_rejected_verdict_still_shows_final_sweep(self):
         """The After curve comes from the refined winner, not the verdict."""

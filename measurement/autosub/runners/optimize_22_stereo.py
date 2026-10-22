@@ -819,7 +819,7 @@ async def _run_auto_sub_22_stereo_optimize(
                 decision["selected"] = incumbent_polarity
                 return incumbent, delay, incumbent_polarity, decision
             selected_measured = measured_by_placeholder.get(float(shared_decision["alternative_delay_ms"] or 1.0)) or alt
-            selected_delay = _auto_sub_clamped_delay(float(selected_measured.get("delay_ms", delay) or delay))
+            selected_delay = _auto_sub_winner_delay_ms(selected_measured, delay)
             decision["selected"] = opposite
             decision["reason"] = shared_decision["reason"]
             decision["selected_delay_ms"] = selected_delay
