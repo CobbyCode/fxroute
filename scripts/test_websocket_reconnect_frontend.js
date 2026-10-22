@@ -12,10 +12,12 @@ const config = source.slice(source.indexOf('const CONFIG ='), source.indexOf('co
 const globals = source.slice(source.indexOf('// WebSocket\n'), source.indexOf('let tidalFavoriteRequestInFlight'));
 const lifecycle = source.slice(source.indexOf('function setupWebSocket()'), source.indexOf('// Volatile Try session hint'));
 
-function harness({ failConnections = false, throwConnections = false, rejectRefresh = null } = {}) {
+function harness({ failConnections = false, throwConnections = false, rejectRefresh = null, realLibrary = false } = {}) {
     let now = 0, nextTimer = 1;
     const timers = new Map(), sockets = [], attempts = [], calls = [], toasts = [], messages = [];
     const windowListeners = {}, documentListeners = {};
+    const requests = [];
+    const server = { scanning: false, albums: [{ id: 'initial', name: 'Initial album', artist: 'Artist' }] };
     const setTimeout = (callback, delay = 0) => {
         const id = nextTimer++;
         timers.set(id, { callback, at: now + delay });
@@ -57,7 +59,7 @@ function harness({ failConnections = false, throwConnections = false, rejectRefr
         WebSocket: Transport,
         setTimeout,
         clearTimeout: id => timers.delete(id),
-        console: { log() {}, error() {}, debug() {} },
+        console: { log() {}, error() {}, debug() {}, warn() {} },
         window: {
             location: { protocol: 'https:', host: 'kiosk.test' },
             addEventListener: (name, callback) => { windowListeners[name] = callback; },
@@ -82,7 +84,7 @@ function harness({ failConnections = false, throwConnections = false, rejectRefr
         EffectsUI: { fetchEffects: refresh('effects') },
         LibraryUI: {
             fetchTracks: refresh('tracks'), fetchPlaylists: refresh('playlists'),
-            fetchDownloadStatus: refresh('downloads'),
+            fetchDownloadStatus: refresh('downloads'), fetchAlbums: refresh('albums'),
         },
         radioModule: { fetchStations: refresh('stations') },
         MeasurementFlows: { recoverAutoSubJob: refresh('measurement') },
@@ -93,6 +95,27 @@ function harness({ failConnections = false, throwConnections = false, rejectRefr
         handleWebSocketMessage: msg => messages.push(msg),
         showToast: (...args) => toasts.push(args),
     });
+    if (realLibrary) {
+        context.state.library = {
+            viewMode: 'tracks', tracks: [], albumsLoaded: true, selectedTrackIds: [],
+            // An open provider detail suppresses background grid rendering, not data reads.
+            tidalDetailOpen: true, scanning: false, scanStatus: null,
+            albums: [{ id: 'cached', name: 'Cached album', artist: 'Artist' }],
+        };
+        context.fetch = async (url, options) => {
+            requests.push({ url, method: options?.method || 'GET' });
+            const payloads = {
+                '/api/tracks': [], '/api/playlists': [], '/api/albums': server.albums,
+                '/api/library/status': { scanning: server.scanning, files_seen: 10, tracks_found: 2 },
+                '/api/download/status': { status: 'idle' },
+            };
+            assert.ok(url in payloads, `unexpected library request ${url}`);
+            return { ok: true, json: async () => payloads[url] };
+        };
+        vm.runInContext(fs.readFileSync(path.join(__dirname, '../static/library_ui.js'), 'utf8'), context);
+        context.LibraryUI = context.FXRouteLibraryUI;
+        context.LibraryUI.init({ getState: () => context.state, getElements: () => ({}) });
+    }
     vm.runInContext(config + globals + lifecycle, context);
     const advance = ms => {
         const until = now + ms;
@@ -109,7 +132,7 @@ function harness({ failConnections = false, throwConnections = false, rejectRefr
         now = until;
     };
     return {
-        context, sockets, attempts, calls, toasts, messages, hiddenClasses, advance,
+        context, sockets, attempts, calls, toasts, messages, hiddenClasses, advance, requests, server,
         run: code => vm.runInContext(code, context),
         online: () => windowListeners.online?.(),
         visible: () => documentListeners.visibilitychange?.(),
@@ -247,7 +270,7 @@ test('a reconnect refreshes all state omitted from the server init frame', async
     h.calls.length = 0;
     h.sockets[0].close(); h.advance(3000); h.sockets[1].open();
     await new Promise(resolve => setImmediate(resolve));
-    for (const name of ['playback', 'source', 'effects', 'tracks', 'playlists', 'downloads',
+    for (const name of ['playback', 'source', 'effects', 'tracks', 'albums', 'playlists', 'downloads',
         'stations', 'outputs', 'catalog', 'src', 'measurement']) {
         assert.ok(h.calls.some(([called]) => called === name), `missing ${name} resync`);
     }
@@ -263,4 +286,66 @@ test('one rejected state refresh does not prevent the other reconnect refreshes'
     assert.ok(h.calls.some(([name]) => name === 'downloads'));
     assert.ok(h.calls.some(([name]) => name === 'catalog'));
     assert.equal(h.context.state.wsConnected, true);
+});
+
+test('recovery replaces populated album caches through read-only requests in the real library module', async () => {
+    const h = harness({ realLibrary: true });
+    h.run('setupWebSocket()');
+    h.sockets[0].open();
+    await new Promise(resolve => setImmediate(resolve));
+    const readsBeforeCachedFetch = h.requests.length;
+    await h.context.LibraryUI.fetchAlbums();
+    assert.equal(h.requests.length, readsBeforeCachedFetch, 'ordinary navigation still uses the cache');
+    h.sockets[0].close();
+    h.server.albums = [{ id: 'after-outage', name: 'Added during outage', artist: 'Artist' }];
+    h.advance(3000); h.sockets[1].open();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(h.context.state.library.albums[0].id, 'after-outage');
+    assert.ok(h.requests.some(request => request.url === '/api/albums'));
+    assert.ok(h.requests.every(request => request.method === 'GET'), 'recovery must not start a scan');
+});
+
+test('recovery queues a fresh album read when an older request is still in flight', async () => {
+    const h = harness({ realLibrary: true });
+    const transport = h.context.fetch;
+    let releaseOldRequest;
+    h.context.fetch = (url, options) => {
+        if (url === '/api/albums' && !releaseOldRequest) {
+            return new Promise(resolve => { releaseOldRequest = resolve; });
+        }
+        return transport(url, options);
+    };
+    const oldRead = h.context.LibraryUI.fetchAlbums(true);
+    h.run('setupWebSocket()');
+    h.sockets[0].open();
+    await new Promise(resolve => setImmediate(resolve));
+    releaseOldRequest({ ok: true, json: async () => [{ id: 'before-outage', name: 'Old snapshot', artist: 'Artist' }] });
+    await oldRead;
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(h.context.state.library.albums[0].id, 'initial', 'an older in-flight read cannot swallow recovery');
+});
+
+test('repeated real-library resyncs keep one scan-status polling chain and stop it after completion', async () => {
+    const h = harness({ realLibrary: true });
+    h.server.scanning = true;
+    h.run('setupWebSocket()');
+    h.sockets[0].open();
+    await new Promise(resolve => setImmediate(resolve));
+    for (let index = 0; index < 3; index++) {
+        h.visible();
+        await new Promise(resolve => setImmediate(resolve));
+    }
+    const statusReads = () => h.requests.filter(request => request.url === '/api/library/status').length;
+    const before = statusReads();
+    h.advance(1200);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(statusReads() - before, 1, 'recovery must not multiply recurring scan polls');
+    h.server.scanning = false;
+    h.advance(1200);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(h.context.state.library.scanning, false);
+    const settled = statusReads();
+    h.advance(3600);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(statusReads(), settled, 'completed scans have no remaining polling timer');
 });

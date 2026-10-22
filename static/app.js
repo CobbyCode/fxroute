@@ -1744,7 +1744,8 @@ async function resyncAfterReconnect() {
         () => PlaybackCore.resyncPlaybackAfterReconnect(),
         () => fetchAudioSourceOverview(),
         () => EffectsUI.fetchEffects(),
-        () => LibraryUI.fetchTracks(), // Also reloads scan status and albums.
+        () => LibraryUI.fetchTracks(), // Also reloads scan status.
+        () => LibraryUI.fetchAlbums(true), // Recover changes hidden by a populated cache.
         () => LibraryUI.fetchPlaylists(),
         () => LibraryUI.fetchDownloadStatus(),
         () => radioModule.fetchStations(),
