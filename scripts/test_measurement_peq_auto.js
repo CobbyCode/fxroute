@@ -64,6 +64,24 @@ function suggest(points, target = NEUTRAL, options = {}) {
     return result;
 }
 
+// Hard limits of the summed response, checked far finer than the fit grid
+// (1/768 octave) at the graph rate and at engine rates.
+const TOTAL_MAX_CUT_DB = -18;
+const BOOST_CAP_DB = [[30, 3], [50, 6], [2000, 6], [6000, 3], [12000, 2]];
+const FINE_FREQS = Array.from({ length: Math.floor(Math.log2(1000) * 768) + 1 }, (_, index) => 20 * (2 ** (index / 768)));
+const FINE_CAPS = FINE_FREQS.map((frequency) => auto.logInterp(frequency, BOOST_CAP_DB));
+const LIMIT_RATES = [44100, 48000, 96000, 192000];
+
+function assertTotalWithinLimits(filters, label) {
+    for (const sampleRate of LIMIT_RATES) {
+        FINE_FREQS.forEach((frequency, index) => {
+            const total = filters.reduce((sum, filter) => sum + dsp.getMeasurementPeqFilterMagnitude(filter, frequency, sampleRate), 0);
+            assert.ok(total >= TOTAL_MAX_CUT_DB - 1e-6, `${label}: total cut ${total.toFixed(3)} dB at ${frequency.toFixed(1)} Hz (${sampleRate} Hz)`);
+            assert.ok(total <= FINE_CAPS[index] + 1e-6, `${label}: total boost ${total.toFixed(3)} dB at ${frequency.toFixed(0)} Hz (${sampleRate} Hz)`);
+        });
+    }
+}
+
 // Limits every suggestion keeps, whatever the input.
 function assertSafe(result, label = '') {
     assert.ok(result.filters.length <= 12, `${label}: at most 12 filters`);
@@ -74,11 +92,7 @@ function assertSafe(result, label = '') {
         assert.ok(Math.abs(filter.gainDb) >= 0.5, `${label}: no negligible filter`);
         assert.ok(filter.q >= 0.3 && filter.q <= 10, `${label}: Q ${filter.q}`);
     });
-    for (const frequency of FREQS) {
-        const total = peqSum(result.filters, frequency);
-        assert.ok(total <= 6.05, `${label}: total boost ${total.toFixed(2)} dB at ${frequency.toFixed(0)} Hz`);
-        assert.ok(total >= -18.05, `${label}: total cut ${total.toFixed(2)} dB at ${frequency.toFixed(0)} Hz`);
-    }
+    assertTotalWithinLimits(result.filters, label);
 }
 
 function nearest(filters, frequency) {
@@ -107,6 +121,16 @@ const mode = suggest(modePoints);
     const verdict = judge(modePoints, mode.filters, NEUTRAL);
     assert.ok(verdict.after.rmsDb <= 0.4 * verdict.before.rmsDb, `mode rms ${verdict.before.rmsDb} -> ${verdict.after.rmsDb}`);
     assert.ok(verdict.after.maxDb <= 2, `mode max ${verdict.after.maxDb}`);
+}
+
+// Resonance beyond the total cut: two stacked cuts reach the -18 dB limit
+// but never pass it, also between the fit grid points (once -18.6 dB).
+{
+    const points = synth({ features: [bell(42, 22, 8)] });
+    const result = suggest(points);
+    const atMode = Math.min(...FINE_FREQS.filter((frequency) => frequency > 38 && frequency < 46).map((frequency) => peqSum(result.filters, frequency)));
+    assert.ok(atMode >= TOTAL_MAX_CUT_DB && atMode <= -17.5, `stacked cut ${atMode.toFixed(3)} dB`);
+    assert.ok(result.maxCutDb >= TOTAL_MAX_CUT_DB && result.maxCutDb <= -17.5, `reported total cut ${result.maxCutDb}`);
 }
 
 // Broad deviation: one wide filter, not a row of narrow ones.
@@ -162,8 +186,10 @@ const clusterPoints = synth({ features: [
 {
     const three = suggest(clusterPoints, NEUTRAL, { maxFilters: 3 });
     assert.ok(three.filters.length <= 3);
+    // One broad cut covers the 63-180 Hz cluster; it stays shallow enough
+    // not to cut below the target between the modes.
     for (const frequency of [40, 90]) {
-        assert.ok(peqSum(three.filters, frequency) <= -3, `limited fit still cuts the ${frequency} Hz mode`);
+        assert.ok(peqSum(three.filters, frequency) <= -2.5, `limited fit still cuts the ${frequency} Hz mode`);
     }
     const full = suggest(clusterPoints);
     assert.ok(full.filters.length >= 5 && full.filters.length <= 9, `cluster: ${full.filters.length} filters`);
@@ -225,6 +251,21 @@ for (const target of [NEUTRAL, BK, HARMAN]) {
         if (result.filters.length) {
             assert.ok(verdict.after.rmsDb < verdict.before.rmsDb, `${label}: rms ${verdict.before.rmsDb} -> ${verdict.after.rmsDb}`);
         }
+        // No overcorrection of the 1/3-octave balance (fit level): a boost
+        // never lifts a deficit far past the target, a cut never pushes a
+        // peak far below it.
+        const corrected = points.map(([frequency, level]) => [frequency, level + peqSum(result.filters, frequency)]);
+        const thirdBefore = dsp.smoothMeasurementTracePoints(points, '1/3-oct');
+        const thirdAfter = dsp.smoothMeasurementTracePoints(corrected, '1/3-oct');
+        thirdBefore.forEach(([frequency, level], index) => {
+            if (frequency < lowHz || frequency > highHz) return;
+            const targetDb = dsp.getMeasurementConvolverCurveDbFromPoints(target, frequency) + result.levelDb;
+            const before = level - targetDb;
+            const after = thirdAfter[index][1] - targetDb;
+            const peq = thirdAfter[index][1] - level;
+            if (before < 0 && peq > 0.5) assert.ok(after <= 1.5, `${label}: boost overshoot ${after.toFixed(2)} dB at ${frequency.toFixed(0)} Hz`);
+            if (before > 0 && peq < -0.5) assert.ok(after >= -4, `${label}: cut overshoot ${after.toFixed(2)} dB at ${frequency.toFixed(0)} Hz`);
+        });
         // Deep narrow notches (8 dB under their +-1/2 octave median) stay unfilled.
         const smoothed = dsp.smoothMeasurementTracePoints(points, '1/6-oct');
         smoothed.forEach(([frequency, level]) => {
@@ -244,6 +285,7 @@ const state = { measurement: { activeEditor: 'peq', displaySmoothing: '1/1-oct' 
 let sources = [];
 let confirmAnswer = true;
 const calls = [];
+const requests = [];
 const timers = [];
 editor.init({
     getState: () => state,
@@ -258,7 +300,14 @@ editor.init({
     getMeasurementDisplayTraces: () => [{ points: [[20, 0], [20000, 0]] }],
     getMeasurementTargetCurve: () => ({ label: 'Neutral', shortLabel: 'Neutral', points: NEUTRAL }),
     confirm: (message) => { calls.push(['confirm', message]); return confirmAnswer; },
-    fetch: () => { throw new Error('Auto must not save anything'); },
+    // Every request is recorded: only Create may send one.
+    fetch: async (url, options) => {
+        requests.push({ url, method: options?.method || 'GET', body: JSON.parse(options?.body || 'null') });
+        return { ok: true, json: async () => ({ preset: { name: 'Room PEQ' } }) };
+    },
+    requireConcreteFilterBank: () => true,
+    bankBindingJson: () => ({ bank_id: 'main' }),
+    measurementPeqParams: (leftBands, rightBands, eqMode) => ({ channelMode: 'dual', eqMode, leftBands, rightBands }),
     setTimeout: (callback) => { timers.push(callback); return timers.length; },
     clearTimeout: () => {},
 });
@@ -340,4 +389,33 @@ editor.takeMeasurementPeqToPreset('both');
 assert.equal(peq.draft.leftBands.length, kept.length);
 assert.deepEqual(peq.draft.rightBands, kept.map((filter) => editor.measurementPeqFilterToBand(filter)));
 
-console.log('measurement PEQ auto: ok');
+async function createFlow() {
+    // Auto never touches the staged draft, the DSP state or the network.
+    const stagedBefore = structuredClone(peq.draft);
+    const dspBefore = structuredClone(state.dsp);
+    sources = [{ name: 'Sweep L', channel: 'left', traces: [{ points: modePoints }] }];
+    editor.runMeasurementPeqAuto();
+    runPending();
+    assert.deepEqual(peq.filters.map(({ type, freqHz, gainDb, q }) => ({ type, freqHz, gainDb, q })), mode.filters);
+    assert.deepEqual(peq.draft, stagedBefore, 'Auto leaves the staged draft alone');
+    assert.deepEqual(state.dsp, dspBefore, 'Auto leaves the DSP state alone');
+    assert.equal(requests.length, 0, 'Auto sends no request');
+
+    // Take + Create post exactly the limit-checked Auto filters, once.
+    editor.takeMeasurementPeqToPreset('both');
+    await editor.createMeasurementPeqPresetFromDraft();
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0].url, '/api/dsp/presets/create-peq');
+    assert.equal(requests[0].method, 'POST');
+    const { leftBands, rightBands } = requests[0].body.peq.params;
+    const bands = mode.filters.map((filter) => ({ filterType: filter.type, frequencyHz: filter.freqHz, gainDb: filter.gainDb, q: filter.q, delayMs: 0 }));
+    assert.deepEqual(leftBands, bands);
+    assert.deepEqual(rightBands, bands);
+    assertTotalWithinLimits(leftBands.map((band) => ({ type: band.filterType, freqHz: band.frequencyHz, gainDb: band.gainDb, q: band.q })), 'created preset');
+    assert.deepEqual(peq.draft.leftBands, [], 'the draft is consumed by Create');
+}
+
+createFlow().then(() => console.log('measurement PEQ auto: ok'), (error) => {
+    console.error(error);
+    process.exitCode = 1;
+});

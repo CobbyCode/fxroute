@@ -25,7 +25,12 @@
  *    their place. Every filter must lower the weighted squared error by a
  *    minimum amount, and each filter's own response energy is penalised, so
  *    a well-matching curve gets few or no filters and filters do not work
- *    against each other.
+ *    against each other. Overshooting the target in either direction costs
+ *    more than falling short.
+ * 6. The rounded filters are checked against the hard limits of the summed
+ *    response (total cut, boost ceiling) on a 1/192-octave grid at several
+ *    engine rates, refined between grid points; a filter that pushes the
+ *    sum past a limit is trimmed until it holds.
  */
 (function (root, factory) {
     const api = factory(root);
@@ -66,11 +71,13 @@
     const LOW_SHELF_HZ = [25, 500];
     const HIGH_SHELF_HZ = [1000, 16000];
     const BELL_Q_MIN = 0.3;
-    // Overshooting a wanted boost (or boosting where none is wanted) costs more than falling short.
-    const OVERBOOST_FACTOR = 1.4;
+    // Overshooting the target costs more than falling short: a boost beyond
+    // the wanted lift (or where none is wanted), a cut beyond the wanted cut.
+    const OVERSHOOT_FACTOR = 1.4;
     // Deepening an unfilled dip is less audible than a remaining peak.
     const DIP_ZONE_FACTOR = 0.6;
-    // Total boost/cut limits are effectively hard.
+    // Total boost/cut limits are nearly hard in the fit; enforceLimits makes
+    // them exact after rounding.
     const LIMIT_WEIGHT = 100;
     // Penalty on each filter's own squared response (dB^2 x octave).
     const EFFORT_WEIGHT = 0.03;
@@ -113,12 +120,25 @@
     const BELL_BOOST_Q_MAX = [[200, 2], [2000, 1.5]];
     // Same-sign filters closer than this are tried as one filter.
     const MERGE_DISTANCE_OCT = 0.25;
+    // Hard limit check of the rounded result: the soft limit term of the fit
+    // and the rounding let stacked narrow cuts pass -18 dB by up to ~0.6 dB.
+    // The graph rate plus the lowest and a high engine rate (warping near
+    // Nyquist).
+    const LIMIT_CHECK_STEPS_PER_OCTAVE = 192;
+    const LIMIT_CHECK_RATES = [44100, SAMPLE_RATE, 96000];
+    // Grid maxima this close to a limit are searched exactly between their
+    // neighbours (the 1/192-octave grid misses < 0.05 dB of a Q 10 cut).
+    const LIMIT_SEARCH_WINDOW_DB = 0.1;
+    const LIMIT_SEARCH_ITERATIONS = 40;
+    const LIMIT_TOLERANCE_DB = 1e-6;
+    // Same resolution as the rounded gain.
+    const LIMIT_TRIM_STEP_DB = 0.1;
 
     const PARAM_KEYS = ['logFreq', 'gainDb', 'logQ'];
     const PARAM_STEPS = [0.01, 0.02, 0.01];
     const PARAM_MAX_STEP = [0.5, 6, 0.7];
 
-    let cachedGrid = null;
+    const cachedGrids = new Map();
 
     function clamp(value, low, high) {
         return Math.min(high, Math.max(low, value));
@@ -137,11 +157,13 @@
         return table[table.length - 1][1];
     }
 
-    function getGrid() {
-        if (cachedGrid) return cachedGrid;
-        const count = Math.floor(Math.log2(GRID_MAX_HZ / GRID_MIN_HZ) * STEPS_PER_OCTAVE) + 1;
+    function getGrid(stepsPerOctave = STEPS_PER_OCTAVE, sampleRate = SAMPLE_RATE) {
+        const key = `${stepsPerOctave}@${sampleRate}`;
+        if (cachedGrids.has(key)) return cachedGrids.get(key);
+        const count = Math.floor(Math.log2(GRID_MAX_HZ / GRID_MIN_HZ) * stepsPerOctave) + 1;
         const grid = {
             count,
+            sampleRate,
             frequencies: new Float64Array(count),
             z1r: new Float64Array(count),
             z1i: new Float64Array(count),
@@ -149,20 +171,20 @@
             z2i: new Float64Array(count),
         };
         for (let index = 0; index < count; index += 1) {
-            const frequency = GRID_MIN_HZ * (2 ** (index / STEPS_PER_OCTAVE));
-            const omega = (2 * Math.PI * frequency) / SAMPLE_RATE;
+            const frequency = GRID_MIN_HZ * (2 ** (index / stepsPerOctave));
+            const omega = (2 * Math.PI * frequency) / sampleRate;
             grid.frequencies[index] = frequency;
             grid.z1r[index] = Math.cos(omega);
             grid.z1i[index] = -Math.sin(omega);
             grid.z2r[index] = Math.cos(2 * omega);
             grid.z2i[index] = -Math.sin(2 * omega);
         }
-        cachedGrid = grid;
+        cachedGrids.set(key, grid);
         return grid;
     }
 
     function filterResponse(grid, filter, out = new Float64Array(grid.count)) {
-        const coefficients = dsp.getMeasurementPeqBiquadCoefficients(filter, SAMPLE_RATE);
+        const coefficients = dsp.getMeasurementPeqBiquadCoefficients(filter, grid.sampleRate);
         if (!coefficients) return out.fill(dsp.clampMeasurementPeqGain(filter.gainDb));
         const { b0, b1, b2, a0, a1, a2 } = coefficients;
         for (let index = 0; index < grid.count; index += 1) {
@@ -425,8 +447,9 @@
             if (problem.inBand[index]) {
                 const error = correction - problem.desired[index];
                 let factor = 1;
-                if (error > 0 && problem.desired[index] >= 0) factor = OVERBOOST_FACTOR;
+                if (error > 0 && problem.desired[index] >= 0) factor = OVERSHOOT_FACTOR;
                 else if (error < 0 && problem.dipZone[index]) factor = DIP_ZONE_FACTOR;
+                else if (error < 0 && problem.desired[index] < 0) factor = OVERSHOOT_FACTOR;
                 main = problem.sqrtWeight[index] * error * factor;
             }
             out[index] = main;
@@ -753,6 +776,88 @@
         };
     }
 
+    function sumResponses(count, responses) {
+        const total = new Float64Array(count);
+        for (const response of responses) {
+            for (let index = 0; index < count; index += 1) total[index] += response[index];
+        }
+        return total;
+    }
+
+    // Excess of the summed response over a hard limit at one frequency;
+    // sign is -1 for the total cut, +1 for the boost ceiling.
+    function limitExcessAt(filters, frequency, sampleRate, sign) {
+        let total = 0;
+        for (const filter of filters) total += dsp.getMeasurementPeqFilterMagnitude(filter, frequency, sampleRate);
+        return sign < 0 ? TOTAL_MAX_CUT_DB - total : total - logInterp(frequency, BOOST_CAP_DB);
+    }
+
+    // Worst excess over a hard limit: grid maxima near a limit are refined
+    // by golden-section search on the exact response between their neighbours.
+    function findLimitExcess(checks, filters) {
+        let worst = { excessDb: -Infinity, frequency: 0, sampleRate: 0, sign: 0 };
+        const ratio = (Math.sqrt(5) - 1) / 2;
+        for (const { grid, total, caps } of checks) {
+            for (const sign of [-1, 1]) {
+                const gridExcess = (index) => (sign < 0 ? TOTAL_MAX_CUT_DB - total[index] : total[index] - caps[index]);
+                for (let index = 0; index < grid.count; index += 1) {
+                    const excess = gridExcess(index);
+                    if (excess < -LIMIT_SEARCH_WINDOW_DB) continue;
+                    if (index > 0 && gridExcess(index - 1) > excess) continue;
+                    if (index < grid.count - 1 && gridExcess(index + 1) > excess) continue;
+                    const excessAt = (logFreq) => limitExcessAt(filters, 2 ** logFreq, grid.sampleRate, sign);
+                    let left = Math.log2(grid.frequencies[Math.max(0, index - 1)]);
+                    let right = Math.log2(grid.frequencies[Math.min(grid.count - 1, index + 1)]);
+                    let best = { excessDb: excess, logFreq: Math.log2(grid.frequencies[index]) };
+                    for (let iteration = 0; iteration < LIMIT_SEARCH_ITERATIONS; iteration += 1) {
+                        const lower = right - (ratio * (right - left));
+                        const upper = left + (ratio * (right - left));
+                        const lowerExcess = excessAt(lower);
+                        const upperExcess = excessAt(upper);
+                        if (lowerExcess > best.excessDb) best = { excessDb: lowerExcess, logFreq: lower };
+                        if (upperExcess > best.excessDb) best = { excessDb: upperExcess, logFreq: upper };
+                        if (lowerExcess >= upperExcess) right = upper;
+                        else left = lower;
+                    }
+                    if (best.excessDb > worst.excessDb) {
+                        worst = { excessDb: best.excessDb, frequency: 2 ** best.logFreq, sampleRate: grid.sampleRate, sign };
+                    }
+                }
+            }
+        }
+        return worst;
+    }
+
+    // Trim the filter that pushes the sum furthest past a limit by one gain
+    // step until every limit holds. Gains only shrink, so this ends.
+    function enforceLimits(filters) {
+        const kept = filters.map((filter) => ({ ...filter }));
+        const checks = LIMIT_CHECK_RATES.map((sampleRate) => {
+            const grid = getGrid(LIMIT_CHECK_STEPS_PER_OCTAVE, sampleRate);
+            const responses = kept.map((filter) => filterResponse(grid, filter));
+            const caps = grid.frequencies.map((frequency) => logInterp(frequency, BOOST_CAP_DB));
+            return { grid, responses, caps, total: sumResponses(grid.count, responses) };
+        });
+        while (kept.length) {
+            const worst = findLimitExcess(checks, kept);
+            if (!(worst.excessDb > LIMIT_TOLERANCE_DB)) break;
+            const contributions = kept.map((filter) => worst.sign * dsp.getMeasurementPeqFilterMagnitude(filter, worst.frequency, worst.sampleRate));
+            const culprit = contributions.indexOf(Math.max(...contributions));
+            const filter = kept[culprit];
+            filter.gainDb = Number((filter.gainDb - (Math.sign(filter.gainDb) * LIMIT_TRIM_STEP_DB)).toFixed(1));
+            const removed = Math.abs(filter.gainDb) < MIN_GAIN_DB;
+            if (removed) kept.splice(culprit, 1);
+            for (const check of checks) {
+                const previous = check.responses[culprit];
+                const next = removed ? new Float64Array(check.grid.count) : filterResponse(check.grid, filter);
+                for (let index = 0; index < check.grid.count; index += 1) check.total[index] += next[index] - previous[index];
+                if (removed) check.responses.splice(culprit, 1);
+                else check.responses[culprit] = next;
+            }
+        }
+        return kept;
+    }
+
     function describeFit(problem, filters) {
         const total = new Float64Array(problem.count);
         const response = new Float64Array(problem.count);
@@ -763,8 +868,6 @@
         let before = 0;
         let after = 0;
         let weightSum = 0;
-        let maxBoostDb = 0;
-        let maxCutDb = 0;
         for (let index = problem.low; index <= problem.high; index += 1) {
             const weight = problem.baseWeight[index];
             const deviationBefore = -problem.requested[index];
@@ -773,10 +876,11 @@
             after += weight * deviationAfter * deviationAfter;
             weightSum += weight;
         }
-        for (let index = 0; index < problem.count; index += 1) {
-            maxBoostDb = Math.max(maxBoostDb, total[index]);
-            maxCutDb = Math.min(maxCutDb, total[index]);
-        }
+        // Extremes of the sum on the fine check grid at the graph rate.
+        const checkGrid = getGrid(LIMIT_CHECK_STEPS_PER_OCTAVE);
+        const checkTotal = sumResponses(checkGrid.count, filters.map((filter) => filterResponse(checkGrid, filter)));
+        const maxBoostDb = Math.max(0, ...checkTotal);
+        const maxCutDb = Math.min(0, ...checkTotal);
         const round2 = (value) => Math.round(value * 100) / 100;
         return {
             rmsBeforeDb: round2(Math.sqrt(before / weightSum)),
@@ -804,10 +908,10 @@
         const problem = buildProblem(usable, Array.isArray(targetPoints) && targetPoints.length ? targetPoints : [[20, 0], [20000, 0]]);
         if (problem.reason) return { reason: problem.reason, filters: [] };
         const limit = clamp(Math.floor(Number(maxFilters) || 0), 0, MAX_FILTERS);
-        const filters = fitStates(problem, limit)
+        const rounded = fitStates(problem, limit)
             .map((state) => roundFilter(stateToFilter(state)))
-            .filter((filter) => Math.abs(filter.gainDb) >= MIN_GAIN_DB)
-            .sort((left, right) => left.freqHz - right.freqHz);
+            .filter((filter) => Math.abs(filter.gainDb) >= MIN_GAIN_DB);
+        const filters = enforceLimits(rounded).sort((left, right) => left.freqHz - right.freqHz);
         return {
             reason: filters.length ? '' : 'matching',
             filters,
