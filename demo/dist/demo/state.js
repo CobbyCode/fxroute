@@ -1828,6 +1828,7 @@
             required_adjustment_db: adjustment,
             weighting: 'C',
             averaging_seconds: 3.0,
+            level_drift_db: 0.05,
             microphone_model: spl.microphoneModel,
             serial_number: spl.serialNumber,
         };

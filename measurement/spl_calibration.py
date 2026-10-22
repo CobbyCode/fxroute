@@ -32,6 +32,12 @@ SPL_STOP_TIMEOUT_SECONDS = 40.0
 SPL_CAPTURE_SAMPLE_RATE = 48000
 SPL_CAPTURE_SECONDS = 5.0
 SPL_CAPTURE_FALLBACK_MARGIN_SECONDS = 0.5
+# The level is averaged over the last 3 s of the capture. When the noise starts late, that window
+# holds a stretch of silence and reads low; the last 1.5 s of the window then read above the whole
+# window. More than this rise (dB) means the noise had not settled, and the run is rejected.
+SPL_WINDOW_SECONDS = 3.0
+SPL_TAIL_SECONDS = 1.5
+SPL_MAX_LEVEL_RISE_DB = 0.5
 
 
 def _spl_pw_record_command(
@@ -616,6 +622,34 @@ def _c_weighted_spl_from_capture(
         # with the UMM-6 at its maximum (+30 dB IPGA) capture reference.
         return dbfs + 94.0 - float(sensitivity_factor_db)
     return dbfs + 124.0 - float(sensitivity_factor_db)
+
+
+def _spl_window_levels(
+    samples: Any,
+    sample_rate: int,
+    sensitivity_factor_db: float,
+    calibration_path: Path,
+    profile: Any = None,
+) -> tuple[float, float]:
+    """C-weighted SPL of the averaging window and how far its tail reads above it.
+
+    The window is the last ``SPL_WINDOW_SECONDS`` of the capture. The second value is the SPL of its
+    last ``SPL_TAIL_SECONDS`` minus the SPL of the whole window: about 0 dB for steady noise, positive
+    while the level was still rising.
+    """
+    window = samples[-int(SPL_WINDOW_SECONDS * sample_rate):]
+    measured = _c_weighted_spl_from_capture(
+        window, sample_rate, sensitivity_factor_db, calibration_path, profile=profile)
+    tail = _c_weighted_spl_from_capture(
+        window[-int(SPL_TAIL_SECONDS * sample_rate):], sample_rate, sensitivity_factor_db,
+        calibration_path, profile=profile)
+    return measured, tail - measured
+
+
+def _require_settled_level(level_rise_db: float) -> None:
+    """Refuse a capture whose noise was still rising during the averaging window."""
+    if level_rise_db > SPL_MAX_LEVEL_RISE_DB:
+        raise RuntimeError("The noise level was still rising during the measurement window. Repeat the measurement.")
 
 
 def _calculate_spl_required_adjustment(measured_spl_db: float) -> float:
@@ -1555,10 +1589,9 @@ async def measure_spl_automatically():
             sample_rate, samples = _read_pcm16_channel(operation.capture_path, channel_index)
         except Exception as exc:
             raise RuntimeError(f"Could not read the {microphone_model} capture: {type(exc).__name__}: {exc}") from exc
-        stable = samples[-3 * sample_rate:]
         try:
-            measured = _c_weighted_spl_from_capture(
-                stable,
+            measured, level_rise_db = _spl_window_levels(
+                samples,
                 sample_rate,
                 float(capability["sensitivity_factor_db"]),
                 Path(capability["calibration_path"]),
@@ -1570,14 +1603,18 @@ async def measure_spl_automatically():
             )
         except Exception as exc:
             raise RuntimeError(f"Could not calculate {microphone_model} SPL: {type(exc).__name__}: {exc}") from exc
+        _require_settled_level(level_rise_db)
         if not math.isfinite(measured) or not 40.0 <= measured <= 130.0:
             raise RuntimeError(f"Automatic {microphone_model} SPL result is outside the valid range ({measured:.1f} dB)")
+        logger.info("Automatic %s SPL %.2f dB, level drift over the window %.2f dB",
+                    microphone_model, measured, level_rise_db)
         return {
             "status": "ok",
             "measured_spl_db": round(measured, 2),
             "required_adjustment_db": round(_calculate_spl_required_adjustment(measured), 2),
             "weighting": "C",
-            "averaging_seconds": 3.0,
+            "averaging_seconds": SPL_WINDOW_SECONDS,
+            "level_drift_db": round(level_rise_db, 2),
             "microphone_model": microphone_model,
             "serial_number": capability["serial_number"],
         }
