@@ -162,6 +162,7 @@ class MeasurementJobRunner:
                         except Exception:
                             logger.exception("Failed to persist cancelled measurement job %s", job_id)
                     else:
+                        logger.exception("Measurement job %s failed", job_id)
                         job["status"] = "failed"
                         job["updated_at"] = self._utc_now()
                         job["message"] = str(exc) or "Measurement failed"
