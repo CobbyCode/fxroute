@@ -206,6 +206,9 @@ function runStreaming(options = {}) {
                 } else {
                     const req = JSON.parse((opts && opts.body) || '{}');
                     createdPlaylist = { id: 'pl-new', name: req.name || 'New Mix', art_url: '', track_count: (req.track_ids || []).length };
+                    if (options.playlistSeedWarning) {
+                        Object.assign(createdPlaylist, { warning: options.playlistSeedWarning, seed_status: 'unknown', added_track_ids: null });
+                    }
                     body = createdPlaylist;
                 }
             } else if (u === '/api/streaming/tidal/playlists/pl-1/tracks' && (opts && opts.method) === 'POST') {
@@ -944,6 +947,24 @@ async function main() {
 }
 
 // --- 16. add the selection to an existing TIDAL playlist --------------------
+
+{
+    const warning = 'Playlist created (pl-new); track additions are unconfirmed. Check the existing playlist.';
+    const { sandbox, fetchCalls } = runStreaming({ tidalUser: '42', playlistSeedWarning: warning });
+    await tick();
+    const adapter = sandbox.window.FXRouteStreaming.tidal;
+    adapter.selectTracks(['s1']);
+    fetchCalls.length = 0;
+    const created = await adapter.createPlaylist('Partial Mix', adapter.selectedIds());
+    await tick();
+    await tick();
+    assert.equal(created.id, 'pl-new');
+    assert.equal(created.warning, warning, 'the caller must receive the partial-success warning');
+    assert.equal(created.added_track_ids, null, 'unknown additions are not an empty confirmation');
+    assert.deepEqual([...adapter.selectedIds()], [], 'confirmed creation consumes the selection to avoid a duplicate Save');
+    assert.equal(fetchCalls.filter((c) => c.url === '/api/streaming/tidal/playlists/create').length, 1);
+    assert.ok(adapter.items('playlists').some((item) => item.id === 'pl-new'), 'refresh exposes the existing playlist for recovery');
+}
 
 {
     const { sandbox, fetchCalls } = runStreaming({ tidalUser: '42' });

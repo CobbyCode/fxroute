@@ -2771,7 +2771,7 @@ async function saveTidalPlaylistFromSelection() {
     try {
         const data = await tidal.createPlaylist(name, trackIds);
         if (els.playlistName) els.playlistName.value = '';
-        deps.showToast(`Saved to TIDAL: ${data?.name || name}`, 'success');
+        deps.showToast(data?.warning || `Saved to TIDAL: ${data?.name || name}`, data?.warning ? 'error' : 'success');
     } catch (e) {
         deps.showToast(tidal.friendlyError(e?.message || e), 'error');
     } finally {

@@ -730,6 +730,10 @@ def create_playlist(title: str, description: str = "", track_ids: list[str] | No
     also favorited so it appears in My Collection (playlist view = collection
     state).  Both the playlist list and the favorite id caches are dropped so
     the next loads reflect the new entry with an active heart.
+
+    Once created, a seeding failure returns the playlist identity and a warning
+    rather than inviting a duplicate creation. ``added_track_ids=None`` means
+    the write outcome is unknown, not that no tracks were added.
     """
     _require_tidalapi()
     session = _session()
@@ -739,11 +743,31 @@ def create_playlist(title: str, description: str = "", track_ids: list[str] | No
     except Exception as exc:  # noqa: BLE001
         raise _catalog_error(f"TIDAL playlist creation failed: {exc}", exc) from exc
     ids = [str(i) for i in (track_ids or []) if str(i).strip()]
+    pid = str(getattr(playlist, "id", ""))
+    added: list[str] | None = []
+    seed_status = "complete"
+    warning = None
     if ids:
-        _add_items(session, playlist, ids)
+        try:
+            added = _add_items(session, playlist, ids)
+        except Exception as exc:  # creation succeeded; the items write may also have landed
+            logger.warning("TIDAL playlist %s created but seeding is unconfirmed: %s", pid, exc)
+            added = None
+            seed_status = "unknown"
+            warning = (
+                f'TIDAL playlist "{str(title).strip()}" ({pid}) was created, but adding tracks '
+                "could not be confirmed. Check this playlist before adding tracks again; do not create it again."
+            )
+        else:
+            if not set(ids).issubset(added):
+                seed_status = "partial"
+                warning = (
+                    f'TIDAL playlist "{str(title).strip()}" ({pid}) was created, but only '
+                    f"{len(set(ids).intersection(added))} of {len(set(ids))} requested tracks were confirmed. "
+                    "Add missing tracks to this playlist; do not create it again."
+                )
     # Add the new playlist to My Collection (favorites) so it appears under
     # TIDAL → Playlists with an active heart immediately.
-    pid = str(getattr(playlist, "id", ""))
     if pid:
         try:
             session.user.favorites.add_playlist(pid)
@@ -751,7 +775,10 @@ def create_playlist(title: str, description: str = "", track_ids: list[str] | No
         except Exception:
             pass  # playlist creation succeeded; favorite is best-effort
     library_cache.delete(user_id, "playlists")
-    return normalize_playlist(playlist)
+    result = {**normalize_playlist(playlist), "seed_status": seed_status, "added_track_ids": added}
+    if warning:
+        result["warning"] = warning
+    return result
 
 
 def _add_items(session: Any, playlist: Any, track_ids: list[str]) -> list[str]:
@@ -773,8 +800,18 @@ def _add_items(session: Any, playlist: Any, track_ids: list[str]) -> list[str]:
         },
         headers=headers,
     )
-    payload = response.json() if response is not None else {}
-    return [str(i) for i in (payload.get("addedItemIds") or [])]
+    try:
+        payload = response.json() if response is not None else None
+    except ValueError as exc:
+        raise TidalCatalogError("TIDAL playlist update returned invalid JSON") from exc
+    added = payload.get("addedItemIds") if isinstance(payload, dict) else None
+    valid_added_ids = isinstance(added, list) and all(
+        isinstance(item, (str, int)) and not isinstance(item, bool) and str(item).strip()
+        for item in added
+    )
+    if not valid_added_ids:
+        raise TidalCatalogError("TIDAL playlist update returned an invalid track confirmation")
+    return [str(item) for item in added]
 
 
 def add_playlist_tracks(playlist_id: str, track_ids: list[str]) -> dict:
