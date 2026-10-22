@@ -39,9 +39,14 @@ UNKNOWN = "unknown"
 REASON_FILTER_IN_BAND = "dsp_filter_in_band"
 REASON_UNKNOWN = "dsp_unknown"
 REASONS = {ROTATES: REASON_FILTER_IN_BAND, UNKNOWN: REASON_UNKNOWN}
-# The modelled carrier phase must stay within about 37 degrees of 0 or 180. A half-sample grid
-# offset of the detector adds about 38 degrees, so the two cannot flip a sign (75 < 90).
+# The modelled carrier phase must stay within about 37 degrees of 0 or 180.
 GUARD_MIN_COS = 0.8
+# The detector reads the sample nearest the envelope peak, so the sub-sample position at which a real
+# take arrives changes the phase it reads, by more the steeper the path's phase slope. One reading of
+# the model is one arbitrary position. The path is therefore read at these offsets (in samples) as well,
+# and every reading must keep the sign of the first one: a position that flips it could turn a correct
+# wiring into "reversed". The offsets span one sample, the period of the sample grid.
+ARRIVAL_OFFSETS = tuple(np.linspace(-0.5, 0.5, 17))
 # The model IR spans this many seconds, with the response shifted by LEAD_SECONDS so the
 # pre-ringing of a filter sits inside the window like the sweep pre-roll of a real take.
 MODEL_SECONDS = 2.0
@@ -143,21 +148,21 @@ def _assess(config: Mapping[str, Any], unit: Mapping[str, Any], rate: int,
                        kernel_path=kernel_path)
     chain = [plugin for plugin in config.get("chain", []) if plugin.get("enabled", True)]
     ambiguous = any(_driven_input(outputs[role]) in (2, 3) for role in roles)
-    worst: tuple[float, list[_RolePath]] | None = None
+    least_readable: tuple[_Reading, list[_RolePath]] | None = None
     for side in (("left", "right") if ambiguous else (None,)):
         for ir_channel in (0, 1):
             context.side, context.ir_channel, context.stereo_ir = side, ir_channel, False
             paths = [_role_path(outputs[role], role, chain, context) for role in roles]
-            cos = _read(paths, context, removed=None)
-            if worst is None or abs(cos) < abs(worst[0]):
-                worst = (cos, paths)
+            reading = _read(paths, context, removed=None)
+            if least_readable is None or reading.score < least_readable[0].score:
+                least_readable = (reading, paths)
             if not context.stereo_ir:
                 break
-    assert worst is not None
-    cos, paths = worst
-    if abs(cos) >= GUARD_MIN_COS:
-        return {"state": OK, "dsp_cos": round(cos, 3), "stage": ""}
-    return {"state": ROTATES, "dsp_cos": round(cos, 3), "stage": _culprit(paths, context)}
+    assert least_readable is not None
+    reading, paths = least_readable
+    if reading.readable:
+        return {"state": OK, "dsp_cos": round(reading.cos, 3), "stage": ""}
+    return {"state": ROTATES, "dsp_cos": round(reading.cos, 3), "stage": _culprit(paths, context)}
 
 
 def _driven_input(output: Mapping[str, Any]) -> int:
@@ -315,8 +320,34 @@ def _global_equalizer(plugin: Mapping[str, Any], channel: str, context: _Context
     return response
 
 
-def _read(paths: list[_RolePath], context: _Context, *, removed: str | None) -> float:
-    """Carrier phase cosine the detector reads behind the summed paths."""
+@dataclass(frozen=True)
+class _Reading:
+    cos: float
+    # The reading that comes closest to the opposite sign over the arrival offsets, signed like ``cos``.
+    same_sign: float
+
+    @property
+    def readable(self) -> bool:
+        return abs(self.cos) >= GUARD_MIN_COS and self.same_sign > 0.0
+
+    @property
+    def score(self) -> float:
+        """How far from unreadable: negative once either requirement fails."""
+        return min(abs(self.cos) - GUARD_MIN_COS, self.same_sign)
+
+
+def _carrier_cos(total: np.ndarray, context: _Context, offset: float) -> float:
+    """Carrier phase cosine the detector reads when the take arrives ``offset`` samples off the grid."""
+    spectrum = total if offset == 0.0 else total * np.exp(-1j * context.omega * offset)
+    impulse = np.roll(np.fft.irfft(spectrum, context.size), int(LEAD_SECONDS * context.rate))
+    magnitude = np.abs(impulse)
+    if float(magnitude.max()) <= 1e-18:
+        return 0.0
+    return float(polarity.peak_phase(impulse, context.rate, int(np.argmax(magnitude)))[0])
+
+
+def _read(paths: list[_RolePath], context: _Context, *, removed: str | None) -> _Reading:
+    """What the detector reads behind the summed paths, at the grid and over the arrival offsets."""
     total = np.zeros_like(context.z1)
     for path in paths:
         response = path.base
@@ -324,19 +355,22 @@ def _read(paths: list[_RolePath], context: _Context, *, removed: str | None) -> 
             if stage.name != removed:
                 response = response * stage.response
         total = total + response
-    impulse = np.roll(np.fft.irfft(total, context.size), int(LEAD_SECONDS * context.rate))
-    magnitude = np.abs(impulse)
-    if float(magnitude.max()) <= 1e-18:
-        return 0.0
-    return float(polarity.peak_phase(impulse, context.rate, int(np.argmax(magnitude)))[0])
+    cos = _carrier_cos(total, context, 0.0)
+    sign = -1.0 if cos < 0.0 else 1.0
+    same_sign = sign * cos
+    # A path below the threshold is withheld anyway; the offsets only matter for a readable one.
+    if abs(cos) >= GUARD_MIN_COS:
+        for offset in ARRIVAL_OFFSETS:
+            same_sign = min(same_sign, sign * _carrier_cos(total, context, float(offset)))
+    return _Reading(cos=cos, same_sign=same_sign)
 
 
 def _culprit(paths: list[_RolePath], context: _Context) -> str:
     """The stage whose removal restores the most readable phase."""
     names = list(dict.fromkeys(stage.name for path in paths for stage in path.stages))
-    best, best_cos = "", abs(_read(paths, context, removed=None))
+    best, best_score = "", _read(paths, context, removed=None).score
     for name in names:
-        candidate = abs(_read(paths, context, removed=name))
-        if candidate > best_cos:
-            best, best_cos = name, candidate
+        score = _read(paths, context, removed=name).score
+        if score > best_score:
+            best, best_score = name, score
     return best

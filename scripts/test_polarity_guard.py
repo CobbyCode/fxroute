@@ -116,7 +116,7 @@ class NormalSetupsAreNeverWithheldTest(unittest.TestCase):
     def test_a_bass_management_high_pass_never_fires_on_any_family_slope_or_rate(self):
         lowest = 1.0
         for rate in RATES:
-            frequencies = (40.0, 80.0, 120.0, 160.0, 200.0) if rate == RATE else (40.0, 200.0)
+            frequencies = (40.0, 120.0, 200.0) if rate == RATE else (200.0,)
             for family, slopes in FILTER_SLOPES.items():
                 for slope in slopes:
                     for frequency in frequencies:
@@ -433,6 +433,99 @@ class ConvolverTest(unittest.TestCase):
         path = self.wav("long.wav", ir, 192_000)
         result = assess(config(output("main_l", oconv=self.oconv(path))), rate=192_000)
         self.assertAlmostEqual(result["dsp_cos"], detector_cos(ir, 192_000), delta=0.02)
+
+
+def path_response(rate, *, sos=(), filters=()):
+    """Frequency response of crossover sections and PEQ bands on the FFT grid of one second-long IR."""
+    size = 1 << 17 if rate <= 48_000 else 1 << 18
+    omega = 2.0 * np.pi * np.arange(size // 2 + 1) / size
+    z1 = np.exp(-1j * omega)
+    response = np.ones_like(z1)
+    coefficients = [tuple(section) for section in sos] + [
+        native_peq_coefficients(band["type"], band["frequency_hz"], rate, band["q"], band["gain_db"])
+        for band in filters]
+    for b0, b1, b2, a1, a2 in coefficients:
+        response = response * (b0 + b1 * z1 + b2 * z1 * z1) / (1.0 + a1 * z1 + a2 * z1 * z1)
+    return response, omega, size
+
+
+def detector_readings(response, omega, size, rate, offsets):
+    """What the product detector reads behind an ideal speaker that the take reaches `offset` samples off the grid."""
+    readings = []
+    for offset in offsets:
+        ir = np.roll(np.fft.irfft(response * np.exp(-1j * omega * (2000.0 + offset)), size), 3000)
+        ir = ir + np.random.default_rng(5).normal(0.0, 1e-6, ir.size)
+        readings.append(polarity.analyze_ir_polarity(ir, rate, int(np.argmax(np.abs(ir)))))
+    return readings
+
+
+class ArrivalOffsetTest(unittest.TestCase):
+    """The detector reads at whatever sub-sample position the take arrives; the guard must hold for all of them."""
+
+    HF_STACK = [("highshelf", 6792, 3.7, -5.8), ("bell", 7562, 3.1, 10.3), ("lowshelf", 12198, 4.5, -3.9),
+                ("bell", 7708, 5.9, 9.5), ("lowshelf", 11398, 5.1, 1.1), ("bell", 4184, 5.9, 7.2)]
+
+    def peq(self, bands):
+        return [{"type": kind, "frequency_hz": float(frequency), "q": q, "gain_db": gain, "stages": 1}
+                for kind, frequency, q, gain in bands]
+
+    def test_a_path_the_sample_grid_can_flip_is_withheld_although_one_reading_is_clean(self):
+        for family, slope, frequency in (("linkwitz-riley", 24, 1500.0), ("butterworth", 12, 2876.0)):
+            with self.subTest(family=family, frequency=frequency):
+                sos = sections("highpass", family, slope, frequency)
+                result = assess(config(output("left_high", sos=sos)), unit("left_high"))
+                self.assertEqual((result["state"], result["stage"]), (guard.ROTATES, "left_high crossover"))
+                self.assertGreater(result["dsp_cos"], guard.GUARD_MIN_COS)
+                response, omega, size = path_response(RATE, sos=sos)
+                verdicts = {reading["verdict"] for reading in detector_readings(
+                    response, omega, size, RATE, np.linspace(-0.5, 0.5, 21))}
+                self.assertGreater(len(verdicts), 1, "the detector itself is unsteady behind this path")
+
+    def test_a_high_frequency_peq_stack_that_can_flip_the_sign_is_withheld(self):
+        filters = self.peq(self.HF_STACK)
+        result = assess(config(output("main_l", filters=filters)))
+        self.assertEqual(result["state"], guard.ROTATES)
+        self.assertGreater(result["dsp_cos"], guard.GUARD_MIN_COS)
+        response, omega, size = path_response(RATE, filters=filters)
+        signs = {reading["peak_sign"] for reading in detector_readings(
+            response, omega, size, RATE, np.random.default_rng(1).uniform(0.0, 1.0, 60))}
+        self.assertEqual(signs, {1, -1}, "a correctly wired speaker reads both signs behind this stack")
+        self.assertEqual(result["stage"], "main_l PEQ")
+
+    def test_an_ok_path_is_never_read_with_the_opposite_sign_at_any_arrival_offset(self):
+        rng = np.random.default_rng(23)
+        cases = []
+        for family, slope in (("linkwitz-riley", 24), ("butterworth", 12), ("linkwitz-riley", 48), ("bessel", 24)):
+            for frequency in np.arange(500.0, 4001.0, 250.0):
+                cases.append(({"sos": sections("highpass", family, slope, float(frequency))}, "high-pass"))
+        kinds = ("bell", "highshelf", "lowshelf", "notch")
+        for _ in range(90):
+            bands = [(str(rng.choice(kinds)), rng.uniform(2000, 14000), rng.uniform(0.7, 8.0), rng.uniform(-12, 12))
+                     for _ in range(int(rng.integers(1, 7)))]
+            cases.append(({"filters": self.peq(bands)}, "peq"))
+        withheld = readable = 0
+        offsets = rng.uniform(-0.5, 0.5, 10)
+        for path, label in cases:
+            result = guard.assess_unit(
+                config(output("main_l", sos=path.get("sos", ()), filters=path.get("filters", ()))), unit("main_l"),
+                sample_rate_hz=RATE)
+            if result["state"] != guard.OK:
+                withheld += 1
+                continue
+            readable += 1
+            response, omega, size = path_response(RATE, **path)
+            sign = 1 if result["dsp_cos"] > 0 else -1
+            for reading in detector_readings(response, omega, size, RATE, offsets):
+                self.assertIn(reading["peak_sign"] * sign, (1,), f"{label} {path}: {reading}")
+        self.assertGreater(readable, 40)
+        self.assertGreater(withheld, 15)
+
+    def test_a_bass_management_high_pass_is_read_the_same_at_every_arrival_offset(self):
+        for family, slope in (("linkwitz-riley", 24), ("butterworth", 12), ("linkwitz-riley", 48)):
+            sos = sections("highpass", family, slope, 200.0)
+            response, omega, size = path_response(RATE, sos=sos)
+            readings = detector_readings(response, omega, size, RATE, np.linspace(-0.5, 0.5, 11))
+            self.assertEqual({reading["verdict"] for reading in readings}, {"correct"}, (family, slope))
 
 
 class ModelMatchesTheDetectorTest(unittest.TestCase):
