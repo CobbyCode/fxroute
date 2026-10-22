@@ -1071,12 +1071,16 @@ class SplCalibrationApplyLockTests(unittest.IsolatedAsyncioTestCase):
                 mock.patch.object(spl_calibration, "_stop_active_operation", mock.AsyncMock()):
             return await spl_calibration.apply_spl_calibration(request)
 
-    async def test_apply_without_the_measured_output_is_refused(self):
-        with self.assertRaises(Exception) as raised:
-            await self.apply(self.Request(79.0, output_profile_id=None))
+    async def test_apply_without_the_measured_output_is_refused_before_anything_is_stopped(self):
+        stop = mock.AsyncMock()
+        with mock.patch.object(spl_calibration, "get_audio_output_overview", return_value=self.OVERVIEW), \
+                mock.patch.object(spl_calibration, "_stop_active_operation", stop):
+            with self.assertRaises(Exception) as raised:
+                await spl_calibration.apply_spl_calibration(self.Request(79.0, output_profile_id=None))
         self.assertEqual(raised.exception.status_code, 400)
         self.assertIn("output_profile_id", raised.exception.detail)
         self.assertEqual(self.applied, [])
+        stop.assert_not_awaited()
 
     async def test_apply_after_the_output_changed_is_refused_and_changes_nothing(self):
         before = self.manager.load_global_extras()

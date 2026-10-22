@@ -1662,10 +1662,10 @@ async def apply_spl_calibration(request: Request):
         adjustment = _calculate_spl_required_adjustment(measured)
     except ValueError as exc:
         raise bad_request(exc) from exc
-    await _stop_active_operation()
     measured_for = str(body.get("output_profile_id") or "").strip()
     if not measured_for:
         raise bad_request(ValueError("output_profile_id is required"))
+    await _stop_active_operation()
     dsp_manager = _dependencies().require_dsp_manager()
     run_mutation = _dependencies().run_dsp_mutation
     profile = await asyncio.to_thread(_require_output_profile)

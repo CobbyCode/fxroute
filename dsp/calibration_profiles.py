@@ -8,7 +8,7 @@ belongs to that output and to no other. The records live in
 is the derived view of the record of the output that is rendering: it is what
 the work point and the display read, and an output without a record has none.
 A calibration saved before outputs had an identity is kept as
-``legacyCalibration`` and never used.
+``legacyCalibration`` (later ones as ``legacyCalibrationHistory``) and never used.
 
 Pure functions over extras dictionaries: no files, no hardware.
 """
@@ -80,8 +80,15 @@ def bind_calibration(extras: dict, device_id: str | None) -> dict:
     if not isinstance(params, dict):
         return result
     calibration = normalize_record(params.get("calibration"))
-    if calibration and not profile_id(calibration.get("outputProfileId")) and not params.get("legacyCalibration"):
-        params["legacyCalibration"] = calibration
+    if calibration and not profile_id(calibration.get("outputProfileId")):
+        held = params.get("legacyCalibration")
+        if not held:
+            params["legacyCalibration"] = calibration
+        elif held != calibration:
+            # A later one (an API client wrote it) is kept next to the first, not over it.
+            history = [record for record in params.get("legacyCalibrationHistory") or [] if isinstance(record, dict)]
+            if calibration not in history:
+                params["legacyCalibrationHistory"] = [*history, calibration]
     profiles = migrate(params)
     identity = profile_id(device_id)
     params["calibrationProfiles"] = profiles

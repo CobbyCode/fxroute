@@ -105,9 +105,20 @@ class MigrationTest(unittest.TestCase):
         again = profiles.bind_calibration(profiles.bind_calibration(extras, "dev"), "dev")
         self.assertEqual(again["loudness"]["params"]["legacyCalibration"]["requiredAdjustmentDb"], 6.0)
 
-    def test_the_first_legacy_calibration_is_not_replaced_by_a_later_one(self):
+    def test_a_later_legacy_calibration_is_kept_next_to_the_first_and_not_over_it(self):
         extras = loudness_extras(calibration={"requiredAdjustmentDb": 2.0}, legacy={"requiredAdjustmentDb": 6.0})
-        self.assertEqual(profiles.bind_calibration(extras, "dev")["loudness"]["params"]["legacyCalibration"]["requiredAdjustmentDb"], 6.0)
+        params = profiles.bind_calibration(extras, "dev")["loudness"]["params"]
+        self.assertEqual(params["legacyCalibration"]["requiredAdjustmentDb"], 6.0)
+        self.assertEqual([record["requiredAdjustmentDb"] for record in params["legacyCalibrationHistory"]], [2.0])
+        self.assertEqual(params["calibration"], {})
+        again = profiles.bind_calibration(extras, "dev")
+        self.assertEqual(again, profiles.bind_calibration(again, "dev"), "binding again adds nothing")
+        third = profiles.bind_calibration(loudness_extras(calibration={"requiredAdjustmentDb": 3.0}), "dev")
+        self.assertNotIn("legacyCalibrationHistory", third["loudness"]["params"])
+        chain = loudness_extras(calibration={"requiredAdjustmentDb": 3.0}, legacy={"requiredAdjustmentDb": 6.0})
+        chain["loudness"]["params"]["legacyCalibrationHistory"] = [{"requiredAdjustmentDb": 2.0}]
+        kept = profiles.bind_calibration(chain, "dev")["loudness"]["params"]["legacyCalibrationHistory"]
+        self.assertEqual([record["requiredAdjustmentDb"] for record in kept], [2.0, 3.0])
 
     def test_binding_never_touches_its_input(self):
         extras = loudness_extras(calibration={"requiredAdjustmentDb": 6.0}, mapping={"dev": record("dev", 1.0)})
