@@ -80,6 +80,8 @@ function row(roles, verdict, extra = {}) {
     assert.equal(polarityCheck.verdictText({ verdict: 'reversed' }), 'Reversed');
     assert.equal(polarityCheck.verdictText({ verdict: 'inconclusive', reason: 'weak_signal' }), 'Too quiet');
     assert.equal(polarityCheck.verdictText({ verdict: 'inconclusive', reason: 'no_arrival' }), 'No sweep heard');
+    assert.equal(polarityCheck.verdictText({ verdict: 'inconclusive', reason: 'dsp_filter_in_band' }), 'Filter in band');
+    assert.equal(polarityCheck.verdictText({ verdict: 'inconclusive', reason: 'dsp_unknown' }), 'DSP not checkable');
 
     // A run shows one verdict per speaker and sends nothing but the measurement requests.
     {
@@ -121,6 +123,33 @@ function row(roles, verdict, extra = {}) {
         await polarityCheck.startPolarityCheck();
         assert.match(elements.polarityCheckResults.innerHTML, /polarity-check-verdict-inconclusive">No sweep heard/);
         assert.match(elements.polarityCheckStatus.textContent, /did not reach the microphone/);
+    }
+
+    // A DSP stage that rotates the measured range, or cannot be judged, withholds the verdict and names the stage.
+    {
+        const rows = [
+            row(['left_high'], 'inconclusive', { reason: 'dsp_filter_in_band', guard: { state: 'rotates', dsp_cos: -0.5, stage: 'left_high crossover' } }),
+            row(['main_r'], 'inconclusive', { label: 'right', reason: 'dsp_unknown', guard: { state: 'unknown', dsp_cos: null, stage: 'global loudness' } }),
+        ];
+        const { elements } = harness({ area: MAIN, status: STATUS, jobs: [completed(rows)] });
+        await polarityCheck.openPolarityCheck();
+        await polarityCheck.startPolarityCheck();
+        assert.match(elements.polarityCheckResults.innerHTML, /polarity-check-verdict-inconclusive">Filter in band/);
+        assert.match(elements.polarityCheckResults.innerHTML, /polarity-check-verdict-inconclusive">DSP not checkable/);
+        const status = elements.polarityCheckStatus.textContent;
+        assert.match(status, /The left_high crossover rotates the phase of the measured range/);
+        assert.match(status, /The global loudness may rotate the phase of the measured range/);
+        assert.equal((status.match(/select Direct for Global/g) || []).length, 2);
+        assert.doesNotMatch(status, /All checked speakers have correct polarity|Swap its/);
+    }
+
+    // Without a named stage the hints stay general; a changed DSP state asks for a repeat.
+    {
+        const hint = (reason, stage) => polarityCheck.summarize({ rows: [row(['main_l'], 'inconclusive', { reason, guard: { state: 'unknown', stage } })] });
+        assert.match(hint('dsp_filter_in_band', ''), /^A filter rotates the phase/);
+        assert.match(hint('dsp_unknown', 'DSP path'), /could not be checked for phase effects\. Select Direct for Global and repeat/);
+        assert.equal(hint('dsp_unknown', 'DSP path changed'), 'The DSP settings changed during the check, so the polarity cannot be judged. Repeat the check.');
+        assert.match(polarityCheck.summarize({ rows: [row(['main_l'], 'inconclusive', { reason: 'dsp_unknown' })] }), /could not be checked for phase effects/);
     }
 
     // Wiring polarity, an inverted output and a multi-way side are labelled.

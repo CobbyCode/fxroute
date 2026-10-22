@@ -14,6 +14,8 @@
         no_signal: 'No sweep heard',
         weak_signal: 'Too quiet',
         unclear_phase: 'No clear peak',
+        dsp_filter_in_band: 'Filter in band',
+        dsp_unknown: 'DSP not checkable',
     };
     const REASON_HINT = {
         no_arrival: 'The sweep did not reach the microphone. Check the amplifier, the speaker and the microphone, then repeat.',
@@ -61,6 +63,21 @@
         return `${side.charAt(0).toUpperCase()}${side.slice(1)} (all ways)`;
     }
 
+    /** Why a speaker has no verdict, and what to do about it; the DSP reasons name the stage that blocks it. */
+    function reasonHint(row) {
+        const stage = String(row.guard?.stage || '').trim();
+        const named = stage && !/^DSP path/.test(stage);
+        if (row.reason === 'dsp_filter_in_band') {
+            return `${named ? `The ${stage}` : 'A filter'} rotates the phase of the measured range, so the wiring cannot be read from the polarity. Switch it off, or select Direct for Global, to check the wiring.`;
+        }
+        if (row.reason === 'dsp_unknown') {
+            if (stage === 'DSP path changed') return 'The DSP settings changed during the check, so the polarity cannot be judged. Repeat the check.';
+            if (!named) return 'The DSP path of this speaker could not be checked for phase effects. Select Direct for Global and repeat the check.';
+            return `The ${stage} may rotate the phase of the measured range, so the polarity cannot be judged. Switch it off, or select Direct for Global, to check the wiring.`;
+        }
+        return REASON_HINT[row.reason];
+    }
+
     function verdictText(row) {
         if (row.verdict === 'inconclusive') return REASON_TEXT[row.reason] || VERDICT_TEXT.inconclusive;
         return VERDICT_TEXT[row.verdict] || VERDICT_TEXT.inconclusive;
@@ -75,7 +92,7 @@
         const hints = [];
         const unclear = rows.filter((row) => row.verdict === 'inconclusive');
         for (const row of unclear) {
-            const hint = REASON_HINT[row.reason];
+            const hint = reasonHint(row);
             if (hint && !hints.includes(hint)) hints.push(hint);
         }
         if (rows.some((row) => row.verdict === 'reversed')) {

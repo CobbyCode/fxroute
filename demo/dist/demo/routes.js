@@ -4532,7 +4532,8 @@
             const rows = status.units.map(unit => ({
                 label: unit.label, roles: unit.roles.slice(),
                 verdict: unit.roles.some(role => polarityCheckReversed.has(role)) ? 'reversed' : 'correct',
-                reason: '', phase_cos: unit.roles.some(role => polarityCheckReversed.has(role)) ? -0.97 : 0.97, snr_db: 41.0, inverted: false }));
+                reason: '', phase_cos: unit.roles.some(role => polarityCheckReversed.has(role)) ? -0.97 : 0.97, snr_db: 41.0,
+                guard: { state: 'ok', dsp_cos: 1.0, stage: '' }, inverted: false }));
             polarityCheckJobs[id] = { id, status: 'completed', mode: status.scope.mode, bank_id: String(body.bank_id),
                 progress: { step: rows.length, total: rows.length, label: rows[rows.length - 1].label },
                 result: { mode: status.scope.mode, rows, all_reversed: rows.length > 1 && rows.every(row => row.verdict === 'reversed') },

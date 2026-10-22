@@ -670,6 +670,7 @@ import audio.custom_mapping_api as custom_mapping_api
 import audio.canonical_volume as canonical_volume
 import measurement.level_match_api as level_match_api
 import measurement.polarity_check_api as polarity_check_api
+import measurement.polarity_guard as polarity_guard
 from measurement.level_match import LevelMatchStore
 from measurement.level_match_runtime import build_level_match_scope
 import measurement.spl_calibration as spl_calibration
@@ -1236,6 +1237,7 @@ polarity_check_api.configure_polarity_check(polarity_check_api.PolarityCheckDeps
     auto_sub_active=lambda: autosub.is_optimization_active() or (
         _speaker_align_service_instance is not None and _speaker_align_service_instance.active),
     get_output_state=lambda: get_output_service().load(),
+    resolve_dsp_path=lambda target: _resolve_polarity_dsp_path(target),
 ))
 autosub.configure_dependencies(autosub.AutoSubDependencies(
     get_dsp_runtime=lambda: runtime.dsp_runtime,
@@ -5861,6 +5863,28 @@ def _freeze_measurement_target(bank_id: str, sample_rate_hz: int, group: str | N
     return freeze_measurement_target(
         state, bank_id=bank, output_key=output_key, channels=channel_count,
         sample_rate_hz=sample_rate_hz, fingerprint=service.fingerprint_plan(plan), group=group)
+
+
+def _resolve_polarity_dsp_path(target: dict) -> dict:
+    """Engine configuration of the plan a frozen measurement target describes.
+
+    Renders the live plan the way the sweep did and returns its engine config
+    only while its fingerprint still equals the target's, so the Polarity Check
+    guard never models a path other than the one that was measured.
+    """
+    service = get_output_service()
+    manager = _require_dsp_manager()
+    state = service.load()
+    output_key, channels = output_state_device(get_audio_output_overview())
+    rate = target["sample_rate_hz"]
+    plan = service.compile_plan(state, output_key=output_key, channels=int(channels or 0), sample_rate_hz=rate)
+    if service.fingerprint_plan(plan) != target["processing_fingerprint"]:
+        raise polarity_guard.PathUnavailable("DSP path changed")
+    layout = service.compile_layout(plan)
+    config = manager.compile_engine_config(
+        [dict(entry) for entry in layout], preset_name=plan["global"]["preset"], mode=plan["mode"],
+        sample_rate_hz=rate, extras_override=plan["global"]["extras"])
+    return {"config": config}
 
 
 def _running_output_sample_rate() -> int | None:

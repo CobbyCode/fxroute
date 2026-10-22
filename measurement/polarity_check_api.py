@@ -5,7 +5,8 @@ Each speaker is one ordinary active-chain sweep (see ``speaker_sweep``); the
 analyzer reads the polarity of the signed microphone impulse response. The
 check is diagnostic only: it changes no output setting. The newest job is kept
 in memory, a verdict is not persisted because the next wiring change makes it
-stale.
+stale. A correct/reversed reading is withheld when the rendered DSP path of the
+speaker rotates the measured band or cannot be modelled (``polarity_guard``).
 """
 
 from __future__ import annotations
@@ -19,7 +20,7 @@ from typing import Any
 from fastapi import APIRouter, Form
 
 from http_errors import bad_request
-from measurement import polarity, speaker_sweep
+from measurement import polarity, polarity_guard, speaker_sweep
 from measurement.speaker_scope import plan_area
 
 router = APIRouter()
@@ -35,6 +36,9 @@ class PolarityCheckDeps:
     get_session: Callable[[], Any]
     auto_sub_active: Callable[[], bool]
     get_output_state: Callable[[], dict]
+    # Engine configuration of the rendered plan a frozen target describes; raises
+    # ``polarity_guard.PathUnavailable`` when the live plan no longer matches it.
+    resolve_dsp_path: Callable[[dict], dict]
 
 
 _deps: PolarityCheckDeps | None = None
@@ -75,6 +79,19 @@ def _reading(analysis: dict) -> dict:
     return reading
 
 
+async def _judge_path(dependencies: PolarityCheckDeps, target: dict, unit: dict) -> dict:
+    """Guard result of the DSP path this unit's take was measured through."""
+    try:
+        path = await asyncio.to_thread(dependencies.resolve_dsp_path, target)
+        return await asyncio.to_thread(
+            polarity_guard.assess_unit, path["config"], unit, sample_rate_hz=target["sample_rate_hz"])
+    except polarity_guard.PathUnavailable as exc:
+        return polarity_guard.unknown_result(exc.stage)
+    except Exception as exc:
+        logger.warning("Polarity Check could not resolve the DSP path of %s: %s", unit["label"], exc)
+        return polarity_guard.unknown_result("DSP path")
+
+
 async def _run(job: dict[str, Any], target: dict, area: dict) -> None:
     dependencies = _dependencies()
     mode = target["mode"]
@@ -88,9 +105,15 @@ async def _run(job: dict[str, Any], target: dict, area: dict) -> None:
             take = await speaker_sweep.measure_unit(
                 dependencies.get_store(), dependencies.get_session(), job, target, unit, LABEL)
             reading = _reading(take["analysis"])
+            verdict, reason, guard = reading["verdict"], reading.get("reason", ""), None
+            if verdict in (polarity.CORRECT, polarity.REVERSED):
+                guard = await _judge_path(dependencies, target, unit)
+                if guard["state"] != polarity_guard.OK:
+                    verdict, reason = polarity.INCONCLUSIVE, polarity_guard.REASONS[guard["state"]]
             rows.append({"label": unit["label"], "roles": list(unit["roles"]),
-                         "verdict": reading["verdict"], "reason": reading.get("reason", ""),
+                         "verdict": verdict, "reason": reason,
                          "phase_cos": reading.get("phase_cos"), "snr_db": reading.get("snr_db"),
+                         "guard": guard,
                          "inverted": any(processing[role]["polarity"] == "invert" for role in unit["roles"])})
         await speaker_sweep.wait_for_idle_session(dependencies.get_session())
         job["result"] = {"mode": mode, "rows": rows,

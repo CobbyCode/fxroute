@@ -12,10 +12,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from fastapi import HTTPException
 
+from dsp.crossover import design_crossover
+
 from audio.output_state import (default_output_state, set_crossover, set_mode_routing,
                                 set_output_processing, switch_mode)
 from measurement import polarity_check_api as api
-from measurement import speaker_scope, speaker_sweep
+from measurement import polarity_guard, speaker_scope, speaker_sweep
 from measurement.target import freeze_measurement_target
 
 SURROUND_ROLES = ["main_l", "main_r", "center", "side_l", "side_r", "rear_l", "rear_r"]
@@ -26,6 +28,16 @@ def mode_state(mode, roles, *, crossover=False):
     if crossover:
         state = set_crossover(state, mode, True)
     return switch_mode(set_mode_routing(state, mode, "A", roles), mode)
+
+
+def path_config(*outputs, chain=()):
+    """Engine configuration double: the rendered outputs of the units' roles."""
+    return {"outputs": list(outputs), "chain": list(chain)}
+
+
+def neutral_output(role, *, sos=()):
+    return {"name": role, "routes": [{"input": 1 if role.endswith("_r") or role.startswith("right_") else 0, "gain": 1.0}],
+            "gain_db": 0.0, "delay_ms": 0.0, "invert": False, "filters": [], "sos": list(sos), "oconv": None}
 
 
 def reading(verdict, reason="", phase_cos=0.98, snr_db=60.0):
@@ -97,6 +109,8 @@ class JobTests(unittest.IsolatedAsyncioTestCase):
     def configure(self, state, readings):
         self.state = state
         self.store = FakeStore(state, readings)
+        self.resolved = []
+        self.path = lambda target: path_config(*(neutral_output(role) for role in target["roles"]))
 
         async def start_registered(rate, start_job, entry_epoch=None):
             return await start_job()
@@ -111,7 +125,12 @@ class JobTests(unittest.IsolatedAsyncioTestCase):
             self.addCleanup(item.stop)
         api.configure_polarity_check(api.PolarityCheckDeps(
             get_store=lambda: self.store, get_session=lambda: None,
-            auto_sub_active=lambda: self.auto_sub, get_output_state=lambda: self.state))
+            auto_sub_active=lambda: self.auto_sub, get_output_state=lambda: self.state,
+            resolve_dsp_path=self.resolve_path))
+
+    def resolve_path(self, target):
+        self.resolved.append(target)
+        return {"config": self.path(target)}
 
     async def start(self, bank_id):
         return await api.start_polarity_check(input_id="mic", input_key="", mic_input_channel="1",
@@ -161,6 +180,107 @@ class JobTests(unittest.IsolatedAsyncioTestCase):
         job = await self.run_job("main")
         row = job["result"]["rows"][0]
         self.assertEqual((row["verdict"], row["reason"], row["phase_cos"]), ("inconclusive", "unclear_phase", 0.2))
+
+    def crossover_state(self):
+        roles = ["left_low", "left_high", "right_low", "right_high"]
+        return mode_state("stereo", roles, crossover=True)
+
+    def high_pass(self, role, frequency):
+        spec = {"kind": "highpass", "family": "linkwitz-riley", "slope_db_oct": 24, "frequency_hz": frequency}
+        return [[b0, b1, b2, a1, a2] for b0, b1, b2, _, a1, a2 in design_crossover(spec, 48000)]
+
+    async def test_a_filter_in_the_measured_band_withholds_a_reversed_reading(self):
+        self.configure(self.crossover_state(), {("left_high",): reading("reversed"), ("right_high",): reading("reversed")})
+        self.path = lambda target: path_config(
+            neutral_output("left_high", sos=self.high_pass("left_high", 2500.0)),
+            neutral_output("right_high", sos=self.high_pass("right_high", 2500.0)))
+        job = await self.run_job("high")
+        self.assertEqual(job["status"], "completed", job["error"])
+        rows = job["result"]["rows"]
+        self.assertEqual([(row["verdict"], row["reason"]) for row in rows], [("inconclusive", "dsp_filter_in_band")] * 2)
+        self.assertEqual([row["guard"]["state"] for row in rows], ["rotates", "rotates"])
+        self.assertEqual(rows[0]["guard"]["stage"], "left_high crossover")
+        self.assertEqual((rows[0]["phase_cos"], rows[0]["snr_db"]), (-0.98, 60.0))
+        self.assertFalse(job["result"]["all_reversed"])
+
+    async def test_the_same_reading_without_a_filter_stays_reversed(self):
+        self.configure(self.crossover_state(), {("left_high",): reading("reversed"), ("right_high",): reading("reversed")})
+        job = await self.run_job("high")
+        rows = job["result"]["rows"]
+        self.assertEqual([(row["verdict"], row["reason"]) for row in rows], [("reversed", "")] * 2)
+        self.assertEqual(rows[0]["guard"], {"state": "ok", "dsp_cos": 1.0, "stage": ""})
+        self.assertTrue(job["result"]["all_reversed"])
+
+    async def test_a_correct_reading_behind_a_rotating_filter_is_withheld_too(self):
+        self.configure(self.crossover_state(), {("left_high",): reading("correct"), ("right_high",): reading("correct")})
+        self.path = lambda target: path_config(
+            neutral_output("left_high", sos=self.high_pass("left_high", 3500.0)),
+            neutral_output("right_high"))
+        rows = (await self.run_job("high"))["result"]["rows"]
+        self.assertEqual([(row["verdict"], row["reason"]) for row in rows],
+                         [("inconclusive", "dsp_filter_in_band"), ("correct", "")])
+
+    async def test_all_reversed_counts_after_the_guard(self):
+        self.configure(self.crossover_state(), {("left_high",): reading("reversed"), ("right_high",): reading("reversed")})
+        self.path = lambda target: path_config(
+            neutral_output("left_high", sos=self.high_pass("left_high", 2500.0)), neutral_output("right_high"))
+        job = await self.run_job("high")
+        self.assertEqual([row["verdict"] for row in job["result"]["rows"]], ["inconclusive", "reversed"])
+        self.assertFalse(job["result"]["all_reversed"])
+
+    async def test_an_unmodellable_stage_makes_the_reading_dsp_unknown(self):
+        self.configure(mode_state("stereo", ["main_l", "main_r"]),
+                       {("main_l",): reading("correct"), ("main_r",): reading("reversed")})
+        loudness = {"id": "global-loudness", "type": "loudness", "enabled": True, "params": {}}
+        self.path = lambda target: path_config(neutral_output("main_l"), neutral_output("main_r"), chain=[loudness])
+        job = await self.run_job("main")
+        rows = job["result"]["rows"]
+        self.assertEqual([(row["verdict"], row["reason"]) for row in rows], [("inconclusive", "dsp_unknown")] * 2)
+        self.assertEqual(rows[0]["guard"], {"state": "unknown", "dsp_cos": None, "stage": "global loudness"})
+        self.assertFalse(job["result"]["all_reversed"])
+
+    async def test_a_path_that_changed_since_the_sweep_is_unknown_and_does_not_abort_the_job(self):
+        self.configure(mode_state("stereo", ["main_l", "main_r"]),
+                       {("main_l",): reading("correct"), ("main_r",): reading("correct")})
+
+        def changed(target):
+            raise polarity_guard.PathUnavailable("DSP path changed")
+
+        self.path = changed
+        job = await self.run_job("main")
+        self.assertEqual(job["status"], "completed", job["error"])
+        self.assertEqual([(row["verdict"], row["reason"], row["guard"]["stage"]) for row in job["result"]["rows"]],
+                         [("inconclusive", "dsp_unknown", "DSP path changed")] * 2)
+
+    async def test_an_unexpected_resolver_failure_is_unknown_not_a_failed_job(self):
+        self.configure(mode_state("stereo", ["main_l", "main_r"]),
+                       {("main_l",): reading("correct"), ("main_r",): reading("correct")})
+
+        def broken(target):
+            raise RuntimeError("renderer offline")
+
+        self.path = broken
+        with self.assertLogs(api.logger, "WARNING"):
+            job = await self.run_job("main")
+        self.assertEqual(job["status"], "completed", job["error"])
+        self.assertEqual({row["reason"] for row in job["result"]["rows"]}, {"dsp_unknown"})
+        self.assertEqual(job["result"]["rows"][0]["guard"]["stage"], "DSP path")
+
+    async def test_the_guard_only_looks_at_readings_that_would_name_a_polarity(self):
+        self.configure(mode_state("stereo", ["main_l", "main_r"]),
+                       {("main_l",): reading("inconclusive", "weak_signal", phase_cos=0.2),
+                        ("main_r",): reading("inconclusive", "no_arrival")})
+        job = await self.run_job("main")
+        self.assertEqual(self.resolved, [])
+        rows = job["result"]["rows"]
+        self.assertEqual([(row["reason"], row["guard"]) for row in rows], [("weak_signal", None), ("no_arrival", None)])
+
+    async def test_each_unit_is_judged_against_the_frozen_target_of_the_run(self):
+        self.configure(mode_state("stereo", ["main_l", "main_r"]),
+                       {("main_l",): reading("correct"), ("main_r",): reading("correct")})
+        await self.run_job("main")
+        self.assertEqual(len(self.resolved), 2)
+        self.assertTrue(all(target["sample_rate_hz"] == 48000 and target["bank_id"] == "main" for target in self.resolved))
 
     async def test_a_take_without_a_polarity_reading_fails_the_job(self):
         self.configure(mode_state("stereo", ["main_l", "main_r"]), {("main_l",): None, ("main_r",): None})

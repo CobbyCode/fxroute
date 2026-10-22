@@ -35,6 +35,8 @@ async function request(url, body) {
     assert.deepEqual(job.result.rows.map((row) => row.roles), [['left_low'], ['right_low']]);
     assert.ok(job.result.rows.every((row) => ['correct', 'reversed', 'inconclusive'].includes(row.verdict)));
     assert.equal(job.result.all_reversed, false);
+    // Rows carry the guard result of the product: a readable DSP path in the demo.
+    assert.ok(job.result.rows.every((row) => row.guard.state === 'ok' && row.guard.stage === ''));
 
     assert.equal((await request(`/api/measurements/polarity-check/jobs/${job.id}`)).data.job.id, job.id);
     assert.equal((await request(`/api/measurements/polarity-check/jobs/${job.id}/cancel`, {})).status, 200);
