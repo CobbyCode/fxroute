@@ -35,6 +35,7 @@ import numpy
 
 from audio import pw_link, usb_gadget
 from audio.alsa_ctl import read_digital_lock
+from audio.device_profiles import profile_id
 from audio.input_activity import (
     BLOCK_SECONDS,
     KIND_ANALOG,
@@ -69,6 +70,7 @@ PROBE_RESTART_MAX_SECONDS = 10.0
 PROBE_HEALTHY_SECONDS = 30.0
 PROBE_STOP_GRACE_SECONDS = 1.0
 LOCK_POLL_SECONDS = 1.0
+SIGNAL_MAX_AGE_SECONDS = 0.75
 PROBE_NODE_PREFIX = "fxroute_input_probe"
 _PROBE_SEQUENCE = count(1)
 
@@ -104,6 +106,11 @@ def _target_for_key(key: str) -> Target:
 
 
 def _is_digital_entry(entry: dict[str, Any]) -> bool:
+    source = str(entry.get("source_key") or entry.get("name") or "")
+    if (profile_id(source) == "scarlett-16i16-4th-gen"
+            and entry.get("left_channel") == "AUX8" and entry.get("right_channel") == "AUX9"
+            and not entry.get("right_source")):
+        return True
     text = " ".join(
         str(entry.get(name) or "")
         for name in ("source_key", "name", "port_key", "port_label", "device_label", "pair_label")
@@ -121,6 +128,8 @@ class ProbeSpec:
     digital: bool
     # Capture node of the right channel when it is not ``source_name``.
     right_source: str | None = None
+    source_id: int | None = None
+    graph_generation: object = 0
 
 
 class InputProbe:
@@ -169,6 +178,11 @@ class InputProbe:
 
     async def _capture(self) -> None:
         spec = self.spec
+        self._detector.begin_capture()
+        if (self._detector.graph_generation is None
+                or self._detector.graph_generation != spec.graph_generation):
+            raise RuntimeError("Input probe graph generation is no longer current")
+        self._lock_state, self._lock_read_at = None, -math.inf
         node_name = f"{PROBE_NODE_PREFIX}_{next(_PROBE_SEQUENCE)}"
         proc = await asyncio.create_subprocess_exec(
             "pw-record",
@@ -195,7 +209,9 @@ class InputProbe:
                     frames = numpy.frombuffer(bytes(pending[:block_bytes]), dtype="<i4").reshape(-1, 2)
                     del pending[:block_bytes]
                     now = self._monotonic()
-                    self._detector.observe_block(now, analyze_block(frames), await self._read_lock(now))
+                    lock = await self._read_lock(now)
+                    if not self._detector.observe_block(self._monotonic(), analyze_block(frames), lock):
+                        raise RuntimeError("Input graph changed during capture")
         finally:
             if await process_stop.stop_command_child_cancellation_safe(
                 proc, PROBE_STOP_GRACE_SECONDS, cleanup_log="Input probe pw-record stop failed",
@@ -257,6 +273,8 @@ class InputAutoSelectDependencies:
     probe_factory: Callable[[ProbeSpec, ActivityDetector], Any] = InputProbe
     state_path: Callable[[], Path] = default_state_path
     monotonic: Callable[[], float] = time.monotonic
+    # Synchronous, no I/O: (generation, graph mutation in progress).
+    graph_state: Callable[[], tuple[object, bool]] = lambda: (0, False)
 
 
 class InputAutoSelect:
@@ -274,6 +292,9 @@ class InputAutoSelect:
         self._capture_rate: int | None = None
         self._capture_rate_at = -math.inf
         self._last_error: str | None = None
+        self._graph_generation: object | None = None
+        self._graph_suspended = False
+        self._refresh_overview = False
         self.task: asyncio.Task | None = None
         self._load()
 
@@ -338,6 +359,8 @@ class InputAutoSelect:
             "armed": list(self._armed),
             "engaged": dict(self._engaged) if self._engaged else None,
             "paused": self._paused,
+            "graph_paused": self._graph_suspended,
+            "graph_generation": self._graph_generation,
             "inputs": {
                 key: {
                     "active": detector.active,
@@ -386,6 +409,29 @@ class InputAutoSelect:
 
     # Monitor loop ----------------------------------------------------------
 
+    def _local_context(self) -> object | None:
+        generation, busy = self._deps.graph_state()
+        if self._paused or self._graph_suspended or busy or self._deps.measurement_owns_graph():
+            return None
+        return generation
+
+    async def _settle_graph(self, now: float) -> bool:
+        generation, busy = self._deps.graph_state()
+        if generation != self._graph_generation or busy or self._graph_suspended:
+            self._graph_suspended = True
+            await self._stop_probes({})
+            for detector in self._detectors.values():
+                detector.hold_over(now)
+            self._capture_rate_at = -math.inf
+            self._refresh_overview = True
+            self._graph_generation = generation
+            # Re-read after probe shutdown; another transition may have started.
+            live_generation, live_busy = self._deps.graph_state()
+            if busy or live_busy or live_generation != generation:
+                return False
+            self._graph_suspended = False
+        return True
+
     async def run(self) -> None:
         while True:
             try:
@@ -427,7 +473,12 @@ class InputAutoSelect:
             self._paused = False
             for detector in self._detectors.values():
                 detector.hold_over(now)
+        if not await self._settle_graph(now):
+            await self._publish_if_changed()
+            return
         await self._reconcile(now)
+        if self._local_context() != self._graph_generation:
+            return
         await self._evaluate()
         await self._publish_if_changed()
 
@@ -442,7 +493,9 @@ class InputAutoSelect:
         specs: dict[str, ProbeSpec | None] = {}
         disconnected_gadgets: set[str] = set()
         if any(key != STDIN_KEY for key in monitored):
-            overview = self._deps.get_fresh_overview(OVERVIEW_MAX_AGE_SECONDS) or await self._deps.read_overview()
+            overview = (None if self._refresh_overview else self._deps.get_fresh_overview(OVERVIEW_MAX_AGE_SECONDS))
+            overview = overview or await self._deps.read_overview()
+            self._refresh_overview = False
             if now - self._capture_rate_at >= CAPTURE_RATE_REFRESH_SECONDS:
                 self._capture_rate = await asyncio.to_thread(self._deps.resolve_capture_rate)
                 self._capture_rate_at = now
@@ -469,6 +522,7 @@ class InputAutoSelect:
                 detector = self._detectors[key] = ActivityDetector(
                     kind, now, assume_active=engaged,
                     release_seconds=self._release_seconds(key),
+                    local_context=self._local_context,
                 )
                 self._was_active[key] = engaged
             elif spec is not None and spec.digital:
@@ -514,6 +568,8 @@ class InputAutoSelect:
             card=card if isinstance(card, int) else None,
             digital=_is_digital_entry(entry),
             right_source=right_source or None,
+            source_id=entry.get("id"),
+            graph_generation=self._graph_generation,
         )
 
     def _stdin_present(self) -> bool:
@@ -538,6 +594,25 @@ class InputAutoSelect:
 
     # Decisions -------------------------------------------------------------
 
+    def _claim_trigger(self, key: str, detector: ActivityDetector, now: float) -> str | None:
+        if detector.external_presence and self._external_presence(key):
+            return "http-presence"
+        if key == STDIN_KEY:
+            return "stdin-writer" if self._stdin_present() else None
+        if detector.local_signal_valid(now, SIGNAL_MAX_AGE_SECONDS):
+            return "local-audio"
+        return None
+
+    def _signal_context(self, key: str, detector: ActivityDetector | None, trigger: str) -> str:
+        block = detector.last_block if detector else None
+        observed = detector.last_observed_at if detector else None
+        age_ms = round((self._deps.monotonic() - observed) * 1000, 1) if observed is not None else None
+        return (f"trigger={trigger} peak_dbfs={block.peak_dbfs if block else None} "
+                f"rms_dbfs={block.rms_dbfs if block else None} lock={detector.lock if detector else None} "
+                f"data_age_ms={age_ms} graph_generation={self._graph_generation} "
+                f"probe_generation={detector.probe_generation if detector else None} "
+                f"presence={self._external_presence(key)}")
+
     async def _evaluate(self) -> None:
         selection = self._deps.load_selection()
         current = selection_key(selection)
@@ -557,6 +632,9 @@ class InputAutoSelect:
         for key in rising:
             if key == current:
                 continue
+            if not self._claim_trigger(key, self._detectors[key], self._deps.monotonic()):
+                self._was_active[key] = False
+                continue
             mode = str(selection.get("mode") or SOURCE_MODE_APP_PLAYBACK)
             new_engaged = {
                 "key": key,
@@ -565,8 +643,8 @@ class InputAutoSelect:
                 if mode == SOURCE_MODE_EXTERNAL_INPUT else None,
             }
             try:
-                if await self._switch(current, _target_for_key(key), new_engaged) is not None:
-                    logger.info("Input auto-select: signal on %s, switched from %s", key, current)
+                if await self._switch(current, _target_for_key(key), new_engaged) is None:
+                    self._was_active[key] = False
             except Exception as exc:
                 logger.warning("Input auto-select could not switch to %s: %s", key, exc)
             return
@@ -574,7 +652,8 @@ class InputAutoSelect:
     async def _release(self, engaged: dict[str, Any]) -> None:
         plans: list[tuple[Target, dict[str, Any] | None]] = []
         successor = next((key for key in self._armed if key != engaged["key"]
-                          and self._detectors.get(key) is not None and self._detectors[key].active), None)
+                          and self._detectors.get(key) is not None and self._detectors[key].active
+                          and self._claim_trigger(key, self._detectors[key], self._deps.monotonic())), None)
         if successor is not None:
             plans.append((_target_for_key(successor), {**engaged, "key": successor}))
         return_target: Target = (engaged["return_mode"], engaged["return_input_key"])
@@ -601,17 +680,55 @@ class InputAutoSelect:
         commit's own push already carries it; a failed commit restores it.
         """
         previous = self._engaged
+        generation = self._local_context()
+        key = next_engaged["key"] if next_engaged else expected_key
+        detector = self._detectors.get(key)
+        probe_generation = detector.probe_generation if detector else None
+        context = ""
+        admitted = False
+
+        def restore_engagement() -> None:
+            if admitted and self._engaged == next_engaged:
+                restored = previous if previous is not None and previous["key"] in self._armed else None
+                self._set_engaged(restored)
 
         def decide(live_selection: dict) -> Target | None:
+            nonlocal context, admitted
             if selection_key(live_selection) != expected_key:
+                return None
+            now = self._deps.monotonic()
+            if generation is None or self._local_context() != generation:
+                logger.info("Input auto-select: discarded input=%s reason=graph-changed %s", key,
+                            self._signal_context(key, detector, "stale"))
                 return None
             if next_engaged is not None and next_engaged["key"] not in self._armed:
                 return None  # disarmed while waiting for the lock
+            if detector is not None:
+                detector.update(now)
+            if next_engaged is not None:
+                trigger = self._claim_trigger(key, detector, now) if detector is not None else None
+                if (not trigger or self._detectors.get(key) is not detector
+                        or detector.probe_generation != probe_generation or not detector.active):
+                    logger.info("Input auto-select: discarded input=%s reason=signal-expired %s", key,
+                                self._signal_context(key, detector, "stale"))
+                    return None
+            else:
+                if detector is not None and (detector.active or self._claim_trigger(key, detector, now)):
+                    return None
+                trigger = "signal-ended"
+            context = self._signal_context(key, detector, trigger)
             self._set_engaged(next_engaged)
+            admitted = True
             return target
 
         try:
-            return await self._deps.switch_if(decide)
+            result = await self._deps.switch_if(decide)
+            if result is None:
+                restore_engagement()
+            else:
+                logger.info("Input auto-select: switched input=%s from=%s to=%s %s", key, expected_key,
+                            target[1] or target[0], context)
+            return result
         except BaseException:
-            self._set_engaged(previous)
+            restore_engagement()
             raise

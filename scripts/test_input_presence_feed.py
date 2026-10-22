@@ -87,6 +87,17 @@ class PresenceRouteTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(self.client.get("/api/audio/input-presence").json()["inputs"], {})
 
+    def test_presence_value_changes_are_logged_without_heartbeat_spam(self):
+        with self.assertLogs("main", level="INFO") as captured:
+            self.post({"inputKey": X, "present": True})
+            self.post({"inputKey": X, "present": True})
+            self.post({"inputKey": X, "present": False})
+        messages = [line for line in captured.output if "Input presence:" in line]
+        self.assertEqual(len(messages), 2)
+        self.assertIn(X, messages[0])
+        self.assertIn("present=True", messages[0])
+        self.assertIn("present=False", messages[1])
+
     def test_unknown_key_is_rejected_and_never_stored(self):
         response = self.post({"inputKey": "alsa_input.gone", "present": True})
         self.assertEqual(response.status_code, 400, response.text)

@@ -221,6 +221,9 @@ While a line source is active, the **Auto** button next to the footer source swi
 - Pauses, track changes and quiet passages do not return: only 60 s without signal (10 s for a removed input) does. When two armed inputs carry signal, the one selected first keeps the route and the other takes over when it ends.
 - After a manual switch away, ongoing signal does not undo the selection. One second without signal rearms the input, so the next signal can select it again without waiting for the automatic return hold.
 - While a measurement session owns the audio graph, auto-select is paused.
+- Rate changes, channel-tier reprobes and DSP graph rebuilds fence local capture activity. Monitoring restarts on the settled graph with a fresh attack; samples and decisions from an earlier graph or probe cannot select an input. Capture gaps longer than 300 ms restart the attack. A new local claim also needs qualifying data no older than 750 ms; the longer signal-end hold does not qualify a new claim.
+- Scarlett 16i16 4th Gen capture channels 9–10 are recognized as S/PDIF even when the source name is generic. An explicitly lost digital lock blocks local activation; an unknown lock still permits signal-based detection. A lock alone never counts as programme. Fresh external HTTP presence remains an independent trigger and is reconsidered once graph work settles.
+- Automatic-switch journal entries identify the input, local audio / HTTP presence / STDIN trigger, peak and RMS level, lock, data age and graph/probe generation. External presence value changes are logged without repeating unchanged heartbeats. Returning to App playback does not restart a stopped track.
 
 ## 5. DSP
 

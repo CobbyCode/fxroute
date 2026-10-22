@@ -822,14 +822,14 @@ class SplitPairRoutingTests(unittest.IsolatedAsyncioTestCase):
 
     def test_the_auto_input_probe_reads_both_nodes(self):
         entry = _umc_pair_selected()["selected_input"]
-        spec = InputAutoSelect._probe_spec(SimpleNamespace(_capture_rate=48000), entry)
+        spec = InputAutoSelect._probe_spec(SimpleNamespace(_capture_rate=48000, _graph_generation=0), entry)
         self.assertEqual((spec.source_name, spec.right_source), (_umc_mic(1), _umc_mic(2)))
         self.assertFalse(spec.digital)
 
 
 class SplitNodeProbeTests(unittest.IsolatedAsyncioTestCase):
     def _spec(self, entry):
-        return InputAutoSelect._probe_spec(SimpleNamespace(_capture_rate=48000), entry)
+        return InputAutoSelect._probe_spec(SimpleNamespace(_capture_rate=48000, _graph_generation=0), entry)
 
     def _entry(self, **extra):
         return {"source_key": _umc_mic(1), "left_channel": "MONO", "right_channel": "MONO",

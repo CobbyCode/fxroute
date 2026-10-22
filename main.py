@@ -1480,6 +1480,16 @@ source_overview_feed = SourceOverviewFeed(
     decorate=lambda overview: _decorate_source_output_mode(input_auto_select.decorate_overview(overview)),
 )
 
+
+def _input_auto_graph_state() -> tuple[object, bool]:
+    """In-memory capture fence, including rebuilds completed between ticks."""
+    dsp = runtime.dsp_runtime
+    snapshot = dsp.snapshot() if dsp is not None else {}
+    generation = (playback_state.playback_transition_epoch,
+                  snapshot.get("helper_pid"), snapshot.get("graph_revision"))
+    return generation, _dsp_graph_in_flux()
+
+
 source_transitions = SourceTransitions(SourceTransitionDependencies(
     get_lock=lambda: _source_transition_lock(),
     feed=source_overview_feed,
@@ -1500,6 +1510,9 @@ source_transitions = SourceTransitions(SourceTransitionDependencies(
     restore_output_mode_state=lambda previous, overview, state: _restore_input_output_mode(previous, overview, saved_state=state),
     request_source_rate_follow=lambda committed: _follow_active_source_native_rate(
         committed, reason="source-mode-native-rate"),
+    wait_for_auto_switch=lambda: _wait_playback_transition_settled(),
+    prepare_selection=lambda mode, input_key: samplerate.prepare_audio_source_selection(mode, input_key),
+    commit_prepared_selection=lambda prepared: samplerate.commit_audio_source_selection(prepared),
 ))
 
 # External presence reports (HTTP, e.g. Home Assistant); a report is a
@@ -1517,6 +1530,7 @@ input_auto_select = InputAutoSelect(InputAutoSelectDependencies(
     resolve_capture_rate=lambda: resolve_capture_rate(),
     external_presence=lambda key: input_presence.present(key),
     power_input_key=lambda: _digital_input_key_for_power(),
+    graph_state=lambda: _input_auto_graph_state(),
 ))
 
 
@@ -6768,7 +6782,11 @@ async def report_audio_input_presence(request: Request):
         )
     if not await _known_audio_input_key(input_key):
         raise bad_request(ValueError(f"Unknown input: {input_key}"))
+    previous = input_presence.present(input_key)
     input_presence.report(input_key, present)
+    if present != previous:
+        logger.info("Input presence: input=%s present=%s reporter=%s ttl_seconds=%s", input_key, present,
+                    request.client.host if request.client else None, input_presence.ttl_seconds)
     return {
         "status": "ok",
         "input_key": input_key,

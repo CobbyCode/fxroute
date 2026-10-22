@@ -31,6 +31,7 @@ the presence report ends.
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import numpy
@@ -139,7 +140,8 @@ class ActivityDetector:
     """
 
     def __init__(self, kind: str, now: float, *, assume_active: bool = False,
-                 release_seconds: float = RELEASE_SECONDS) -> None:
+                 release_seconds: float = RELEASE_SECONDS,
+                 local_context: Callable[[], object | None] | None = None) -> None:
         self.kind = kind
         self.active = assume_active
         self.release_seconds = release_seconds
@@ -155,13 +157,56 @@ class ActivityDetector:
         self._last_on_at: float | None = None
         self._last_signal_at = now
         self._missing = False
+        self._local_context = local_context or (lambda: 0)
+        self.graph_generation = self._local_context()
+        self.probe_generation = 0
+        self.last_observed_at: float | None = None
+        self.last_block: BlockAnalysis | None = None
+        self._local_qualified = False
+        self._last_local_signal_at: float | None = None
+
+    def reset_local(self) -> None:
+        """Discard capture qualification, not an established release hold."""
+        self._attack_since = self._last_on_at = None
+        self._local_qualified = False
+        self._last_local_signal_at = self.last_observed_at = None
+        self.last_block = None
+        self.lock = None
+        self._stream = self._candidate = STREAM_PCM
+        self._candidate_blocks = 0
+
+    def begin_capture(self) -> None:
+        """Start a fresh probe generation; buffered data cannot carry attack."""
+        self.reset_local()
+        self.graph_generation = self._local_context()
+        self.probe_generation += 1
+
+    def local_signal_valid(self, now: float, max_age: float) -> bool:
+        """A fresh qualified signal, rather than the composite release hold."""
+        context = self._local_context()
+        return bool(
+            self.active and self._local_qualified
+            and context is not None and context == self.graph_generation
+            and self.last_observed_at is not None
+            and self._last_local_signal_at is not None
+            and 0 <= now - self.last_observed_at <= max_age
+            and 0 <= now - self._last_local_signal_at <= max_age
+            and self.lock is not False
+        )
 
     @property
     def format(self) -> str | None:
         """Stream type while active: "pcm" or a codec name."""
         return self._stream if self.active and self._stream != STREAM_ENCODED_IDLE else None
 
-    def observe_block(self, now: float, block: BlockAnalysis, lock: bool | None = None) -> None:
+    def observe_block(self, now: float, block: BlockAnalysis, lock: bool | None = None) -> bool:
+        context = self._local_context()
+        if context is None or context != self.graph_generation:
+            self.reset_local()
+            return False
+        if self.last_observed_at is not None and now - self.last_observed_at > ATTACK_GAP_SECONDS:
+            self.reset_local()
+        self.last_observed_at, self.last_block = now, block
         self.lock = lock
         self._missing = False
         if block.digital_silence:
@@ -173,7 +218,7 @@ class ActivityDetector:
             self._candidate, self._candidate_blocks = stream, 1
         if self._candidate_blocks >= STREAM_CONFIRM_BLOCKS:
             self._stream = self._candidate
-        if self._stream == STREAM_ENCODED_IDLE:
+        if self.lock is False or self._stream == STREAM_ENCODED_IDLE:
             on = keep = False
         elif self._stream != STREAM_PCM:
             on = keep = not block.digital_silence
@@ -184,6 +229,7 @@ class ActivityDetector:
             keep = block.peak_dbfs >= ANALOG_KEEP_PEAK_DBFS
         attack = DIGITAL_ATTACK_SECONDS if self._digital or self._stream != STREAM_PCM else ANALOG_ATTACK_SECONDS
         self._step(now, on, keep, attack)
+        return True
 
     def mark_digital(self) -> None:
         """The input is known to be digital (S/PDIF by name)."""
@@ -192,6 +238,7 @@ class ActivityDetector:
     def observe_presence(self, now: float, present: bool) -> None:
         """STDIN: a connected PCM writer is the signal."""
         self._missing = False
+        self.last_observed_at = now
         self._step(now, present, present, 0.0)
 
     def observe_external_presence(self, now: float, present: bool) -> None:
@@ -205,7 +252,8 @@ class ActivityDetector:
         """
         self.external_presence = bool(present)
         if present:
-            self._step(now, True, True, 0.0)
+            self.active = True
+            self._last_signal_at = now
         else:
             self.update(now)
 
@@ -213,13 +261,13 @@ class ActivityDetector:
         """No capture: input gone, probe down or its port not active."""
         self.lock = None
         self._missing = True
-        self._attack_since = None
+        self.reset_local()
         self.update(now)
 
     def hold_over(self, now: float) -> None:
         """Pause without observations (measurement): not counted as silence."""
         self._last_signal_at = now
-        self._attack_since = None
+        self.reset_local()
 
     def update(self, now: float) -> None:
         if self.active and now - self._last_signal_at >= self._release_hold():
@@ -236,12 +284,8 @@ class ActivityDetector:
         return self.release_seconds
 
     def _step(self, now: float, on: bool, keep: bool, attack: float) -> None:
-        if self.external_presence:
-            # OR with the local detection: explicit presence keeps the input
-            # active and arms without the local attack time.
-            on = keep = True
-            attack = 0.0
         if keep:
+            self._last_local_signal_at = now
             self._last_signal_at = now
         if on:
             if self._attack_since is None:
@@ -250,6 +294,11 @@ class ActivityDetector:
         elif (self._attack_since is not None and self._last_on_at is not None
               and now - self._last_on_at > ATTACK_GAP_SECONDS):
             self._attack_since = None
-        if not self.active and self._attack_since is not None and now - self._attack_since >= attack:
+            self._local_qualified = False
+        if on and self._attack_since is not None and now - self._attack_since >= attack:
+            self._local_qualified = True
+        if self._local_qualified or self.external_presence:
             self.active = True
+        if self.external_presence:
+            self._last_signal_at = now
         self.update(now)

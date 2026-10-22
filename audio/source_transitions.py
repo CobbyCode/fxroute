@@ -66,6 +66,10 @@ class SourceTransitionDependencies:
     sync_output_mode: Callable[[dict, dict], Awaitable[dict]] | None = None
     capture_output_mode_state: Callable[[], dict] | None = None
     restore_output_mode_state: Callable[[dict, dict, dict], Awaitable[dict]] | None = None
+    # Automatic decisions are made only after pre-existing graph work settled.
+    wait_for_auto_switch: Callable[[], Awaitable[None]] | None = None
+    prepare_selection: Callable[[str, str | None], dict] | None = None
+    commit_prepared_selection: Callable[[dict], dict] | None = None
 
 
 class SourceTransitions:
@@ -184,10 +188,19 @@ class SourceTransitions:
         committed: dict | None = None
         try:
             async with self._deps.get_lock():
-                target = decide(self._deps.load_selection())
+                if self._deps.wait_for_auto_switch is not None:
+                    await self._deps.wait_for_auto_switch()
+                previous = self._deps.load_selection()
+                target = decide(previous)
                 if target is None:
                     return None
-                committed = await finish_then_cancel(self.apply_selection(*target), what="Source transition")
+                prepare = self._deps.prepare_selection
+                prepared = await asyncio.to_thread(prepare, *target) if prepare is not None else None
+                if decide(previous) != target:
+                    return None
+                committed = await finish_then_cancel(
+                    self.apply_selection(*target, prepared=prepared),
+                    what="Source transition")
                 return committed
         finally:
             await self._finish_bluetoothctl_actions()
@@ -277,7 +290,7 @@ class SourceTransitions:
             logger.exception("Failed to re-sync STDIN after source-mode rollback")
         return restored
 
-    async def apply_selection(self, mode: str, input_key: str | None) -> dict:
+    async def apply_selection(self, mode: str, input_key: str | None, *, prepared: dict | None = None) -> dict:
         """Run one source-mode/input change: routing commit, pause, peak sync.
 
         The caller holds the source-transition lock with cancellation
@@ -293,7 +306,10 @@ class SourceTransitions:
         previous_mode = str(previous.get("mode") or SOURCE_MODE_APP_PLAYBACK)
         generation_bumped = False
         try:
-            result = await asyncio.to_thread(self._deps.save_selection, mode, input_key)
+            if prepared is not None:
+                result = await asyncio.to_thread(self._deps.commit_prepared_selection, prepared)
+            else:
+                result = await asyncio.to_thread(self._deps.save_selection, mode, input_key)
             if self._deps.sync_output_mode is not None:
                 result = await self._deps.sync_output_mode(previous, result)
             if previous_mode == SOURCE_MODE_STDIN_INPUT and result.get("mode") != SOURCE_MODE_STDIN_INPUT:

@@ -1435,7 +1435,8 @@ def set_audio_output_selection(key: str) -> dict[str, Any]:
     return get_audio_output_overview()
 
 
-def set_audio_source_selection(mode: str, input_key: str | None = None) -> dict[str, Any]:
+def prepare_audio_source_selection(mode: str, input_key: str | None = None) -> dict[str, Any]:
+    """Resolve a selection without changing capture ports or persisted state."""
     normalized_mode = (mode or "").strip()
     normalized_input_key = (input_key or "").strip() or None
     if normalized_mode not in {SOURCE_MODE_APP_PLAYBACK, SOURCE_MODE_EXTERNAL_INPUT, SOURCE_MODE_BLUETOOTH_INPUT, SOURCE_MODE_STDIN_INPUT}:
@@ -1443,19 +1444,19 @@ def set_audio_source_selection(mode: str, input_key: str | None = None) -> dict[
 
     overview_before = get_audio_source_overview()
     inputs = overview_before.get("inputs") or []
+    prepared = {"mode": normalized_mode, "selected_input_key": normalized_input_key,
+                "source_name": None, "port_key": None}
 
     if normalized_mode == SOURCE_MODE_STDIN_INPUT:
         if not (overview_before.get("stdin") or {}).get("selectable"):
             raise ValueError("STDIN input is unavailable")
-        _save_audio_source_selection(normalized_mode, None)
-        return get_audio_source_overview()
+        return {**prepared, "selected_input_key": None}
 
     if normalized_mode == SOURCE_MODE_BLUETOOTH_INPUT:
         bt_input_role = overview_before.get("bluetooth") or {}
         if not bt_input_role.get("selectable"):
             raise ValueError("Bluetooth input is not currently available")
-        _save_audio_source_selection(normalized_mode, None)
-        return get_audio_source_overview()
+        return {**prepared, "selected_input_key": None}
 
     if normalized_mode == SOURCE_MODE_EXTERNAL_INPUT:
         selected_input = None
@@ -1473,15 +1474,24 @@ def set_audio_source_selection(mode: str, input_key: str | None = None) -> dict[
             selected_input = inputs[0]
         if not selected_input:
             raise ValueError("No external inputs are currently available")
-        source_name = selected_input.get("source_key") or selected_input.get("name")
-        port_key = selected_input.get("port_key")
-        if source_name and port_key:
-            _set_source_port(source_name, port_key)
-        _save_audio_source_selection(normalized_mode, selected_input.get("key"))
+        prepared.update(selected_input_key=selected_input.get("key"),
+                        source_name=selected_input.get("source_key") or selected_input.get("name"),
+                        port_key=selected_input.get("port_key"))
     else:
-        _save_audio_source_selection(normalized_mode, normalized_input_key or (overview_before.get("selected_input") or {}).get("key"))
+        prepared["selected_input_key"] = normalized_input_key or (overview_before.get("selected_input") or {}).get("key")
+    return prepared
 
+
+def commit_audio_source_selection(prepared: dict[str, Any]) -> dict[str, Any]:
+    """Apply a prepared selection after its caller's final admission check."""
+    if prepared.get("source_name") and prepared.get("port_key"):
+        _set_source_port(prepared["source_name"], prepared["port_key"])
+    _save_audio_source_selection(prepared["mode"], prepared["selected_input_key"])
     return get_audio_source_overview()
+
+
+def set_audio_source_selection(mode: str, input_key: str | None = None) -> dict[str, Any]:
+    return commit_audio_source_selection(prepare_audio_source_selection(mode, input_key))
 
 def apply_persisted_audio_output_selection() -> dict[str, Any] | None:
     selection_state = _load_audio_output_selection()

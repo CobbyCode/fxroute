@@ -26,6 +26,7 @@ from audio.alsa_ctl import (clock_source_target, has_digital_receiver, is_digita
                             read_digital_lock, select_clock_source)
 from audio.input_activity import ActivityDetector, BlockAnalysis, analyze_block, detect_encoding
 from audio.input_auto_select import InputAutoSelect, InputAutoSelectDependencies, selection_key
+from audio.input_auto_select import InputProbe, ProbeSpec
 from audio.samplerate.parsing import _parse_pactl_sources_detailed
 from audio.source_feed import SourceOverviewFeed
 
@@ -91,6 +92,48 @@ class SignalAnalysisTests(unittest.TestCase):
 
 
 class DetectorTests(unittest.TestCase):
+    def test_probe_restart_cannot_reuse_a_previous_attack(self):
+        detector = ActivityDetector(activity.KIND_DIGITAL, 0.0)
+        self.feed(detector, 0.0, 0.4, analysis(-20.0))
+        detector.begin_capture()
+        self.feed(detector, 0.4, 0.4, analysis(-20.0))
+        self.assertFalse(detector.active)
+        self.feed(detector, 0.8, 0.3, analysis(-20.0))
+        self.assertTrue(detector.active)
+
+    def test_presence_does_not_qualify_an_unfinished_local_attack(self):
+        detector = ActivityDetector(activity.KIND_DIGITAL, 0.0)
+        detector.observe_external_presence(0.0, True)
+        detector.observe_block(0.1, analysis(-20.0))
+        detector.observe_external_presence(0.2, False)
+        self.assertFalse(detector.local_signal_valid(0.2, 0.75))
+
+    def test_unobserved_gap_restarts_digital_attack(self):
+        detector = ActivityDetector(activity.KIND_DIGITAL, 0.0)
+        detector.observe_block(0.1, analysis(-20.0))
+        detector.observe_block(2.0, analysis(-20.0))
+        self.assertFalse(detector.active, "missing observations are not sustained programme")
+        self.feed(detector, 2.0, 0.4, analysis(-20.0))
+        self.assertFalse(detector.active, "the fresh attack must finish first")
+        self.feed(detector, 2.4, 0.2, analysis(-20.0))
+        self.assertTrue(detector.active)
+
+    def test_unlocked_digital_samples_cannot_arm(self):
+        detector = ActivityDetector(activity.KIND_DIGITAL, 0.0)
+        for index in range(15):
+            detector.observe_block(index / 10, analysis(-10.0), lock=False)
+        self.assertFalse(detector.active, "unlocked receiver garbage is not programme")
+        for index in range(15, 22):
+            detector.observe_block(index / 10, analysis(-30.0), lock=True)
+        self.assertTrue(detector.active)
+
+    def test_unlocked_samples_do_not_override_external_presence(self):
+        detector = ActivityDetector(activity.KIND_DIGITAL, 0.0)
+        detector.observe_external_presence(0.0, True)
+        for index in range(15):
+            detector.observe_block(index / 10, analysis(-10.0), lock=False)
+        self.assertTrue(detector.active)
+
     def feed(self, detector, start, seconds, block):
         now = start
         steps = int(round(seconds / activity.BLOCK_SECONDS))
@@ -438,6 +481,16 @@ class FeedDecorationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(pushes[-1]["data"]["auto_select"], {"armed": ["x"]})
 
 
+class ProbeGenerationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_stale_probe_cannot_start_capture_on_a_new_graph(self):
+        detector = ActivityDetector(activity.KIND_DIGITAL, 0.0, local_context=lambda: 2)
+        spec = ProbeSpec("source", "FL", "FR", 48000, None, True, graph_generation=1)
+        with patch("audio.input_auto_select.asyncio.create_subprocess_exec",
+                   side_effect=AssertionError("stale probe spawned a capture")):
+            with self.assertRaisesRegex(RuntimeError, "generation"):
+                await InputProbe(spec, detector)._capture()
+
+
 X = "alsa_input.usb-Focusrite-00.pro-input-0|pair:AUX0,AUX1"
 Y = "alsa_input.usb-SPDIF-00.iec958-stereo"
 Z = "alsa_input.pci-0000.analog-stereo"
@@ -456,6 +509,7 @@ class FakeProbe:
         self.stopped = False
 
     def start(self):
+        self.detector.begin_capture()
         self.started = True
 
     async def stop(self):
@@ -481,6 +535,8 @@ class Harness:
         self.probes = {}
         self.presence = {}
         self.power_key = None
+        self.graph_epoch = 0
+        self.graph_busy = False
         self.state_path = Path(state_dir) / "input-auto-select.json"
 
         async def read_overview():
@@ -521,6 +577,7 @@ class Harness:
             state_path=lambda: self.state_path,
             monotonic=lambda: self.now,
         ))
+        self.controller._deps.graph_state = lambda: (self.graph_epoch, self.graph_busy)
 
     def detector(self, key):
         return self.controller._detectors[key]
@@ -552,6 +609,196 @@ class ControllerTests(unittest.IsolatedAsyncioTestCase):
 
     def harness(self, **kwargs):
         return Harness(self, self.tmp.name, **kwargs)
+
+    async def test_scarlett_spdif_pair_is_digital_without_a_display_hint(self):
+        h = self.harness()
+        source = "alsa_input.usb-Focusrite_Scarlett_16i16_4th_Gen_TEST123-00.pro-input-0"
+        key = source + "::pair:9-10"
+        h.inputs = [_entry(key, source, "AUX8", "AUX9", pair_channels=[9, 10])]
+        await h.controller.set_armed(key, True)
+        await h.tick()
+        self.assertTrue(h.probes[source].spec.digital)
+        self.assertTrue(h.detector(key)._digital)
+        adjacent = _entry(source + "::pair:7-8", source, "AUX6", "AUX7", pair_channels=[7, 8])
+        self.assertFalse(h.controller._probe_spec(adjacent).digital)
+
+    async def test_busy_graph_discards_local_activity_then_requires_fresh_attack(self):
+        h = self.harness()
+        await h.controller.set_armed(Y, True)
+        await h.tick()
+        h.graph_busy = True
+        h.graph_epoch += 1
+        await h.signal(Y, 2)
+        self.assertEqual(h.switches, [], "graph rebuild samples must not select an input")
+        h.graph_busy = False
+        await h.tick()
+        await h.signal(Y, 0.5)
+        self.assertEqual(h.switches, [], "old attack time must not survive the graph rebuild")
+        await h.signal(Y, 0.5)
+        self.assertEqual(h.switches, [("external-input", Y)])
+
+    async def test_completed_graph_change_between_ticks_invalidates_old_probe(self):
+        h = self.harness()
+        await h.controller.set_armed(Y, True)
+        await h.tick()
+        old_probe = h.probes[Y]
+        for _ in range(4):
+            h.now += 0.1
+            h.detector(Y).observe_block(h.now, analysis(-20.0))
+        h.graph_epoch += 1
+        for _ in range(4):
+            h.now += 0.1
+            h.detector(Y).observe_block(h.now, analysis(-20.0))
+        await h.tick()
+        self.assertEqual(h.switches, [])
+        self.assertTrue(old_probe.stopped)
+        self.assertIsNot(old_probe, h.probes[Y])
+        await h.signal(Y, 1)
+        self.assertEqual(h.switches, [("external-input", Y)])
+
+    async def test_expired_signal_is_rejected_after_waiting_for_admission(self):
+        h = self.harness()
+        await h.controller.set_armed(Y, True)
+        await h.tick()
+        switch = h.controller._deps.switch_if
+
+        async def delayed(decide):
+            h.now += 3
+            return await switch(decide)
+
+        h.controller._deps.switch_if = delayed
+        await h.signal(Y, 1)
+        self.assertEqual(h.switches, [], "release hold alone is not a valid new claim")
+        h.controller._deps.switch_if = switch
+        await h.signal(Y, 1)
+        self.assertEqual(h.switches, [("external-input", Y)], "fresh activity can retry")
+
+    async def test_graph_generation_is_rechecked_at_admission(self):
+        h = self.harness()
+        await h.controller.set_armed(Y, True)
+        await h.tick()
+        switch = h.controller._deps.switch_if
+
+        async def changed(decide):
+            h.graph_epoch += 1
+            return await switch(decide)
+
+        h.controller._deps.switch_if = changed
+        await h.signal(Y, 1)
+        self.assertEqual(h.switches, [])
+        self.assertIsNone(h.controller.snapshot()["engaged"])
+
+    async def test_expired_http_presence_is_not_admitted_from_its_release_hold(self):
+        h = self.harness()
+        await h.controller.set_armed(Y, True)
+        await h.tick()
+        switch = h.controller._deps.switch_if
+
+        async def expired(decide):
+            h.presence[Y] = False
+            return await switch(decide)
+
+        h.controller._deps.switch_if = expired
+        h.presence[Y] = True
+        await h.tick()
+        self.assertEqual(h.switches, [])
+
+    async def test_http_presence_is_deferred_until_graph_settles(self):
+        h = self.harness()
+        await h.controller.set_armed(Y, True)
+        await h.tick()
+        h.graph_busy = True
+        h.graph_epoch += 1
+        h.presence[Y] = True
+        await h.tick()
+        self.assertEqual(h.switches, [])
+        h.graph_busy = False
+        await h.tick()
+        self.assertEqual(h.switches, [("external-input", Y)])
+
+    async def test_switch_log_identifies_trigger_and_signal_context(self):
+        h = self.harness()
+        await h.controller.set_armed(Y, True)
+        await h.tick()
+        with self.assertLogs("audio.input_auto_select", level="INFO") as captured:
+            await h.signal(Y, 1)
+        message = " ".join(captured.output)
+        for field in (Y, "trigger=local-audio", "peak_dbfs=", "rms_dbfs=", "lock=",
+                      "data_age_ms=", "graph_generation=", "probe_generation=", "presence=False"):
+            self.assertIn(field, message)
+
+    async def test_presence_switch_log_identifies_http_trigger(self):
+        h = self.harness()
+        await h.controller.set_armed(Y, True)
+        h.presence[Y] = True
+        with self.assertLogs("audio.input_auto_select", level="INFO") as captured:
+            await h.tick()
+        self.assertIn("trigger=http-presence", " ".join(captured.output))
+        self.assertIn("presence=True", " ".join(captured.output))
+
+    async def test_probe_generation_is_rechecked_at_admission(self):
+        h = self.harness()
+        await h.controller.set_armed(Y, True)
+        await h.tick()
+        switch = h.controller._deps.switch_if
+
+        async def restarted(decide):
+            h.detector(Y).begin_capture()
+            return await switch(decide)
+
+        h.controller._deps.switch_if = restarted
+        await h.signal(Y, 1)
+        self.assertEqual(h.switches, [])
+
+    async def test_graph_pause_keeps_an_established_engagement(self):
+        h = self.harness()
+        await h.controller.set_armed(Y, True)
+        await h.tick()
+        await h.signal(Y, 1)
+        h.graph_epoch += 1
+        h.graph_busy = True
+        await h.tick(70)
+        self.assertEqual(h.switches, [("external-input", Y)])
+        h.graph_busy = False
+        await h.tick()
+        self.assertEqual(h.switches, [("external-input", Y)])
+        await h.silence(Y, 61)
+        self.assertEqual(h.switches[-1], ("app-playback", None))
+
+    async def test_disarm_during_a_deferred_return_cannot_restore_engagement(self):
+        h = self.harness()
+        await h.controller.set_armed(Y, True)
+        await h.tick()
+        await h.signal(Y, 1)
+        switch = h.controller._deps.switch_if
+
+        async def disarmed(decide):
+            await h.controller.set_armed(Y, False)
+            h.graph_epoch += 1
+            return await switch(decide)
+
+        h.controller._deps.switch_if = disarmed
+        h.now += 61
+        h.detector(Y).observe_block(h.now, analysis(-110.0))
+        await h.controller._evaluate()
+        self.assertIsNone(h.controller.snapshot()["engaged"])
+
+    async def test_node_recreation_restarts_the_probe_without_reusing_attack(self):
+        h = self.harness()
+        h.inputs[1]["id"] = 100
+        await h.controller.set_armed(Y, True)
+        await h.tick()
+        old_probe = h.probes[Y]
+        for _ in range(4):
+            h.now += 0.1
+            h.detector(Y).observe_block(h.now, analysis(-20.0))
+        h.inputs[1]["id"] = 101
+        await h.tick()
+        self.assertTrue(old_probe.stopped)
+        await h.signal(Y, 0.5)
+        self.assertEqual(h.switches, [])
+        await h.signal(Y, 0.5)
+        self.assertEqual(h.switches, [("external-input", Y)])
 
     async def test_power_monitor_works_without_arming_or_switching(self):
         h = self.harness(mode="external-input", input_key=Y)
