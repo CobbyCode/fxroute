@@ -26,39 +26,33 @@ Beta 14 demo screenshots (simulated playback and measurements). Click an image f
 
 ## What FXRoute does
 
-**Sources**
+**Sources** ([manual §4](MANUAL.md#4-sources))
 
-- Local music library with album, track, folder, and favorites views, playlists, uploads, album ZIP imports, media-URL imports, and multi-select downloads
-- Internet radio with a curated station catalog, personal stations, and Radio Browser search; live metadata and artwork for Radio Paradise, FIP, SomaFM, and KEXP
-- Automatic PCM, Dolby Digital and DTS Core recognition on external input pairs in every output mode: discrete Surround playback or a complete stereo downmix, plus an upmixer that derives Center and the surround channels from a stereo programme
-- Spotify control for a local desktop client or spotifyd (Spotify Connect pairing, no FXRoute login), including Lossless-aware playback through a current desktop client
-- Qobuz Connect player control and a full TIDAL catalog browser with native playback through FXRoute's audio engine, gapless across same-rate album tracks
-- Bluetooth and external line input as selectable sources when the host audio stack supports them; a per-device **Custom Mapping** maps physical input channels to FXRoute channels, and **Auto** switches to an armed input on signal and returns when it ends
-- STDIN pipe input for raw PCM from shell pipelines (`decoder | fxroute stdin …`), mono to multichannel with stereo-pair selection and channel maps
+- Local music library with albums, tracks, artists, playlists, favorites, and folders, plus uploads and URL imports; SMB and NFS network shares
+- Internet radio with a curated catalog, personal stations, Radio Browser search, and live metadata for Radio Paradise, FIP, SomaFM, and KEXP
+- Spotify Connect (desktop client or spotifyd), Qobuz Connect, and TIDAL inside the Library with gapless playback
+- Bluetooth, external line, and (on supported boards) USB gadget input, with automatic PCM / Dolby Digital / DTS Core recognition, per-device Custom Mapping, and Auto input switching
+- STDIN pipe input for raw PCM from shell pipelines (`decoder | fxroute stdin …`), mono to multichannel
 
-**DSP and output**
+**DSP and output** ([manual §5](MANUAL.md#5-dsp))
 
-- A native DSP engine (`fxroute_dsp_sink`) built from source, in the same PipeWire session as playback
-- One output-routing model: **Stereo**, **Stereo + Sub**, or **Surround**, an independent Crossover switch, and **Output Routing** that assigns roles (`Main L/R`, speaker ways, `Center`, `Side L/R`, `Rear L/R`, `Sub L`, `Sub R`, `Sub 1`, `Sub 2`) to hardware outputs
-- Crossover derived from the routing as a 2-, 3-, or 4-way system with per-way type, slope, level, alignment, and polarity; the subwoofer configuration (**Mono sub**, **Dual-mono subs**, **Stereo subs**) is derived from the routed sub roles
-- Presets per **filter bank** (Global, the way pairs, the subs), each bank with its own preset and IR library and **Global** with one library per output mode, plus A/B compare, preset combining, and filter imports; the A/B card opens in an **Easy** view on Global and shows the full bank selection behind its **Expert** switch, lists the active preset of the other banks and, on **Ind. Banks**, both assignments of every switched bank; in **Surround** each Global A/B slot selects one PEQ or convolver preset per speaker group (**Front L/R**, **Center**, **Side L/R**, **Rear L/R**), and imported, created, or combined filters are assigned to the group chosen for them; **Neutral** (clean chain, the default) in every bank and **Direct** (bypasses everything) in the **Global** bank
-- Global output helpers that apply on top of any preset: protection limiter, headroom, autogain, loudness contouring, bass enhancer, and tone effect
-- Auto or fixed sample rate (up to 384 kHz, device permitting), with rate-driven channel tiers on interfaces that have them, plus selectable SRC quality (**Low** / **Standard** / **High**)
+- A native DSP engine (`fxroute_dsp_sink`) in the same PipeWire session as playback
+- **Stereo**, **Stereo + Sub**, or **Surround**, with free assignment of speaker roles to hardware outputs
+- 2-, 3-, or 4-way crossovers and mono, dual-mono, or stereo subwoofers, derived from the routing
+- PEQ and convolver presets per filter bank, A/B compare, preset combining, and REW/IR imports
+- Output extras (limiter, headroom, autogain, loudness, bass enhancer, tone effect), a Surround upmixer, and Auto or fixed sample rate up to 384 kHz with selectable SRC quality
 
-**Measure and correct**
+**Measure and correct** ([manual §6](MANUAL.md#6-measurement-assistant))
 
-- Host-microphone room and speaker measurement: single L/R/Stereo sweeps scoped to the selected measuring area — a bank, a Surround speaker group with the subs, or **Ind. Banks** as the whole system as listened — same-position L/R Repeat, and a guided multi-position Advanced workflow that follows the selected area — in Surround Global it can measure every routed group at shared microphone positions
-- An **electrical reference** input on the capture interface for precise arrival timing, and an electrical-reference or acoustic-only timing verdict on every run
-- **Speaker Auto Alignment** per speaker for a multi-way crossover: proposes per-way delay and gain, then verifies acoustically before committing
-- **Auto Sub Optimize** scans delay, polarity, and level around the current subwoofer settings for the derived sub layout and applies the verified winner
-- SPL calibration with UMIK-1/UMIK-2/Dayton UMM-6 support or a manual meter, cut-only Level Matching per speaker, a diagnostic Polarity Check, and per-mode AV Sync targets with automatic latency compensation
-- Correction tools on the measurement graph: a 12-filter PEQ sketchpad, custom house curves, and FIR convolver preset creation in linear, minimum-phase, and aligned modes, committable only into the bank the sources were measured for
+- Room and speaker measurement with a host microphone: single sweeps, L/R Repeat, and a guided multi-position Advanced workflow, also per Surround speaker group
+- Electrical-reference timing, Speaker Auto Alignment, and Auto Sub Optimize
+- SPL calibration (automatic with UMIK-1, UMIK-2, or Dayton UMM-6), Level Matching, Polarity Check, and AV Sync
+- PEQ assistant with automatic filter suggestions, custom house curves, and FIR convolver presets in linear, minimum-phase, and aligned modes
 
 **System**
 
-- Control from any browser on the LAN; SMB music shares in addition to the local folder
-- Optional local HTTPS via Caddy with a downloadable certificate
-- `GET /api/power/state` as a read-only hint for amplifier smart-plug automation
+- Control from any browser on the LAN; optional local HTTPS via Caddy
+- A read-only power hint for amplifier smart-plug automation ([Home Assistant](#home-assistant))
 - In-app maintenance updates, plus the downloadable images above
 
 ## Install
@@ -84,22 +78,21 @@ Supported package managers are apt, dnf, zypper, and pacman. Streaming providers
   - `http://localhost:8000` on the audio PC itself
   - `https://<host-ip>` or `https://<device-name>.local` when the optional HTTPS proxy is enabled (HTTP stays reachable)
 - Play something from **Radio** or **Library** to confirm audio and DSP routing.
-- The music folder is configured in `.env` (`MUSIC_ROOT`) or selected in **Technical settings → Music Library**, which lists SMB shares and NFS exports together. Add `smb://server/share` or `server:/export/path` manually; bracket IPv6 servers, e.g. `[2001:db8::1]:/music`. **Remove share** removes the saved choice and FXRoute-managed mount, never music files.
-- Discovery uses bounded local-network probes, SMB guest listings, NFS `showmount`, and a read-only NFSv4 namespace fallback. A server that denies export/namespace listing can still be added manually. Optional `MUSIC_LIBRARY_SMB_HOSTS` and `MUSIC_LIBRARY_NFS_HOSTS` (comma-separated hosts) restrict discovery independently.
-- Network mounts and the selected library survive restarts. An unavailable saved library is retried after startup; selecting Local cancels restoration. NFS negotiates v4/v3 automatically and uses read-only, boot-safe systemd automounts with soft RPC retries (`soft,timeo=20,retrans=2`). These are not a strict deadline for every filesystem operation: NFSv4 OPEN/state recovery can wait longer during a TCP blackhole. An outage can interrupt a scan or playback; retry the scan/playback after connectivity returns. The mount status is kernel mount state, not an online-server guarantee. NFS permissions remain those of the server (AUTH_SYS); SMB guest behavior is unchanged.
+- The music folder is configured in `.env` (`MUSIC_ROOT`); SMB shares and NFS exports are selected or added in **Technical settings → Music Library** and survive restarts. Details in the [manual](MANUAL.md#42-library-and-network-shares).
 
 ## Home Assistant
 
-`GET /api/power/state` is a read-only amplifier power hint for external automation: `amp_should_be_on` is true while local, TIDAL, Spotify, or Qobuz playback is active, while the measurement assistant is open, while Bluetooth audio is streaming, while an external input is routed, or while a STDIN stream is active. A Surround capture pair additionally needs detected input activity, even with **Auto** off; silence releases the hint after 60 seconds without changing the selected input. The payload also carries a `reason` field. FXRoute does not require MQTT. A complete configuration example is in the [manual](MANUAL.md#10-home-assistant--external-automation).
-
-`POST /api/audio/input-presence` is the optional return channel: an automation reports presence for an existing input key (`{"inputKey": "<key>", "present": true}`) as a 30 s heartbeat, and input auto-select OR-s it with the local signal detection (expired or unknown reports read as absent).
+`GET /api/power/state` is a read-only amplifier power hint: `amp_should_be_on` is true while FXRoute plays, measures, or has an active input, so an automation can switch a smart plug. `POST /api/audio/input-presence` is the optional return channel that lets an automation report a source as present. FXRoute does not require MQTT. Payload, rules, and complete configuration examples are in the [manual](MANUAL.md#10-home-assistant--external-automation).
 
 ## Documentation
 
-- [MANUAL.md](MANUAL.md) — the user manual: output modes and routing, crossover, subwoofers, the measurement assistant, and the settings
+- [MANUAL.md](MANUAL.md) — the user manual: sources, output modes and routing, crossover, subwoofers, Surround, the measurement assistant, and the settings
 - [docs/INSTALLER.md](docs/INSTALLER.md) — installer, providers, and uninstall details
 - [docs/INSTALL-ARMBIAN.md](docs/INSTALL-ARMBIAN.md) — building the ARM64 board images yourself
+- [docs/usb-audio-gadget.md](docs/usb-audio-gadget.md) — USB audio input (UAC2) requirements and setup
+- Technical background: [Surround path](docs/surround.md) · [playback SRC](docs/playback-src.md) · [HDMI profiles](docs/hdmi-profiles.md) · [AV Sync accounting](docs/av-sync.md) · [input auto-select](docs/input-auto-select.md)
 - [CHANGELOG.md](CHANGELOG.md) — release history
+- [CONTRIBUTING.md](CONTRIBUTING.md) — how to contribute
 
 ## License
 
