@@ -191,7 +191,7 @@ class LiveRecorder:
         return self.returncode
 
 
-def write_sine_wav(path, seconds=6.0, rms=0.05):
+def write_sine_wav(path, seconds=7.5, rms=0.05):
     sample_rate = 48000
     t = np.arange(int(sample_rate * seconds)) / sample_rate
     mono = (rms * np.sqrt(2.0) * np.sin(2.0 * np.pi * 1000.0 * t) * 32767).astype(np.int16)
@@ -243,7 +243,7 @@ def main_test(_output_profile):
         # --sample-count command shape, both variants ---------------------
         full = spl_calibration._spl_pw_record_command("some-node", Path("/tmp/x.wav"), use_sample_count=True)
         assert full[:1] == ["pw-record"], full
-        assert "--sample-count" in full and full[full.index("--sample-count") + 1] == "240000", full
+        assert "--sample-count" in full and full[full.index("--sample-count") + 1] == "336000", full
         assert full[-1] == "/tmp/x.wav", full
         legacy = spl_calibration._spl_pw_record_command("some-node", Path("/tmp/x.wav"), use_sample_count=False)
         assert "--sample-count" not in legacy, legacy
@@ -298,7 +298,11 @@ def main_test(_output_profile):
             result = asyncio.run(spl_calibration.measure_spl_automatically())
         assert "--sample-count" not in spawned["proc"].argv, spawned["proc"].argv
         assert spawned["proc"].terminated is True, "fallback must terminate the recorder"
-        assert slept and 4.5 <= slept[0] <= 6.0, slept
+        # The recorder runs unbounded; the fallback stops it after the capture plus margin,
+        # minus the 0.2 s already spent before the noise start.
+        expected_sleep = (spl_calibration.SPL_CAPTURE_SECONDS
+                          + spl_calibration.SPL_CAPTURE_FALLBACK_MARGIN_SECONDS - 0.2)
+        assert slept and expected_sleep - 0.05 <= slept[0] <= expected_sleep + 0.05, slept
         assert result["status"] == "ok", result
         assert 40.0 <= result["measured_spl_db"] <= 130.0, result
         print("legacy fallback terminates after the window: ok")
@@ -319,7 +323,7 @@ def main_test(_output_profile):
              mock.patch.object(spl_calibration, "_start_spl_calibration_noise",
                                return_value={"status": "playing"}):
             result = asyncio.run(spl_calibration.measure_spl_automatically())
-        assert spawned["proc"].argv[spawned["proc"].argv.index("--sample-count") + 1] == "240000"
+        assert spawned["proc"].argv[spawned["proc"].argv.index("--sample-count") + 1] == "336000"
         assert spawned["proc"].terminated is False, "sample-count path must not terminate"
         assert result["status"] == "ok", result
         assert result["output_profile"] == {"id": "dev", "label": "Dev"}, result

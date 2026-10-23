@@ -38,7 +38,7 @@ def pink_noise(seconds, seed):
     return noise / np.sqrt(np.mean(np.square(noise)))
 
 
-def capture(onset_seconds, *, seconds=5.0, rms=0.05, seed=1, fade_seconds=1.0):
+def capture(onset_seconds, *, seconds=7.0, rms=0.05, seed=1, fade_seconds=1.0):
     """A mono capture that is silent until the noise starts, fades in like the product's noise file, then is steady."""
     signal = pink_noise(seconds, seed) * rms
     start = int(onset_seconds * RATE)
@@ -119,14 +119,36 @@ class SplStationarityGateTest(unittest.TestCase):
                                        "microphone_model", "serial_number"})
 
     def test_noise_that_starts_in_time_is_accepted(self):
-        for onset in (0.0, 1.0, 1.8, 2.0):
+        for onset in (0.0, 1.0, 1.8, 2.0, 2.5, 3.0, 3.5):
             with self.subTest(onset=onset):
                 result = self.run_endpoint(capture(onset))
                 self.assertEqual(result["status"], "ok")
                 self.assertLess(abs(result["level_drift_db"]), 0.5, result)
 
+    def test_a_warm_noise_start_is_accepted(self):
+        # Field measurement on .104: warm runs start the noise after 1.22-1.30 s.
+        for onset in (1.22, 1.30):
+            with self.subTest(onset=onset):
+                result = self.run_endpoint(capture(onset))
+                self.assertEqual(result["status"], "ok")
+                self.assertLess(abs(result["level_drift_db"]), 0.5, result)
+
+    def test_a_cold_start_after_the_noise_file_is_built_is_accepted(self):
+        # Field measurement on .104: the first run generates the ffmpeg noise file and the
+        # noise starts after 2.67-2.82 s. The 7 s capture keeps that inside the settled window.
+        for onset in (2.67, 2.82):
+            with self.subTest(onset=onset):
+                result = self.run_endpoint(capture(onset))
+                self.assertEqual(result["status"], "ok")
+                self.assertLess(abs(result["level_drift_db"]), 0.5, result)
+
+    def test_the_capture_keeps_the_3_s_window_and_the_0_5_db_gate(self):
+        self.assertEqual(spl_calibration.SPL_CAPTURE_SECONDS, 7.0)
+        self.assertEqual(spl_calibration.SPL_WINDOW_SECONDS, 3.0)
+        self.assertEqual(spl_calibration.SPL_MAX_LEVEL_RISE_DB, 0.5)
+
     def test_noise_that_starts_late_is_rejected_with_a_clear_message(self):
-        for onset in (2.5, 3.0, 3.5):
+        for onset in (4.5, 5.0, 5.5):
             with self.subTest(onset=onset):
                 with self.assertRaises(HTTPException) as caught:
                     self.run_endpoint(capture(onset))
@@ -136,12 +158,12 @@ class SplStationarityGateTest(unittest.TestCase):
 
     def test_a_rejected_run_releases_its_operation_and_removes_the_capture(self):
         with self.assertRaises(HTTPException):
-            self.run_endpoint(capture(3.0))
+            self.run_endpoint(capture(5.0))
         self.assertIsNone(spl_calibration._runtime.operation)
         self.assertEqual(list(self.directory.glob("fxroute-spl-*.wav")), [])
 
     def test_the_measured_rise_grows_with_the_lateness_of_the_onset(self):
-        rises = [self.levels(capture(onset))[1] for onset in (1.8, 2.0, 2.3, 2.5, 3.0)]
+        rises = [self.levels(capture(onset))[1] for onset in (2.5, 3.0, 4.0, 4.5, 5.0)]
         self.assertEqual(rises, sorted(rises))
         self.assertLess(rises[1], spl_calibration.SPL_MAX_LEVEL_RISE_DB)
         self.assertGreater(rises[3], spl_calibration.SPL_MAX_LEVEL_RISE_DB)
@@ -149,14 +171,14 @@ class SplStationarityGateTest(unittest.TestCase):
 
     def test_a_silent_capture_keeps_its_previous_error(self):
         with self.assertRaises(HTTPException) as caught:
-            self.run_endpoint(np.zeros(5 * RATE))
+            self.run_endpoint(np.zeros(7 * RATE))
         self.assertEqual(caught.exception.status_code, 409)
         self.assertIn("outside the valid range", caught.exception.detail)
         self.assertNotIn("still rising", caught.exception.detail)
 
     def test_a_non_finite_capture_keeps_its_previous_error(self):
         with self.assertRaises(HTTPException) as caught:
-            self.run_endpoint(np.zeros(5 * RATE), samples=np.full(5 * RATE, np.nan))
+            self.run_endpoint(np.zeros(7 * RATE), samples=np.full(7 * RATE, np.nan))
         self.assertIn("outside the valid range", caught.exception.detail)
 
     def test_a_too_short_capture_keeps_its_previous_error(self):
@@ -171,8 +193,8 @@ class SplStationarityGateTest(unittest.TestCase):
         for seed in (1, 2, 3):
             noise = pink_noise(120.0, seed) * 0.05
             for _ in range(200):
-                start = int(rng.integers(0, noise.size - 5 * RATE))
-                rises.append(self.levels(noise[start:start + 5 * RATE])[1])
+                start = int(rng.integers(0, noise.size - 7 * RATE))
+                rises.append(self.levels(noise[start:start + 7 * RATE])[1])
         rises = np.array(rises)
         self.assertLess(abs(float(rises.mean())), 0.05)
         self.assertLess(float(rises.std()), 0.25)
@@ -185,18 +207,19 @@ class SplStationarityGateTest(unittest.TestCase):
         for seed in (1, 2, 3):
             noise = ffmpeg_pink_noise(self.directory / f"pink{seed}.wav", seed)
             for _ in range(200):
-                start = int(rng.integers(3 * RATE, 55 * RATE - 5 * RATE))
-                rises.append(self.levels(noise[start:start + 5 * RATE])[1])
+                start = int(rng.integers(3 * RATE, 55 * RATE - 7 * RATE))
+                rises.append(self.levels(noise[start:start + 7 * RATE])[1])
             onset = {}
-            for seconds in (1.8, 2.0, 2.5, 3.0):
-                heard = np.zeros(5 * RATE)
+            for seconds in (2.82, 3.5, 4.0, 4.5, 5.0):
+                heard = np.zeros(7 * RATE)
                 start = int(seconds * RATE)
-                heard[start:] = noise[:5 * RATE - start]
+                heard[start:] = noise[:7 * RATE - start]
                 onset[seconds] = self.levels(heard)[1]
-            self.assertLessEqual(onset[1.8], spl_calibration.SPL_MAX_LEVEL_RISE_DB)
-            self.assertLessEqual(onset[2.0], spl_calibration.SPL_MAX_LEVEL_RISE_DB)
-            self.assertGreater(onset[2.5], spl_calibration.SPL_MAX_LEVEL_RISE_DB)
-            self.assertGreater(onset[3.0], spl_calibration.SPL_MAX_LEVEL_RISE_DB)
+            self.assertLessEqual(onset[2.82], spl_calibration.SPL_MAX_LEVEL_RISE_DB)
+            self.assertLessEqual(onset[3.5], spl_calibration.SPL_MAX_LEVEL_RISE_DB)
+            self.assertLessEqual(onset[4.0], spl_calibration.SPL_MAX_LEVEL_RISE_DB)
+            self.assertGreater(onset[4.5], spl_calibration.SPL_MAX_LEVEL_RISE_DB)
+            self.assertGreater(onset[5.0], spl_calibration.SPL_MAX_LEVEL_RISE_DB)
         rises = np.array(rises)
         self.assertLess(float(rises.std()), 0.2)
         self.assertLessEqual(int(np.sum(rises > spl_calibration.SPL_MAX_LEVEL_RISE_DB)), 1)
@@ -207,7 +230,7 @@ class SplStationarityGateTest(unittest.TestCase):
                                             ("UMM-6", umm6, UMM6_FIXTURE)):
             with self.subTest(label):
                 steady = self.levels(capture(1.0), profile, calibration)
-                late = self.levels(capture(3.0), profile, calibration)
+                late = self.levels(capture(5.0), profile, calibration)
                 self.assertLess(abs(steady[1]), 0.5)
                 self.assertGreater(late[1], 0.5)
                 with self.assertRaises(RuntimeError):
