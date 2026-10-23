@@ -1,15 +1,16 @@
 # Common playback sample-rate conversion
 
-## Qualification status
+## Status
 
-**Not ready for a product commit.** The earlier focused Library/TIDAL/Radio and
-input matrix passed, and the additional Qobuz 96 kHz handoff now passes all three
-modes after the reserve-accounting correction. One full matrix rerun reproduced
-a High-mode underrun on 32-channel 96 → 48 kHz STDIN; a later full rerun passed,
-so that intermittent failure is still being investigated. The test
-host has been restored to Standard and its saved input/sample-rate settings.
-No push or release has been made. The remaining failure must not be hidden by
-the earlier passing matrix.
+**Shipped since 1.0-beta14 and in normal use.** **Technical settings → Audio
+Output → SRC Quality** offers Low, Standard (default) and High for every playback
+source and input. The verification below was recorded on 2026-10-03, before the
+release. Later fixes include the startup FIFO that removed the high-rate startup
+stall (`1476b7ff`) and the concealment of short supply shortfalls with a healthy
+engine as counted silence (`4765b5f8`). The contention runs under
+[High 32-channel under CPU contention](#high-32-channel-under-cpu-contention)
+predate both fixes and have not been repeated, so sustained High conversion of
+32 channels on a fully loaded 4-core host remains unqualified.
 
 ## Policy and signal path
 
@@ -234,6 +235,8 @@ maximum wall time. These values are telemetry, not tuned sizing targets.
 
 ## Verification (2026-10-03)
 
+Record of the pre-release qualification; see [Status](#status) for later fixes.
+
 The corrected product sources passed **126 complete-SPA feedback/drain oracle
 cases on both hosts**. These cover merge backpressure, variable/zero capacity,
 short/empty/long EOF, both directions, all three engines, nondefault native
@@ -320,7 +323,7 @@ modes, with observed `qbzd` 96 → 48 kHz conversion and stable hardware adapter
 at equal 48 kHz rates, error zero. This is a scoped playback pass, not a claim of
 seamless spectral continuity through every transient graph reconfiguration.
 
-### Remaining High 32-channel failure
+### High 32-channel under CPU contention
 
 An actual STDIN run reported `fxroute.src.error = 32` on the 32-channel
 96 → 48 kHz converter. The approved CPU-only CLI converts the exact four-second
@@ -380,8 +383,8 @@ averages about 48.4% of one core over its run. Across these captures, observed
 queue maxima were 14,336 input / 36,632 output frames. Callback wall maxima
 time only the converter process callback, so they include scheduling delays
 inside it; construction and teardown run outside it. They are not a deadline or
-sustained-load guarantee. The controlled contention failures remain
-disqualifying evidence.
+sustained-load guarantee. The controlled contention failures above remain the
+open limit for sustained High32 under heavy load.
 
 ### Reproduce the focused checks
 
