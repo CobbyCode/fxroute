@@ -802,32 +802,6 @@ class InstallIsoContractTests(unittest.TestCase):
         self.assertIn("FXROUTE_ISO_GRUB_EDIT_SHOT", runner)
         self.assertIn("live.password=", runner)
 
-    def test_iso_documentation_describes_the_interactive_appliance_flow(self):
-        docs = self.read("docs/INSTALL-ISO.md")
-
-        self.assertIn("Leap-16.0-offline-installer-x86_64.install.iso", docs)
-        self.assertNotIn("FXROUTE_PASSWORD_HASH", docs)
-        self.assertNotIn("FXROUTE_SSH_PUBLIC_KEY", docs)
-        self.assertNotIn("Do not publish an ISO built with test credentials", docs)
-        self.assertIn("inst.install=0", docs)
-        self.assertIn("inst.finish=reboot", docs)
-        self.assertIn("WLAN", docs)
-        self.assertIn("Target disk", docs)
-        self.assertIn("Locale", docs)
-        self.assertIn("Account/password", docs)
-        self.assertIn("ships no user", docs)
-        self.assertIn("Spotify Desktop", docs)
-        self.assertIn("spotifyd", docs)
-        self.assertIn("SOURCE_DATE_EPOCH", docs)
-        self.assertIn("byte-identical", docs)
-        self.assertIn("agama config validate --local", docs)
-        self.assertIn("if=pflash", docs)
-        self.assertIn("ovmf-x86_64-4m-code.bin", docs)
-        self.assertIn("FXROUTE_ISO_USER_PASSWORD", docs)
-        self.assertIn("FXROUTE_ISO_LIVE_PASSWORD", docs)
-        self.assertIn("--providers none", docs)
-        self.assertIn("Settings", docs)
-
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -1,310 +1,115 @@
-# FXRoute Leap 16 Installation ISO
+# FXRoute x86_64 installation ISO (Ubuntu 26.04)
 
-> **Status (1.0-beta14):** this document describes the Leap 16 / Agama
-> builder in `iso/` (`iso/build-leap-16-iso.sh`, `iso/test-leap-16-iso.sh`),
-> which is retained and covered by `scripts/test_install_iso.py`. The x86_64
-> installation ISO published with FXRoute since 1.0-beta10 is **not** built
-> from here: it is the Ubuntu 26.04 ISO produced by
-> `ubuntu/build-ubuntu-iso.sh` (Subiquity/autoinstall, see
-> `ubuntu/README.md`), and no Leap 16 ISO was published for beta10, beta11
-> or beta12. Everything below stays valid for the Leap builder itself.
+The x86_64 installation medium is the official Ubuntu 26.04 Desktop ISO with
+FXRoute added. It boots into a live session, installs a desktop or a headless
+FXRoute appliance, and keeps Ubuntu's signed boot chain. Design notes and the
+build history are in [`ubuntu/README.md`](../ubuntu/README.md).
 
-The ISO builder creates an x86_64 openSUSE Leap 16 installation medium from
-the official offline installer. It adds exactly these FXRoute entries to the
-normal Agama boot menu:
+## Download and write
 
-- `FXRoute Headless`: no graphical packages; FXRoute and its native DSP run as
-  a lingering user service.
-- `FXRoute Desktop`: a KDE Plasma 6 / Wayland appliance with SDDM and
-  automatic login as the account created during installation. Firefox starts
-  the FXRoute UI fullscreen after login; the Plasma shell, panel, and
-  keyboard shortcuts remain available (closing the window returns to the
-  normal desktop).
-- `Try FXRoute`: non-persistent live mode. Boots a prebuilt FXRoute desktop
-  from `/LiveFX/squashfs.img` with a RAM overlay (`rd.live.overlay.overlayfs=1`),
-  `graphical.target`, no Agama (`systemd.mask=agama*`), no `inst.auto`, and no
-  `fxroute-first-boot.service`. Hostname `fxroute-live`, volatile machine-id,
-  Caddy state in RAM only. Live Mode — changes and logins are not saved and
-  will be lost after reboot. Internal ATA/NVMe drives are not auto-mounted
-  (udev `UDISKS_IGNORE`, Agama masked); the install paths are unchanged.
-
-## Installation flow
-
-Each entry preloads its profile with `inst.auto` and then stops for review
-(`inst.install=0`), so Agama shows its normal interactive overview. Only the
-machine-specific decisions that cannot be sensibly preseeded are asked there:
-
-- Network/WLAN: select and configure the connection in Agama. Agama copies
-  the installer network setup to the installed system.
-- Target disk: explicitly select the target disk in Agama's storage section
-  and confirm the destructive installation. The preloaded proposal only
-  describes the default partition layout; it never silently wipes the first
-  SSD. Verify the target before starting the installation and disconnect
-  disks that must not be touched.
-- Locale, keyboard, and timezone: choose them through Agama's normal
-  mechanism. The profiles carry no fixed locale and no `Europe/Berlin`
-  default.
-- Account/password: create the end-user account and its password in Agama
-  (for example the account `fxroute`). The release image ships no user
-  passwords and requires no SSH keys.
-
-After these decisions, press Install in Agama; the installation then runs
-through largely automatically and reboots (`inst.finish=reboot`).
-
-Profile and source files use Agama's device-wide lookup, so the ISO can be
-written to optical media or USB media without assuming `/dev/sr0`.
-
-## Build
-
-Install the host tools first. On openSUSE this is typically:
+Each release lists its ISO in the [release notes](https://github.com/CobbyCode/fxroute/releases)
+(`fxroute-<version>-x86_64-ubuntu26.04.iso` on SourceForge, with a `.sha256`
+file). Compare `sha256sum fxroute-<version>-x86_64-ubuntu26.04.iso` with the
+published checksum, then write the ISO to a USB stick at least as large as the
+ISO:
 
 ```bash
-sudo zypper install git mkisofs mkmedia perl-JSON qemu-x86 squashfs
+sudo dd if=fxroute-<version>-x86_64-ubuntu26.04.iso of=/dev/sdX bs=4M oflag=direct status=progress
 ```
 
-The base media is downloaded and verified against its pinned SHA-512 digest:
+Boot the target PC from the stick in UEFI mode. Ubuntu's shim and signed
+kernel are left untouched, so the ISO needs no MOK enrolment with Secure Boot
+enabled.
 
-`https://download.opensuse.org/distribution/leap/16.0/offline/Leap-16.0-offline-installer-x86_64.install.iso`
+## Boot menu
 
-No credentials are needed to build. The profiles intentionally contain no
-user passwords and no SSH public keys:
+| Entry | What it does |
+| --- | --- |
+| **Try FXRoute Live** (default) | Ubuntu live session that sets up FXRoute in RAM and opens it in a Firefox kiosk. Nothing is written to disk. |
+| **Install FXRoute Desktop** | Installs Ubuntu with GNOME; the installed user is logged in automatically and FXRoute opens in a Firefox kiosk. |
+| **Install FXRoute Headless** | Installs the same base without a desktop; FXRoute is operated from browsers on the LAN, the machine over SSH. |
+
+## Installing
+
+The installer (Subiquity) asks only for the keyboard, the network, and the
+user (name, hostname, password). Configure Wi-Fi here once; the connection is
+carried over to the installed system. Everything else runs automatically:
+
+- **The disk is erased.** Storage uses Ubuntu's automatic LVM layout on the
+  largest disk; there is no partitioning step.
+- Locale `en_US.UTF-8`, keyboard default `us`, `openssh-server` enabled.
+- After the reboot, `fxroute-first-boot.service` unpacks the FXRoute source
+  shipped on the ISO and runs `install.sh` once. This needs an internet
+  connection and takes a while (the native DSP engine is compiled). Its log is
+  `journalctl -u fxroute-first-boot -b`.
+
+**Desktop** logs the installed user in through GDM, starts Firefox in kiosk
+mode with FXRoute, and switches off screen lock, dimming and automatic
+suspend. A **FXRoute** icon on the desktop reopens the kiosk (for example
+after Alt+F4).
+
+**Headless** removes the desktop, GDM and Firefox from the target (the Firefox
+snap during the first boot) and boots to `multi-user.target`. Open FXRoute from another device
+at `http://fxroute-<id>.local:8000` or `http://<host-ip>:8000`; SSH uses the
+password set in the installer.
+
+## Live session
+
+**Try FXRoute Live** installs FXRoute into the RAM session after the network
+and apt are ready, then opens the kiosk. Reaching the FXRoute interface takes
+noticeably longer than on an installed system because the DSP engine is
+compiled in the session; that is expected. If the start fails, a note is left
+on the desktop instead of an empty kiosk. FXRoute shows a **Live Mode**
+banner: changes and logins are lost on reboot.
+
+## Building the ISO yourself
 
 ```bash
-export SOURCE_DATE_EPOCH=0
-./iso/build-leap-16-iso.sh
+ubuntu/build-ubuntu-iso.sh            # direct mode, needs loop devices (usually root)
+ubuntu/build-ubuntu-iso.sh --docker   # same build in a privileged ubuntu:26.04 container
 ```
 
-Use `--base-iso` or `--output` to override individual values. Use
-`--live-squash PATH` to reuse a prebuilt LiveFX image, `--live-disk PATH`
-with `--live-ssh-password` (or `FXROUTE_LIVE_DISK` /
-`FXROUTE_LIVE_CONVERT_PASSWORD`) to convert an installed FXRoute desktop
-disk, and `--no-live` to skip the Try system for dev/test (release ISOs
-always ship it).
-`iso/scripts/build-live-from-installed.sh` builds the flat
-`/LiveFX/squashfs.img` (squash root = live rootfs with `/proc`, no nested
-`LiveOS/rootfs.img`) from a working Agama desktop installation: the
-golden disk comes from the proven `desktop` QEMU install automation,
-its filesystem is extracted, only true live semantics are applied
-(volatile identity, no credentials, neutral fstab, ISO-kernel modules
-from the base ISO, live marker, internal-disk protection), and the
-result is packed with pinned squash metadata. Everything else
-(packages, PipeWire, desktop, helpers, DSP) comes from the installed
-system untouched; `install.sh` is not modified.
-The bootable live filesystem uses a minimum epoch of `86400` (1970-01-02),
-even with `SOURCE_DATE_EPOCH=0`. SDDM ignores epoch-zero configuration,
-including Leap's Xsession path, and sysusers interprets shadow last-change
-day zero as requiring a password change. The ISO metadata still uses the
-requested epoch. SquashFS is packed inside the build container so system
-owners, service-account directories and setuid bits survive export; only
-the completed image file is assigned to the host user. Container identity
-markers and temporary runtime files are excluded.
-The live root also ships the base ISO's exact `kernel-default` and
-`kernel-default-extra` modules (`--kernel-rpm`, repeatable, extracted from
-the base ISO during the ISO build): the container image carries none and
-repo kernels no longer match the booted ISO kernel, so without them
-pointer/input drivers (usbhid, i2c-hid) and current WLAN drivers
-(iwlwifi, ath11k/ath12k, mt7921e, rtw89) could never load after
-switch-root. WLAN firmware for the usual notebook adapters
-(`kernel-firmware-iwlwifi/-ath10k/-ath11k/-ath12k/-atheros/-brcm/
--mediatek/-realtek/-marvell`) plus `wireless-regdb` comes from the repos.
-The live user is a member of `audio` and `systemd-journal`: `install.sh`
-grants ALSA and journal access, and the logind seat ACLs already cover the
-DRM (`video`) and input devices for the active session, so those groups stay
-empty. `NetworkManager.service` is enabled explicitly: the
-installer enables it on installed systems, package presets do not, so
-without this no interface would come up and Plasma would list no WLANs. The FXRoute/Spotify desktop links use the same
-`fxroute-appliance-session-init.sh` helper as the installed desktop,
-invoked first-login-only from the live kiosk launcher.
-The source archive is created from `git ls-files`, with normalized tar metadata, and is
-copied to the installed system by Agama before the first boot.
-`SOURCE_DATE_EPOCH` defaults to `0`; the builder uses reproducible `mkisofs` and
-`isohybrid` shims, normalizes Rock Ridge change times and EFI volume serials,
-and preserves normalized staging timestamps so repeated builds with the same
-inputs and toolchain are byte-identical.
+| Option / variable | Meaning |
+| --- | --- |
+| `--base-iso PATH`, `FXROUTE_UBUNTU_BASE_ISO` | Ubuntu base ISO; by default `ubuntu-26.04.1-desktop-amd64.iso` is downloaded to `~/.cache/fxroute/` and checked against its pinned SHA-256 |
+| `--output PATH`, `FXROUTE_UBUNTU_ISO_OUTPUT` | result, default `dist/fxroute-ubuntu-26.04-x86_64.iso` |
+| `--docker` | run `livefs-edit` in a container where loop devices are missing (rootless desktop) |
+| `--test-seed` | stage the fully automatic QEMU test seed instead of the product seeds |
+| `--keep-work` | keep the temporary staging directory |
 
-For schema validation, install `agama-cli` and `agama-common`. Build with
-`--keep-work`, then validate the rendered profiles from the retained staging
-directory:
+Both modes need `git`, `tar`, `sha256sum`, `curl` and `python3` on the host.
+Direct mode also needs `xorriso` and `livefs-edit`
+(`pipx install git+https://github.com/mwhudson/livefs-editor.git`); `--docker`
+needs Docker and installs both inside the container. The build customizes the base ISO with
+livefs-editor: it adds the FXRoute dependencies to the live squashfs without
+Recommends, copies the payload, writes the two installer seeds, replaces the
+GRUB menu with the three entries above and refreshes `md5sum.txt`.
+
+The payload `source.tar` holds every tracked file of the checkout **as it is
+in the working tree**, and `build-commit` records `HEAD`. Build a release ISO
+from a clean checkout of the release commit.
+
+## Testing in QEMU
 
 ```bash
-agama config validate --local /path/to/work/stage/fxroute/profiles/headless.jsonnet
-agama config validate --local /path/to/work/stage/fxroute/profiles/desktop.jsonnet
+ubuntu/build-ubuntu-iso.sh --test-seed --output dist/fxroute-ubuntu-26.04-test.iso
+ubuntu/test-ubuntu-iso.sh all dist/fxroute-ubuntu-26.04-test.iso
 ```
 
-A profile without credentials still validates: Agama only reports the missing
-authentication as an installation issue in its overview until the account is
-created interactively.
-
-## First Boot
-
-Both profiles install a small target-side systemd service. Agama copies the
-first-boot script and service unit as files and enables the unit with a
-chrooted post-install script; this avoids requiring an extra `agama-scripts`
-RPM that is not present on the offline medium. The service extracts the source
-archive and invokes the existing `install.sh`; it does not reimplement FXRoute
-installation. Both profiles pass `--providers none`, so Spotify Desktop and
-`spotifyd` remain independent installer selections. They can be installed
-later with the existing `install.sh --spotify-desktop` or `install.sh
---spotifyd` options. Provider credentials are never asked in the x86
-installer; they are managed later in the FXRoute Settings.
-
-The first-boot service uses the account created in Agama: it prefers the
-`fxroute` account and otherwise uses the single regular user on the system.
-It then installs FXRoute with `--with-lan-name` and `--with-caddy` under an
-automatically derived unique device name (`fxroute-<machine-id>`), so Caddy
-and HTTPS are set up while plain HTTP stays reachable.
-
-`sshd` runs by default with the appliance SSH policy: the account created in
-Agama can log in over the LAN with its password, SSH keys may be added later,
-and root login stays disabled. The image never switches to key-only SSH and
-ships no preinstalled keys; disable `sshd` after installation if remote
-administration is not required.
-
-The Desktop profile gets Firefox (`MozillaFirefox`) from the Leap
-repositories; no third-party browser repository or signing key is added and
-Chrome is not part of the image. Firefox is the default browser, opens the
-FXRoute control surface (`http://127.0.0.1:8000/`) as its fixed start
-page, and the desktop shows an FXRoute link plus a link to the official
-Spotify download page (`https://www.spotify.com/download/linux/`).
-
-The Desktop profile also ships these appliance defaults (no FXRoute,
-Provider, or DSP behavior is changed):
-
-- Automatic login without a password prompt via SDDM (`plasmawayland`).
-- The keyboard layout selected in Agama is adopted by Plasma (`kxkbrc`).
-- Automatic suspend/sleep/hibernate and screen locking are off by default
-  (systemd-logind lid/idle drop-in plus PowerDevil and KScreenLocker
-  config); the explicit FXRoute suspend/shutdown menu still works.
-- "Welcome to openSUSE Leap" first-run and KWallet/keyring onboarding are
-  suppressed. KWallet is disabled; the Spotify Desktop client keeps its
-  credentials in its own profile and is unaffected.
-- An FXRoute wallpaper in the existing brand style is the default desktop
-  background (applied on the first graphical login).
-
-Leap 16's current Agama schema does not accept the older `user.autologin`
-profile property. The first-boot script therefore configures the supported
-SDDM and openSUSE display-manager settings after the user exists, including
-the `plasmawayland` session. It force-updates the `display-manager.service`
-alias so an existing legacy display-manager selection cannot win. A failed
-first-boot attempt remains recorded for diagnostics but is retried on the next
-boot. An in-progress marker also makes an interrupted first boot recoverable
-without leaving a partial install target behind.
-
-## Updates
-
-ISO installs do not ship a `.git` directory, so the first-boot setup
-re-creates one after `install.sh` finishes: it inits a repo in
-`~/fxroute`, adds the public GitHub `origin`, fetches `main`, and checks
-out the commit the ISO was built from (recorded on the media as
-`/opt/fxroute-iso-build-commit`). This makes the normal git-based update
-flow work unchanged:
+The test runs three phases, also separately (`live`, `install`, `appliance`):
+the live session must serve `/api/status`, the installer entry must complete
+unattended with the test seed, and the installed disk must boot without the
+ISO into a running `fxroute.service` (desktop: autologin and kiosk).
+`FXROUTE_UBUNTU_TEST_PROFILE=headless` tests the headless entry instead of the
+desktop one. It needs `qemu-system-x86_64` with KVM, OVMF, `curl` and `ssh`.
+The unit tests beside the scripts cover the seeds, the desktop defaults, the
+headless target preparation, the live autostart and the test harness; they are
+not part of `scripts/run_tests.sh`:
 
 ```bash
-cd ~/fxroute && scripts/update_fxroute.sh
+python3 -m unittest discover -s ubuntu -p 'test_*.py'
 ```
 
-The fetch is best effort with three bounded attempts; if GitHub is
-unreachable during first boot, FXRoute still installs and runs, and the
-checkout can be prepared later with the same `git init`/`fetch`/`checkout`
-steps. When the ISO was built from a commit that is not on GitHub
-(development or test builds, `FXROUTE_ISO_ALLOW_UNPUSHED=1`), the first
-boot never overwrites the installed tree with an older published
-checkout; it records the installed state as a local commit on top of
-`origin/main` instead, and the builder refuses unpushed sources for
-normal (non-opt-in) builds. User state is not affected by updates:
-presets, measurements, provider credentials and runtime state live in
-`~/.config/fxroute` and `~/.env`-style configuration stays in place
-(`.env`, `.venv`, `media/cache`, `native_dsp/build`, and `backups/` are
-gitignored).
-
-## QEMU Verification
-
-The runner creates fresh disks for each profile, boots the ISO, drives the
-interactive Agama decisions through the installer's own Agama CLI
-(account/password, locale/keyboard/timezone, explicit target-disk
-selection, install start), waits for `/api/status`, and verifies the
-installed packages, user service, DSP binary, default target, SDDM
-autologin configuration, Firefox fullscreen autostart, and the appliance
-defaults. SSH into the installed system uses the account password created
-in Agama:
-
-```bash
-FXROUTE_ISO_LIVE_PASSWORD="..." \
-  FXROUTE_ISO_USER_PASSWORD="..." \
-  FXROUTE_ISO_LOCALE="de_DE.UTF-8" \
-  FXROUTE_ISO_KEYMAP="de" \
-  FXROUTE_ISO_TIMEZONE="Europe/Vienna" \
-  ./iso/test-leap-16-iso.sh all dist/fxroute-leap-16-x86_64.iso
-```
-
-`FXROUTE_ISO_LIVE_PASSWORD` is the installer live password (append
-`live.password=...` to the boot entry for automated runs, or read the
-generated password from the installer console for manual runs).
-`FXROUTE_ISO_USER_PASSWORD` becomes the password of the account created in
-Agama. The runner additionally forwards the Agama web ports so the same
-decisions can be made manually in a browser via `https://agama.local` or
-the forwarded ports.
-
-Try verification boots `Try FXRoute` without Agama and checks live:true,
-`fxroute_dsp_sink`, RAM overlay, reboot volatility (home probe lost), and
-that internal disks stay unmounted:
-
-```bash
-FXROUTE_ISO_TRY_PASSWORD="..." \
-  ./iso/test-leap-16-iso.sh try dist/fxroute-leap-16-x86_64.iso
-```
-
-`FXROUTE_ISO_TRY_PASSWORD` is passed as `fxroute.live-password=...` on the
-Try kernel cmdline to enable live SSH for the test; release boots omit it
-and keep `sshd` disabled with a locked live password.
-
-In the running live desktop the notice is a compact pill above the
-playback footer (mirroring the web-demo banner, no tour): it can be
-closed immediately and hides itself after three minutes.
-
-For the live desktop-start packaging regression, inspect the actual image:
-
-```bash
-FXROUTE_TEST_LIVE_SQUASH=/path/to/squashfs.img \
-  python3 -m unittest scripts.test_live_root_image
-```
-
-This checks system/SDDM ownership, sudo's setuid bit, nonzero SDDM config
-timestamps, the vendor session wrapper, SUSE's sysconfig autologin override,
-kernel pointer-driver modules (usbhid, i2c-hid) and WLAN drivers
-(iwlwifi, ath11k, mt7921e, rtw89) with modules.dep, WLAN firmware
-(iwlwifi/ath11k/mediatek/rtw89/regdb), the live desktop links
-(FXRoute.desktop, Spotify Download.desktop) with the shared session-init
-helper, the live user's `audio` and `systemd-journal` membership (logind seat
-ACLs cover the `video`/`input` devices), and removal of the Docker
-identity marker. The reproduced failure was a
-successful login followed by `Session started false`: SDDM fell back to
-the absent `/etc/X11/xdm/Xsession` instead of the packaged
-`/usr/etc/X11/xdm/Xsession`. Changing only the config mtime from zero to a
-positive value restored the vendor configuration. Hardware acceptance is
-separate from these artifact and targeted VM checks.
-
-Set `FXROUTE_KEEP_ISO_TEST=1` to retain serial logs and guest disks after a
-test. The desktop check reboots the guest before validating SDDM, Wayland,
-Firefox fullscreen autostart, and the appliance defaults. QEMU emulates
-Ethernet networking only; the WLAN selection itself is
-covered by the Agama contract checks (no fixed network profile, interactive
-network section), while real WLAN hardware must be checked separately.
-
-The runner uses the host's default BIOS firmware. For a separate UEFI firmware
-sanity check, use PFLASH code and a disposable writable variable store (do not
-pass the OVMF code image with `-bios`):
-
-```bash
-uefi_work="$(mktemp -d)"
-cp /usr/share/qemu/ovmf-x86_64-4m-vars.bin "$uefi_work/vars.fd"
-qemu-system-x86_64 \
-  -drive if=pflash,format=raw,readonly=on,file=/usr/share/qemu/ovmf-x86_64-4m-code.bin \
-  -drive if=pflash,format=raw,file="$uefi_work/vars.fd" \
-  -cdrom dist/fxroute-leap-16-x86_64.iso \
-  -boot once=d
-rm -rf -- "$uefi_work"
-```
-
-Confirm that UEFI reaches the GRUB menu and that `FXRoute Desktop`,
-`FXRoute Headless`, and `Try FXRoute` entries are present before selecting one.
+Checks that need real hardware (Secure Boot, Wi-Fi carried over from the
+installer, a multichannel USB interface) are listed in
+[`ubuntu/HARDWARE-TEST-PLAN.md`](../ubuntu/HARDWARE-TEST-PLAN.md).

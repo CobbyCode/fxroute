@@ -1,51 +1,51 @@
-# FXRoute Ubuntu 26.04 — Phase-2-Hardware-Testplan
+# FXRoute Ubuntu 26.04 — hardware test plan
 
-Ziel: den in QEMU voll abgenommenen Port (Produkt-ISO
-`dist/fxroute-ubuntu-26.04-product.iso`, Menü: `Try FXRoute Live` /
-`Install FXRoute Desktop` / `Install FXRoute Headless`) auf echter Hardware
-zu verifizieren.
-Die vier Blöcke bauen aufeinander auf; Abbruch bei einem Block bedeutet Stopp und
-Log-Mitnahme. Alle softwareseitigen Checks übernimmt der Agent per SSH nach
-Absprache; hier stehen die manuellen Schritte + Erwartungen.
+Goal: verify the ISO that passed the full QEMU acceptance on real hardware,
+using the product ISO (the published release ISO, or a build without
+`--test-seed`; menu: `Try FXRoute Live` / `Install FXRoute Desktop` /
+`Install FXRoute Headless`).
+The four blocks build on each other; a failing block means stop and keep the
+logs. The software checks can be run over SSH; this plan lists the manual steps
+and the expectations.
 
-Vorbereitung einmalig:
+One-time preparation:
 
-* Ziel-PC: UEFI-Modus (kein CSM), Secure Boot im Setup **aktiviert** lassen.
-* USB-Stick mit dem Produkt-ISO beschrieben (z. B.
-  `sudo dd if=fxroute-ubuntu-26.04-product.iso of=/dev/sdX bs=4M oflag=direct status=progress`; mindestens so groß wie das ISO).
-* Ethernet optional verbunden (nicht erforderlich — WLAN wird im Installer
-  konfiguriert), Scarlett per USB angeschlossen, Lautsprecher/Monitor am
-  Hauptausgang.
-* Nach dem ersten Boot berichtet der Test den Gerätenamen `fxroute-XXXXXX`
-  (maschine-id-Suffix); SSH-Passwort = Installer-Passwort des Benutzers.
+* Target PC: UEFI mode (no CSM), leave Secure Boot **enabled** in the setup.
+* USB stick written with the product ISO (for example
+  `sudo dd if=fxroute-<version>-x86_64-ubuntu26.04.iso of=/dev/sdX bs=4M oflag=direct status=progress`; at least as large as the ISO).
+* Ethernet optional (not required — Wi-Fi is configured in the installer),
+  Scarlett connected over USB, speakers/monitor on the main output.
+* After the first boot the device name is `fxroute-XXXXXX` (machine-id
+  suffix); the SSH password is the user's installer password.
 
-## Block A — Secure Boot (nur signierte Ubuntu-Kette)
+## Block A — Secure Boot (signed Ubuntu chain only)
 
-1. ISO/Stick im UEFI-Boot-Menü wählen; es muss der Shim lädt (kein MOK-
-   Enroll-Screen, keine "Security Violation").
-2. GRUB → `Try FXRoute Live` startet normal (Secure Boot an).
-3. GRUB → `Install FXRoute Desktop` (oder Headless) → Installation durchlaufen lassen.
-4. Installiertes System bootet mit Secure Boot an (kein MOK, kein
+1. Select the ISO/stick in the UEFI boot menu; the shim must load (no MOK
+   enrolment screen, no "Security Violation").
+2. GRUB → `Try FXRoute Live` starts normally (Secure Boot on).
+3. GRUB → `Install FXRoute Desktop` (or Headless) → let the installation run.
+4. The installed system boots with Secure Boot on (no MOK, no
    "Verification failed").
 
-Checks (Host nach Erstboot, softwareseitig):
+Checks (on the host after the first boot):
 
 ```bash
-mokutil --sb-state                 # erwartet: SecureBoot enabled
-sudo efibootmgr -v                 # ubuntu + fxroute-Einträge vorhanden
-bootctl status 2>/dev/null | head  # Secure Boot: yes (falls systemd-efi)
+mokutil --sb-state                 # expected: SecureBoot enabled
+sudo efibootmgr -v                 # ubuntu + fxroute entries present
+bootctl status 2>/dev/null | head  # Secure Boot: yes (if systemd-efi)
 ```
 
-Bestanden wenn: alle drei Schritte ohne Secure-Boot-Fehler; `mokutil`
-meldet "SecureBoot enabled"; kein eigener Kernel/MOK nötig war.
+Passed when: all three steps run without Secure Boot errors; `mokutil`
+reports "SecureBoot enabled"; no own kernel/MOK was needed.
 
-## Block B — WLAN: einmal im Installer, danach automatisch
+## Block B — Wi-Fi: once in the installer, automatic afterwards
 
-1. Im Installer (`Install FXRoute Desktop`/`Headless`, Subiquity-Netzwerkseite) das Ziel-WLAN
-   auswählen, Passwort eingeben, **weiter** (kein anderer Netzwerkschritt).
-2. Installation abschließen, Stick entfernen, Neustart lassen.
+1. In the installer (`Install FXRoute Desktop`/`Headless`, Subiquity network
+   page) select the target Wi-Fi, enter the password, **continue** (no other
+   network step).
+2. Finish the installation, remove the stick, let it reboot.
 
-Software-Checks nach Erstboot (softwareseitig, kein Zweitsetup nötig):
+Checks after the first boot (no second setup):
 
 ```bash
 nmcli -f GENERAL,IP4 dev show wlan0   # state: connected (activated)
@@ -54,74 +54,74 @@ nmcli -g 802-11-wireless.ssid connection show "$(nmcli -t -f NAME,TYPE connectio
 ip -4 addr show wlan0 | grep inet
 ```
 
-Bestanden wenn: nach dem Erstboot ohne jede Nutzeraktion eine
-aktive WLAN-Verbindung mit IPv4-Adresse besteht (Netplan/Curtin hat die im
-Installer gesetzte Verbindung übernommen).
+Passed when: after the first boot, without any user action, an active Wi-Fi
+connection with an IPv4 address exists (netplan/Curtin carried over the
+connection set in the installer).
 
-## Block C — First-Boot / Autologin / Kiosk
+## Block C — first boot / autologin / kiosk
 
-1. Nach dem Installer-Reboot: kein Login-Screen; GDM meldet den
-   Installer-Benutzer automatisch an (GNOME-Desktop erscheint).
-2. Kurz danach startet Firefox **vollbild (Kiosk)** mit FXRoute.
+1. After the installer reboot: no login screen; GDM logs the installer user
+   in automatically (the GNOME desktop appears).
+2. Shortly afterwards Firefox starts **full screen (kiosk)** with FXRoute.
 
-Software-Checks (softwareseitig):
+Checks:
 
 ```bash
 test -f /var/lib/fxroute-iso/install-complete && echo marker-ok
 systemctl --user is-active fxroute.service
-loginctl list-sessions --no-legend        # seat0-Session des Benutzers
+loginctl list-sessions --no-legend        # the user's seat0 session
 pgrep -af "firefox --kiosk"
 curl -fsS http://127.0.0.1:8000/api/status | head -c 200
 ```
 
-Zusätzlich manuell: Desktop-Link „FXRoute" existiert, Firefox zeigt die
-FXRoute-Oberfläche; nach 5 Minuten Leerlauf **kein** Sperren/Dimmen.
+Also by hand: the desktop link "FXRoute" exists, Firefox shows the FXRoute
+interface; after 5 minutes idle there is **no** lock or dimming.
 
-## Block D — Scarlett (18→14→10→18) inkl. Playback/VU/AUX-Links
+## Block D — Scarlett (18→14→10→18) including playback/VU/AUX links
 
-Vorbereitung: Scarlett (18i20 o. ä.) via USB verbunden; `pactl list cards
-short` bzw. `pactl list cards | grep -A2 scarlett` zeigt das Gerät mit
-Profilen. FXRoute wurde mit `--providers none` installiert → DSP-Kette über
+Preparation: Scarlett (18i20 or similar) connected over USB; `pactl list cards
+short` or `pactl list cards | grep -A2 scarlett` shows the device with its
+profiles. FXRoute was installed with `--providers none` → DSP chain through
 PipeWire.
 
-Kurzscript (softwareseitig, ein Befehl pro Schritt, alle Ausgaben fürs Log):
+Short script (one command per step, all output for the log):
 
 ```bash
-pactl list cards short                        # Scarlett-Karte sichtbar
+pactl list cards short                        # Scarlett card visible
 pactl set-card-profile <scarlett-card> output:analogue-output-surround-71 ...
 ```
 
-Szenario (jeder Schritt manuell am Gerät + softwareseitiger Log-Zweig):
+Scenario (each step by hand on the device plus a logged software check):
 
-1. **18 Ein/Ausgänge aktiv** (Profil analog, alle Kanäle sichtbar).
-2. **→ 14 Kanäle:** Kanalzahl im Scarlett-Hardware-Panel oder FXRoute-UI
-   reduzieren; `pactl list sinks` zeigt weniger Kanäle; laufendes Playback
-   überlebt den Wechsel oder startet sauber neu.
-3. **→ 10 Kanäle:** dito; prüfen, dass AUX/Routing-Links in der FXRoute-UI
-   nicht hängen bleiben (AUX-Link-Status pro Kanal prüfen).
-4. **→ 18 zurück:** alle Kanäle wieder da; Playback/VU zeigt wieder Werte.
+1. **18 inputs/outputs active** (analog profile, all channels visible).
+2. **→ 14 channels:** reduce the channel count in the Scarlett hardware panel
+   or the FXRoute UI; `pactl list sinks` shows fewer channels; running playback
+   survives the change or restarts cleanly.
+3. **→ 10 channels:** likewise; check that AUX/routing links in the FXRoute UI
+   do not get stuck (check the AUX link state per channel).
+4. **→ back to 18:** all channels are back; playback/VU show values again.
 
-Während 2–4 fortlaufend prüfen:
+Check continuously during 2–4:
 
-* **Playback:** Testton/Stream läuft ohne Dropouts; Samplingrate laut
-  `pactl list sinks | grep -E "Sample|Channel"` wie erwartet.
-* **VU/Peak:** FXRoute `/api/status` → `output_peak_warning.detected`
-  bei lautem Signal `true`; `vu_db_l/r` bewegen sich.
-* **AUX-Links:** AUX-Ausgänge folgen dem Main-Routing (Links in der UI
-  aktiv, keine verwaisten Links nach Kanalzahlwechsel).
-* **USB-Log:** `sudo dmesg -w | grep -iE "usb|scarlett"` zeigt sauberes
-  Enumerate/Re-Enumerate ohne `cannot set freq`-Fehler;
-  `journalctl -b -u fxroute` ohne DSP-Fehler.
+* **Playback:** test tone/stream runs without dropouts; sample rate per
+  `pactl list sinks | grep -E "Sample|Channel"` as expected.
+* **VU/peak:** FXRoute `/api/status` → `output_peak_warning.detected` is `true`
+  with a loud signal; `vu_db_l/r` move.
+* **AUX links:** AUX outputs follow the main routing (links active in the UI,
+  no orphaned links after a channel-count change).
+* **USB log:** `sudo dmesg -w | grep -iE "usb|scarlett"` shows clean
+  enumeration/re-enumeration without `cannot set freq` errors;
+  `journalctl -b -u fxroute` without DSP errors.
 
-Bestanden wenn: alle Kanalzahlwechsel ohne Neustart überlebt werden,
-Playback durchgehend hörbar/lauffähig, VU-Werte live, AUX-Links intakt,
-USB-Log ohne Fehler.
+Passed when: every channel-count change is survived without a restart,
+playback stays audible and running, VU values are live, AUX links are intact,
+and the USB log shows no errors.
 
-## Abbruchkriterien / Nacharbeit
+## Stop criteria / follow-up
 
-* A schlägt fehl → Secure Boot mit Shim-Fehler: Boot-Log sichern, Issue.
-* B schlägt fehl: `networkctl status wlan0`, `/etc/netplan/*.yaml` sichern.
-* C schlägt fehl: `journalctl -u fxroute-first-boot -b` + Desktop-Datei
-  `/home/<user>/Desktop/FXRoute-NOT-STARTED.txt` prüfen.
-* D schlägt fehl: `dmesg`-Auszug + `pactl list cards` sichern; Scarlett-
-  Profil-Wechsel in Phase 2 ggf. über `alsa-ucm-conf` nachziehen.
+* A fails → Secure Boot with a shim error: save the boot log, open an issue.
+* B fails: save `networkctl status wlan0` and `/etc/netplan/*.yaml`.
+* C fails: check `journalctl -u fxroute-first-boot -b` and the desktop file
+  `/home/<user>/Desktop/FXRoute-NOT-STARTED.txt`.
+* D fails: save a `dmesg` excerpt and `pactl list cards`; if needed, handle the
+  Scarlett profile change through `alsa-ucm-conf`.

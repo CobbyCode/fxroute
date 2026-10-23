@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
-# QEMU-Abnahme fuer das FXRoute-Ubuntu-ISO (Phase 1, Draft).
-# Ablauf: Live-Boot (Try -> FXRoute per HTTP) -> Neuinstallation per
-# "Install FXRoute" mit Test-Seed -> Appliance-Boot (Autologin/Kiosk/FXRoute).
+# QEMU acceptance test for the FXRoute Ubuntu ISO.
+# Flow: live boot (Try -> FXRoute over HTTP) -> fresh install through an
+# "Install FXRoute" entry with the test seed -> appliance boot
+# (autologin/kiosk/FXRoute).
 #
 # Usage: ubuntu/test-ubuntu-iso.sh [live|install|appliance|all] [ISO]
 # appliance reuses install.qcow2 and ovmf-vars.fd; it does not need an ISO.
-# Benoetigt: qemu-system-x86_64 (KVM), OVMF, ovmf-vars-Kopie, curl, ssh.
-# Like the Leap tester, this script is calibrated on real runs; timings below
-# are start values and get adjusted once the first manual boot is measured.
+# Requires: qemu-system-x86_64 (KVM), OVMF, a copy of the OVMF vars, curl, ssh.
+# This script is calibrated on real runs; timings below are start values and
+# get adjusted once the first manual boot is measured.
 set -Eeuo pipefail
 
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -38,9 +39,9 @@ wait_for_http() {
   return 1
 }
 
-# GRUB-Eintraege (verifiziert am ISO): 0=Try FXRoute Live,
-# 1=Install FXRoute, 2=Ubuntu (safe graphics) (+EFI-Eintraege).
-# QEMU-Monitor per Python-Stdlib (kein socat noetig).
+# GRUB entries (add_install_entry.py writes exactly these): 0=Try FXRoute Live,
+# 1=Install FXRoute Desktop, 2=Install FXRoute Headless.
+# QEMU monitor through the Python stdlib (no socat needed).
 qemu_monitor() {
   python3 - "$1" "$2" <<'PY'
 import socket, sys
@@ -269,7 +270,7 @@ phase_live() {
 
 phase_install() {
   # GRUB order: 0=Try FXRoute Live, 1=Install FXRoute Desktop,
-  # 2=Install FXRoute Headless (FXROUTE_UBUNTU_TEST_GRUB selects the
+  # 2=Install FXRoute Headless (FXROUTE_UBUNTU_TEST_PROFILE selects the
   # profile under test; default = desktop).
   local profile="${FXROUTE_UBUNTU_TEST_PROFILE:-desktop}"
   local grub_downs=1

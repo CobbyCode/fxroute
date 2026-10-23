@@ -1,9 +1,9 @@
 #cloud-config
 # FXRoute Ubuntu 26.04 autoinstall (Subiquity, Desktop-ISO).
-# Gemeinsame Basis fuer generate-seeds.py: Keyboard, Identity und Netzwerk
-# (WLAN) bleiben interaktiv. Locale/Keymap sind englische Startwerte.
-# Netzwerk: kein `network:`-Schluessel -> Subiquity/Curtin uebernimmt die im
-# Installer konfigurierte Verbindung (inkl. WLAN) per Netplan aufs Ziel.
+# Shared base for generate-seeds.py: keyboard, identity and network (Wi-Fi)
+# stay interactive. Locale/keymap are English starting values.
+# Network: no `network:` key -> Subiquity/Curtin carries the connection
+# configured in the installer (including Wi-Fi) to the target via netplan.
 autoinstall:
   version: 1
   locale: en_US.UTF-8
@@ -12,8 +12,8 @@ autoinstall:
   source:
     id: ubuntu-desktop-minimal
   interactive-sections:
-    # Ubuntu-typische Abfrage: Tastatur, WLAN einmalig, Benutzer hier.
-    # Der Rest (Locale, Storage, Pakete) laeuft automatisch.
+    # The usual Ubuntu questions: keyboard, Wi-Fi once, the user here.
+    # Everything else (locale, storage, packages) runs automatically.
     - keyboard
     - network
     - identity
@@ -28,8 +28,8 @@ autoinstall:
     - curl
     - ca-certificates
   late-commands:
-    # FXRoute-Payload vom Installationsmedium uebernehmen. Einfache
-    # Anfuehrung nur aussen (Subiquity verschluckt geschachteltes Quoting).
+    # Copy the FXRoute payload from the installation medium. Single quotes
+    # on the outside only (Subiquity swallows nested quoting).
     - 'cp -r /cdrom/fxroute-iso /target/opt/fxroute-iso'
     - 'cp /target/opt/fxroute-iso/scripts/first-boot-install-ubuntu.sh /target/usr/local/libexec/fxroute-first-boot-install.sh'
     - 'chmod 755 /target/usr/local/libexec/fxroute-first-boot-install.sh'

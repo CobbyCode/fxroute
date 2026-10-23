@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # Build a bootable Ubuntu 26.04 Desktop ISO with the FXRoute payload.
-# Standard-Ubuntu-Weg: offizielles Desktop-ISO + livefs-editor. Die
-# Secure-Boot-Kette (Shim/signierter Kernel) bleibt unangetastet; der normale
-# "Try FXRoute Live"-Eintrag (Live-Session mit FXRoute-Autostart) bleibt Default. Daneben:
-# "Install FXRoute Desktop" / "Install FXRoute Headless" mit eigenen Seeds.
+# Standard Ubuntu path: official Desktop ISO + livefs-editor. The Secure Boot
+# chain (shim/signed kernel) stays untouched; the "Try FXRoute Live" entry
+# (live session with FXRoute autostart) stays the default, next to
+# "Install FXRoute Desktop" / "Install FXRoute Headless" with their own seeds.
 #
-# livefs-edit braucht ein Loop-Device: wo das fehlt (rootless Desktop),
-# laeuft derselbe Bau per --docker in einem privilegierten
-# ubuntu:26.04-Container (gleiches Werkzeug, gleiche Aktionen).
+# livefs-edit needs a loop device: where that is missing (rootless desktop),
+# --docker runs the same build in a privileged ubuntu:26.04 container
+# (same tool, same actions).
 set -Eeuo pipefail
 
 PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$HOME/.local/bin"

@@ -88,6 +88,7 @@ Supported package managers are apt, dnf, zypper, and pacman. Streaming providers
 
 - [MANUAL.md](MANUAL.md) — the user manual: sources, output modes and routing, crossover, subwoofers, Surround, the measurement assistant, and the settings
 - [docs/INSTALLER.md](docs/INSTALLER.md) — installer, providers, and uninstall details
+- [docs/INSTALL-ISO.md](docs/INSTALL-ISO.md) — the x86_64 Ubuntu 26.04 ISO: install, live session, building it yourself
 - [docs/INSTALL-ARMBIAN.md](docs/INSTALL-ARMBIAN.md) — building the ARM64 board images yourself
 - [docs/usb-audio-gadget.md](docs/usb-audio-gadget.md) — USB audio input (UAC2) requirements and setup
 - Technical background: [Surround path](docs/surround.md) · [playback SRC](docs/playback-src.md) · [HDMI profiles](docs/hdmi-profiles.md) · [AV Sync accounting](docs/av-sync.md) · [input auto-select](docs/input-auto-select.md)
