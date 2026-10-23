@@ -430,6 +430,14 @@ class _RuntimeSourceMixin:
     async def prepare_target_source(self, request: TransitionRequest) -> None:
         if request.graph_only:
             return
+        programme_released = False
+        runtime = self._dsp_runtime
+        release_programme = getattr(runtime, 'release_programme_input', None)
+        if request.operation != 'measurement-entry' and callable(release_programme):
+            jobs_active = getattr(self._deps, 'measurement_has_active_jobs', None)
+            if runtime.snapshot().get('programme_input_suspended') and callable(jobs_active) and jobs_active():
+                raise RuntimeError('Measurement job is active; programme ingress is locked')
+            programme_released = release_programme()
         if source_policy.is_external_source(request.source):
             runtime = self._dsp_runtime
             if runtime is not None:
@@ -454,7 +462,7 @@ class _RuntimeSourceMixin:
                         await self._deps.drain_worker(stop_playback)
                 return
             await self._deps.drain_worker(self._player.set_pause, True)
-            if channels_changed and not await self._deps.ensure_mpv_to_dsp_links():
+            if (channels_changed or programme_released) and not await self._deps.ensure_mpv_to_dsp_links():
                 raise RuntimeError("MPV channel-mode ingress was not confirmed")
             return
 

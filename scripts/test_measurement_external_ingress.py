@@ -299,6 +299,7 @@ class MeasurementIngressTests(unittest.IsolatedAsyncioTestCase):
             spotify_prearm_sample_rate_hz=48000,
             get_session=lambda: self.fixture.session,
             get_store=lambda: None,
+            get_dsp_runtime=lambda: self.fixture.native,
         )
 
         async def measure():

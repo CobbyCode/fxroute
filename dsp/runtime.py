@@ -375,6 +375,7 @@ class DSPRuntime:
         self._lock = asyncio.Lock()
         self._measurement_scope_lock = asyncio.Lock()
         self._measurement_active = False
+        self._programme_input_suspended = False
         self._control_lock = asyncio.Lock()
         # Serializes the whole ownership decision (state read, validation,
         # engine command with its acknowledgement, state write) across the
@@ -433,7 +434,8 @@ class DSPRuntime:
         return value
 
     def _latency_ingress_owner(self) -> tuple:
-        return self._surround_input, self._mapped_ingress, self._measurement_active
+        return (self._surround_input, self._mapped_ingress, self._measurement_active,
+                self._programme_input_suspended)
 
     def _latency_owner(self) -> tuple:
         return self._process, self._config, self._latency_ingress_owner(), self.sync_in_progress
@@ -869,6 +871,7 @@ class DSPRuntime:
                 "av_sync": copy.deepcopy(self._latency_snapshot),
                  "measurement_latency": copy.deepcopy(self._measurement_latency_snapshot),
                  "measurement_active": self._measurement_active,
+                 "programme_input_suspended": self._programme_input_suspended,
                 "stderr_tail": self.stderr_tail()[:2048]}
 
     async def set_exact_sub_mute(self, enabled: bool, *, mask: int | None = None) -> bool:
@@ -1700,10 +1703,39 @@ class DSPRuntime:
         stereo sink must not feed inputs 1/2 alongside the direct source ports.
         Capture and STDIN mappings retain the measurement stereo tap.
         """
-        self._mapped_ingress = tuple((str(source), str(target)) for source, target in edges)
+        mapped = tuple((str(source), str(target)) for source, target in edges)
+        if self._programme_input_suspended and any(source.startswith('mpv:output_') for source, _ in mapped):
+            raise RuntimeError('Programme ingress is owned by the measurement session')
+        self._mapped_ingress = mapped
         if self._engine_running():
             async with self._lock:
                 await self._reconcile_ingress_links(strict_mapped=True)
+
+    async def suspend_programme_input(self) -> None:
+        """Give the measurement session the stereo tap, not paused MPV links."""
+        async with self._lock:
+            previous = self._mapped_ingress
+            was_suspended = self._programme_input_suspended
+            self._programme_input_suspended = True
+            self._mapped_ingress = tuple(edge for edge in previous if not edge[0].startswith('mpv:output_'))
+            try:
+                if self._engine_running():
+                    await self._reconcile_ingress_links(strict_mapped=True)
+            except BaseException as exc:
+                self._programme_input_suspended = was_suspended
+                self._mapped_ingress = previous
+                if self._engine_running():
+                    await restore_after(exc, self._reconcile_ingress_links(strict_mapped=True),
+                                        what='Measurement programme ingress entry restore')
+                raise
+
+    def release_programme_input(self) -> bool:
+        """Release ownership only; the guarded transport rebuilds live MPV edges."""
+        previous = self._programme_input_suspended
+        if previous and self._measurement_scope_lock.locked():
+            raise RuntimeError('Measurement scope is active; programme ingress is locked')
+        self._programme_input_suspended = False
+        return previous
 
     async def release_mapped_ingress(self, edges: Sequence[tuple[str, str]]) -> None:
         """Clear the mapped ingress only while it is still ``edges``.

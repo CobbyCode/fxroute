@@ -975,7 +975,7 @@ external_input = ExternalInputRouting(ExternalInputRoutingDependencies(
     sync_mapped_input=lambda edges: _sync_mapped_input(edges),
     stop_mapped_input=lambda: _stop_mapped_input(),
     sync_input_carrier=lambda entry: _hold_external_input_carrier(entry),
-    measurement_audio_graph_owned=lambda: _measurement_session_owns_live_rate(),
+        measurement_audio_graph_owned=lambda: _measurement_session_owns_live_rate(),
     defer_input_resync=lambda: _mark_ingress_resync_pending(),
 ))
 
@@ -1319,6 +1319,7 @@ def make_playback_runtime_deps() -> PlaybackRuntimeDependencies:
         spotify_snapshot_identity_values=lambda *a, **k: _spotify_snapshot_identity_values(*a, **k),
         measurement_restore_intent_matches_live_state=lambda *a, **k: _measurement_restore_intent_matches_live_state(*a, **k),
         measurement_audio_graph_owned=lambda: playback_orchestration.configured().measurement_audio_graph_owned(),
+        measurement_has_active_jobs=lambda: bool(measurement_sr_session is not None and measurement_sr_session.has_active_jobs),
         dsp_mutation_lock=lambda: _dsp_mutation_lock(),
         drain_worker=lambda *a, **k: _drain_worker(*a, **k),
         sync_dsp_runtime=lambda *a, **k: dsp_orchestrator.sync_runtime(*a, **k),
@@ -4071,6 +4072,8 @@ def _native_mpv_direct_selection_ready(active_queue_ids: list) -> bool:
     is taken over.
     """
     owner = playback_state.current_playback_owner
+    if runtime.dsp_runtime is not None and runtime.dsp_runtime.snapshot().get('programme_input_suspended'):
+        return False
     if owner is not None and not source_policy.is_mpv_source(owner):
         return False
     player = runtime.player_instance
@@ -4090,6 +4093,9 @@ def _native_mpv_direct_selection_ready(active_queue_ids: list) -> bool:
 async def play_track(req: PlayRequest):
     source_intent = _capture_source_intent()
     _refuse_start_while_output_held()
+    if (runtime.dsp_runtime is not None and runtime.dsp_runtime.snapshot().get('programme_input_suspended')
+            and measurement_sr_session is not None and measurement_sr_session.has_active_jobs):
+        raise HTTPException(status_code=423, detail='Measurement is active; programme ingress is locked')
     if not _player_is_running():
         if not await _drain_worker(_ensure_player_running):
             raise HTTPException(status_code=503, detail="Player not available")
@@ -4321,6 +4327,9 @@ async def pause_playback():
     state = runtime.player_instance.state
     if not state.get("current_file") or state.get("ended"):
         raise HTTPException(status_code=409, detail="Nothing is currently loaded to pause or resume")
+    if (state.get('paused') and runtime.dsp_runtime is not None
+            and runtime.dsp_runtime.snapshot().get('programme_input_suspended')):
+        return await toggle_playback()
     # v0.9.4 contract: this endpoint is a pure MPV pause toggle.  It must not
     # rebuild the committed source/rate/graph just because transport changed.
     async with _manual_transport_guard():
@@ -4457,9 +4466,13 @@ async def toggle_playback():
                 "playback": build_playback_payload(new_state),
             }
         _refuse_start_while_output_held()
+        programme_suspended = bool(runtime.dsp_runtime is not None
+                                   and runtime.dsp_runtime.snapshot().get('programme_input_suspended'))
+        if programme_suspended and measurement_sr_session is not None and measurement_sr_session.has_active_jobs:
+            raise HTTPException(status_code=423, detail='Measurement is active; programme ingress is locked')
         target_rate = _coordinator_target_rate(source, active_track)
         rate_change = await asyncio.to_thread(_coordinator_rate_change, target_rate)
-        if not rate_change and target_rate is not None:
+        if not rate_change and target_rate is not None and not programme_suspended:
             # Same-rate resume is transport-only: the committed source, rate
             # and graph are unchanged while paused, so a full Coordinator
             # transition (gate close, quiet, effects/graph re-verification) is

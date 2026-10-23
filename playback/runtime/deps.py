@@ -104,3 +104,4 @@ class PlaybackRuntimeDependencies:
     refresh_output_state_transition: Callable[[TransitionRequest], None] | None = None
     ensure_player_running: Callable[[], bool] | None = None
     output_switch_user_mute: Callable[[str], bool | None] | None = None
+    measurement_has_active_jobs: Callable[[], bool] | None = None

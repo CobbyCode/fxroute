@@ -271,17 +271,20 @@ class _RuntimeOutputModeMixin:
         previous_player = dict(snapshot.get("player") or {})
         previous_spotify = dict(snapshot.get("spotify") or {})
         if source_policy.is_mpv_source(request.source) and self._deps.player_is_running():
-            if await self._configure_mpv_channels() and previous_player.get("current_file"):
+            should_play = bool(
+                request.input_rate_hz is None and previous_player.get("playing")
+                and not previous_player.get("paused") and not previous_player.get("ended"))
+            native = self._dsp_runtime
+            read_native = getattr(native, 'snapshot', None)
+            suspended = bool(callable(read_native) and read_native().get('programme_input_suspended'))
+            released = bool(suspended and should_play and native.release_programme_input())
+            channels_changed = await self._configure_mpv_channels()
+            if (channels_changed or released) and previous_player.get("current_file") and (not suspended or released):
                 if not await self._deps.ensure_mpv_to_dsp_links():
                     raise RuntimeError("MPV channel-mode ingress was not confirmed")
             previous_volume = previous_player.get("volume")
             if isinstance(previous_volume, (int, float)):
                 await self.set_source_volume(int(round(previous_volume)), transition_id)
-            should_play = bool(
-                request.input_rate_hz is None and previous_player.get("playing")
-                and not previous_player.get("paused")
-                and not previous_player.get("ended")
-            )
             await self._deps.drain_worker(
                 self._player.set_pause,
                 not should_play if previous_player.get("current_file") else bool(previous_player.get("paused")),

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import inspect
+from dataclasses import replace
 import pathlib
 import tempfile
 import threading
@@ -981,13 +982,24 @@ class EntryBoundaryTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_measurement_entry_has_no_direct_graph_mutators(self):
-        start_source = inspect.getsource(main.MeasurementSampleRateSession._start_locked)
-        # The measurement entry must still enter the Coordinator's muted
-        # transition for its rate change.
-        self.assertIn("operation=\"measurement-entry\"", start_source)
-        self.assertIn("_run_coordinated_transition", start_source)
-        self.assertNotIn("_set_pipewire_force_rate", start_source)
-        self.assertNotIn("dsp_orchestrator.sync_runtime", start_source)
+        coordinated = AsyncMock(return_value=SimpleNamespace(committed=True))
+        services = replace(main._make_measurement_services(),
+            get_samplerate_status=lambda: {'force_rate': 44100},
+            coordinator_current_playback_context=AsyncMock(return_value={'source': 'radio'}),
+            run_coordinated_transition=coordinated, get_current_track_info=lambda: None,
+            get_player=lambda: None, input_entry_guard=None,
+            stdin_measurement_acquire=None, stdin_measurement_release=None)
+        with patch.object(measurement_session, '_services', services), \
+                patch.object(measurement_session, '_playback_state_before_measurement', None), \
+                patch.object(main.samplerate, 'set_pipewire_force_rate', side_effect=AssertionError('Direct rate mutation')), \
+                patch.object(main.dsp_orchestrator, 'sync_runtime', side_effect=AssertionError('Direct graph mutation')):
+            await main.MeasurementSampleRateSession().start(48000)
+        self.assertEqual(coordinated.await_count, 1)
+        request = coordinated.await_args.args[0]
+        self.assertEqual(request.operation, 'measurement-entry')
+        self.assertEqual(request.target_rate, 48000)
+        self.assertTrue(request.rate_change)
+        self.assertFalse(request.should_play)
 
     def test_sample_rate_policy_reuses_settings_selector_and_coordinator(self):
         index = (pathlib.Path(__file__).resolve().parents[1] / "static" / "index.html").read_text()

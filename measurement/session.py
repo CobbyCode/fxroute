@@ -295,6 +295,8 @@ class MeasurementSampleRateSession:
                 self._validate_entry_epoch(entry_epoch)
                 if not self.active:
                     self.entry_in_progress = True
+                else:
+                    await self._claim_programme_input()
             yield
         finally:
             if locked:
@@ -302,11 +304,33 @@ class MeasurementSampleRateSession:
                     self.entry_in_progress = False
                 self.lock.release()
 
+    async def _claim_programme_input(self) -> None:
+        services = _measurement_services()
+        native = services.get_dsp_runtime()
+        if (callable(getattr(native, 'suspend_programme_input', None))
+                and not native.snapshot().get('programme_input_suspended')):
+            status = await asyncio.to_thread(services.get_samplerate_status)
+            self.original_force_rate = int(status.get('force_rate') or 0)
+            self._playback_captured = False
+            await self._enter_playback_transition()
+
+    async def _enter_playback_transition(self) -> None:
+        services = _measurement_services()
+        context = await services.coordinator_current_playback_context()
+        _capture_playback_state_before_measurement(context)
+        result = await services.run_coordinated_transition(TransitionRequest(
+            operation='measurement-entry', source=str(context.get('source') or 'local'),
+            target_rate=self.measurement_rate, target_url=context.get('target_url'),
+            target_track=dict(context.get('target_track') or {}), should_play=False,
+            rate_change=self.original_force_rate != self.measurement_rate,
+            reload_source=False, detail='measurement-entry'))
+        if not result.committed:
+            raise RuntimeError('measurement entry was not committed')
+        self._rate_changed = self.original_force_rate != self.measurement_rate
+
     async def _start_locked(self, measurement_rate: int) -> int:
         services = _measurement_services()
         get_samplerate_status = services.get_samplerate_status
-        _coordinator_current_playback_context = services.coordinator_current_playback_context
-        _run_coordinated_transition = services.run_coordinated_transition
         if self.active:
             return self.generation
         stdin_acquired = False
@@ -332,26 +356,7 @@ class MeasurementSampleRateSession:
             except Exception as exc:
                 logger.warning("Measurement sample-rate session could not read force-rate: %s", exc)
                 self.original_force_rate = 0
-            context = await _coordinator_current_playback_context()
-            # Capture playback state from the same read-only live context that
-            # the guarded measurement-entry transition will pause.  This is
-            # especially important for Spotify, where current_track_info and
-            # MPV are intentionally unrelated transport state.
-            _capture_playback_state_before_measurement(context)
-            transition_result = await _run_coordinated_transition(TransitionRequest(
-                operation="measurement-entry",
-                source=str(context.get("source") or "local"),
-                target_rate=self.measurement_rate,
-                target_url=context.get("target_url"),
-                target_track=dict(context.get("target_track") or {}),
-                should_play=False,
-                rate_change=self.original_force_rate != self.measurement_rate,
-                reload_source=False,
-                detail="measurement-entry",
-            ))
-            if not transition_result.committed:
-                raise RuntimeError("measurement entry was not committed")
-            self._rate_changed = self.original_force_rate != self.measurement_rate
+            await self._enter_playback_transition()
         except asyncio.CancelledError:
             self.entry_in_progress = False
             if stdin_acquired and callable(release):
@@ -795,6 +800,13 @@ class MeasurementSampleRateSession:
                 logger.warning("Measurement sample-rate session runtime restore failed: %s", exc)
         finally:
             completed_generation = self.generation
+            native = services.get_dsp_runtime()
+            release_programme = getattr(native, 'release_programme_input', None)
+            player = services.get_player()
+            # A stale intent may skip transport restore. Retained MPV media
+            # must keep requiring a guarded reconnect on its next resume.
+            if callable(release_programme) and not (player and player.state.get('current_file')):
+                release_programme()
             self.active = False
             self.active_manual_job_ids.clear()
             self.active_auto_sub_job_id = None

@@ -1101,6 +1101,8 @@ class PlaybackOrchestrator:
     async def ensure_mpv_to_dsp_links(self, timeout_ms: int | None = None) -> bool:
         """Wait for the complete source layout, then establish its sole DSP route."""
         runtime = self._deps.get_dsp_runtime()
+        if runtime is not None and runtime.snapshot().get('programme_input_suspended'):
+            return False
         surround = bool(runtime is not None and runtime.surround_engine)
         readiness_timeout = self._deps.source_port_readiness_timeout_ms if timeout_ms is None else timeout_ms
         readiness_deadline = time.monotonic() + max(readiness_timeout, 0) / 1000
@@ -1127,6 +1129,8 @@ class PlaybackOrchestrator:
         repair_deadline = time.monotonic() + self._deps.mpv_link_repair_timeout_ms / 1000
         while True:
             try:
+                if runtime is not None and runtime.snapshot().get('programme_input_suspended'):
+                    return False
                 if surround:
                     await runtime.set_mapped_ingress(expected)
                 elif runtime is not None:
@@ -1143,6 +1147,10 @@ class PlaybackOrchestrator:
                     logger.info("MPV DSP ingress complete: surround=%s positions=%s", surround, tuple(positions))
                     return True
                 for source, target in missing:
+                    if surround:
+                        # The runtime owns and verifies these edges under its lock.
+                        # Never bypass a measurement takeover with a direct link.
+                        break
                     logger.info("Radio handoff repairing MPV->DSP ingress link: %s -> %s", source, target)
                     await self._deps.connect_ports((source,), target)
             except Exception as exc:

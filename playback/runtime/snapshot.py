@@ -65,6 +65,14 @@ class _RuntimeSnapshotMixin:
             )
 
     async def read_transition_snapshot(self, request: TransitionRequest) -> dict[str, Any]:
+        native = self._dsp_runtime
+        read_native = getattr(native, 'snapshot', None)
+        jobs_active = getattr(self._deps, 'measurement_has_active_jobs', None)
+        if callable(read_native):
+            state = read_native()
+            if (state.get('programme_input_suspended') and request.operation != 'measurement-entry'
+                    and (state.get('measurement_active') or (callable(jobs_active) and jobs_active()))):
+                raise PlaybackPreflightError('Measurement is active; programme ingress is locked')
         if request.src_mode is not None:
             error = await asyncio.to_thread(src_policy.runtime_error)
             if error:

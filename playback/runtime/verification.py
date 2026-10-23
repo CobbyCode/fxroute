@@ -544,6 +544,13 @@ class _RuntimeVerificationMixin:
                 f"expected={request.target_rate} actual={status.get('force_rate')}"
             )
 
+        # The gate is still closed and the programme has been paused. Claim
+        # its ingress before the graph commit, including for scope-less SPL.
+        native = getattr(self, '_dsp_runtime', None)
+        suspend = getattr(native, 'suspend_programme_input', None)
+        if callable(suspend):
+            await suspend()
+
         readbacks, signatures, stable = await stable_graph_readbacks(
             lambda: self._deps.playback_graph_diagnosis(
                 target_rate=request.target_rate,

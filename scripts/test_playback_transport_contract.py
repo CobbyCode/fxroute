@@ -164,6 +164,50 @@ class TransportContractTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(result["status"], "paused")
         coordinator.assert_not_awaited()
 
+    async def test_pause_endpoint_resumes_a_session_owned_ingress_through_the_coordinator(self):
+        player = PlayerDouble(paused=True)
+        native = SimpleNamespace(snapshot=lambda: {'programme_input_suspended': True})
+        track = {'source': 'radio', 'url': 'https://radio.example/live', 'sample_rate_hz': 48000}
+        requests = []
+        async def run(request):
+            requests.append(request)
+            player._set_pause(False)
+            return SimpleNamespace(target_rate=48000, committed=True, transition_id='restored-ingress')
+        with patch.object(main.runtime, 'player_instance', player), \
+                patch.object(main.runtime, 'dsp_runtime', native), \
+                patch.object(main, 'measurement_sr_session', SimpleNamespace(has_active_jobs=False)), \
+                patch.object(main.playback_state, 'current_track_info', track), \
+                patch.object(main, '_route_global_control', AsyncMock(return_value=None)), \
+                patch.object(main, '_can_send_play_command', return_value=True), \
+                patch.object(main, '_coordinator_target_rate', return_value=48000), \
+                patch.object(main, '_coordinator_rate_change', return_value=False), \
+                patch.object(main, '_run_coordinated_transition', side_effect=run), \
+                patch.object(main, '_commit_coordinated_track'), \
+                patch.object(main, 'build_playback_payload', side_effect=self._payload):
+            result = await main.pause_playback()
+        self.assertEqual(result['status'], 'playing')
+        self.assertEqual(len(requests), 1)
+        self.assertEqual(requests[0].operation, 'resume')
+        self.assertFalse(requests[0].rate_change)
+        player.pause.assert_not_called()
+
+    async def test_resume_cannot_steal_ingress_from_an_active_measurement_job(self):
+        player = PlayerDouble(paused=True)
+        native = SimpleNamespace(snapshot=lambda: {'programme_input_suspended': True})
+        track = {'source': 'radio', 'url': 'https://radio.example/live'}
+        with patch.object(main.runtime, 'player_instance', player), \
+                patch.object(main.runtime, 'dsp_runtime', native), \
+                patch.object(main, 'measurement_sr_session', SimpleNamespace(has_active_jobs=True)), \
+                patch.object(main.playback_state, 'current_track_info', track), \
+                patch.object(main, '_route_global_control', AsyncMock(return_value=None)), \
+                patch.object(main, '_can_send_play_command', return_value=True):
+            with self.assertRaises(main.HTTPException) as refused:
+                await main.pause_playback()
+        self.assertEqual(refused.exception.status_code, 423)
+        self.assertTrue(player.state['paused'])
+        player.pause.assert_not_called()
+        player.set_pause.assert_not_called()
+
     async def test_held_output_refuses_connect_resume_and_play_requests(self):
         for owner, state_reader, starter in (
             ("spotify", "get_spotify_ui_state", "spotify_play"),
