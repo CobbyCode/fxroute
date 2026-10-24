@@ -628,6 +628,9 @@ window.FXRouteCalibrationOverview?.init({
     fetch: (...args) => fetch(...args),
     isVisible: () => window.__visibleTab === 'effects',
 });
+window.FXRouteFrontendFreshness?.init({
+    isBusy: isFrontendReloadBlocked,
+});
 window.FXRouteAvSync?.init({
     getElements: () => elements,
     fetch: (...args) => fetch(...args),
@@ -1008,6 +1011,7 @@ let reconnectTimer = null;
 let offlineIndicatorTimer = null;
 let wsConnectSerial = 0;
 let wsReconnectSyncGeneration = 0;
+let wsOutageSeen = false;
 let tidalFavoriteRequestInFlight = false;
 let peqCreateInFlight = false;
 let convolverCreateInFlight = false;
@@ -1545,6 +1549,7 @@ document.addEventListener('DOMContentLoaded', () => {
     try { SettingsSystem.updatePowerButtonConnectionState(); } catch(e) { console.error('updatePowerButtonConnectionState crashed:', e); }
     try { SettingsSystem.setupPowerMenu(); } catch(e) { console.error('setupPowerMenu crashed:', e); }
     try { setupWebSocket(); } catch(e) { console.error('setupWebSocket crashed:', e); }
+    try { window.FXRouteFrontendFreshness?.start(); } catch(e) { console.error('frontend freshness crashed:', e); }
     try { setupTabNavigation(); } catch(e) { console.error('setupTabNavigation crashed:', e); }
     try {
         handleTabsResize();
@@ -1628,6 +1633,7 @@ function setupWebSocket() {
         if (!document.hidden) {
             if (state.wsConnected) void resyncAfterReconnect();
             connectWebSocket();
+            void window.FXRouteFrontendFreshness?.check('visible');
         }
     });
     connectWebSocket();
@@ -1659,6 +1665,7 @@ function connectWebSocket() {
         clearTimeout(watchdogTimer);
         ws = null;
         state.wsConnected = false;
+        wsOutageSeen = true;
         scheduleOfflineIndicator();
         PlaybackCore.stopPeakStatusPolling();
         PlaybackCore.startMetadataPolling();
@@ -1702,6 +1709,11 @@ function connectWebSocket() {
         PlaybackCore.startPeakStatusPolling();
         void resyncAfterReconnect();
         if (isMeasurementPanelOpen()) void MeasurementFlows.recoverAutoSubJob();
+        // A restarted server is the usual deploy: see whether this page predates it.
+        if (wsOutageSeen) {
+            wsOutageSeen = false;
+            void window.FXRouteFrontendFreshness?.check('reconnect');
+        }
     };
     socket.onclose = (event) => {
         console.log('WebSocket disconnected', { code: event.code, reason: event.reason, wasClean: event.wasClean, serial });
@@ -4752,6 +4764,16 @@ function measurementSetupStatusText() {
 
 function isMeasurementPanelOpen() {
     return !!elements.measurementPanel && !elements.measurementPanel.classList.contains('hidden');
+}
+
+// A stale page reloads itself only while no work would be lost: an open
+// measurement, a running measurement job or a transfer in progress.
+function isFrontendReloadBlocked() {
+    const measurementBusy = isMeasurementPanelOpen() || !!state.measurement.startInFlight
+        || window.FXRouteMeasurementJob.hasActiveMeasurementJob();
+    const uploading = state.upload?.status === 'uploading';
+    const downloading = ['starting', 'downloading'].includes(state.download?.status);
+    return measurementBusy || uploading || downloading;
 }
 
 function sendMeasurementWindowHeartbeat(open, keepalive = false) {

@@ -64,6 +64,7 @@ function harness({ failConnections = false, throwConnections = false, rejectRefr
             location: { protocol: 'https:', host: 'kiosk.test' },
             addEventListener: (name, callback) => { windowListeners[name] = callback; },
             FXRouteSrcSettings: { refresh: refresh('src') },
+            FXRouteFrontendFreshness: { check: reason => calls.push(['freshness', reason]) },
         },
         document: {
             hidden: false,
@@ -176,6 +177,35 @@ test('successful recovery resets retry backoff and switches polling ownership', 
     assert.equal(h.attempts.length, before);
     h.advance(1);
     assert.equal(h.attempts.length, before + 1);
+});
+
+test('only a connection that returns after an outage asks whether the page predates a deploy', () => {
+    const freshnessChecks = h => h.calls.filter(([name]) => name === 'freshness');
+    const h = harness({ failConnections: false });
+    h.run('setupWebSocket()');
+    h.sockets[0].open();
+    assert.deepEqual(freshnessChecks(h), [], 'the first connection of a fresh page needs no check');
+    h.sockets[0].close(); h.advance(3000);
+    h.sockets[1].close(); h.advance(6000);
+    assert.deepEqual(freshnessChecks(h), [], 'nothing is checked while the server is away');
+    h.sockets[2].open();
+    assert.deepEqual(freshnessChecks(h), [['freshness', 'reconnect']]);
+    h.sockets[2].onopen();
+    assert.equal(freshnessChecks(h).length, 1, 'a repeated open event is not a second outage');
+    h.sockets[2].close(); h.advance(3000);
+    h.sockets[3].open();
+    assert.equal(freshnessChecks(h).length, 2, 'every later outage checks again');
+});
+
+test('a page that becomes visible again checks for a newer deploy without reconnecting', () => {
+    const h = harness();
+    h.run('setupWebSocket()');
+    h.sockets[0].open();
+    h.visible();
+    assert.deepEqual(h.calls.filter(([name]) => name === 'freshness'), [['freshness', 'visible']]);
+    h.context.document.hidden = true;
+    h.visible();
+    assert.equal(h.calls.filter(([name]) => name === 'freshness').length, 1, 'a hidden page checks nothing');
 });
 
 test('duplicate reconnect requests never create concurrent connecting or open sockets', () => {
