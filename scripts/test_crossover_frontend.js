@@ -620,13 +620,14 @@ function initCrossoverUI(state, elements, extra = {}) {
     CrossoverUI.wireCrossoverTile();
     elements.effectsCrossoverLevel.value = '-3.14';
     elements.effectsCrossoverLevel.emit('change');
+    await new Promise(setImmediate);
     assert.equal(applied[0].level_db, -3.14);
     assert.equal(applied[0].alignment_ms, 7.8125);
     assert.equal(elements.effectsCrossoverLevel.value, '-3.14');
-    await new Promise(setImmediate);
     globalThis.document.activeElement = elements.effectsCrossoverDelay;
     elements.effectsCrossoverDelay.value = '8.31';
     elements.effectsCrossoverDelay.emit('change');
+    await new Promise(setImmediate);
     assert.equal(applied[1].alignment_ms, 8.31);
     assert.equal(elements.effectsCrossoverDelay.value, '8.31');
     globalThis.fetch = realFetch;
@@ -743,13 +744,13 @@ function initCrossoverUI(state, elements, extra = {}) {
         'the derived field is untouched');
     assert.deepEqual(applied, [], 'nothing is saved while the pointer is down');
     press('pointerup', lineX(4000));
+    await new Promise(setImmediate);
     assert.equal(applied.length, 1);
     assert.equal(applied[0].role, 'left_low');
     assert.equal(applied[0].lowpass.frequency_hz, 4000);
     assert.equal(applied[0].highpass, null, 'the derived high-pass is still not persisted');
     assert.equal(canvas.classes.has('is-handle-drag'), false);
     assert.deepEqual(canvas.captured, [], 'the capture is released');
-    await new Promise(setImmediate);
     assert.equal(String(elements.effectsCrossoverFrequencyLowpass.value), '4000',
         'the saved frequency stays in the field');
     // A press without movement saves nothing.

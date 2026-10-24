@@ -235,7 +235,8 @@ listeners.measurementPeqEditor.click[0]({ target: {
     closest: (selector) => selector.startsWith('[data-measurement-peq-frequency-step]') ? stepButton : null,
 } });
 assert.equal(gainInput.value, '2.7');
-assert.deepEqual(eventCalls.slice(-3), [['step', 'filter-1', 1, 0.1], 'graph', 'focus']);
+assert.deepEqual(eventCalls.slice(-2), [['step', 'filter-1', 1, 0.1], 'graph']);
+assert.ok(!eventCalls.includes('focus'), 'stepper activation must not move focus to the panel');
 // The Auto chip runs Auto only; it is not an empty slot.
 listeners.measurementPeqChips.click[0]({ target: {
     closest: (selector) => (selector === '[data-measurement-peq-auto]' ? {} : null),

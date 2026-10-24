@@ -402,7 +402,6 @@
             if (input) input.value = nextValue.toFixed(2);
         }
         deps.scheduleMeasurementGraphRender();
-        deps.focusMeasurementPeqPanelContext();
     }
 
     let editorDelegationBound = false;

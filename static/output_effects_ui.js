@@ -38,6 +38,7 @@
     }
 
     const EFFECTS_EXTRAS_TOGGLE_DEBOUNCE_MS = 800;
+    let effectsExtrasRevision = 0;
     // Mirrors dsp.native_config.PEQ_Q_MIN/PEQ_Q_MAX (LSP para_equalizer Q port bound).
     const PEQ_Q_MIN = 0.1;
     const PEQ_Q_MAX = 100;
@@ -120,7 +121,6 @@ function nudgeStepperControl(button) {
     if (Number.isFinite(min)) next = Math.max(min, next);
     if (Number.isFinite(max)) next = Math.min(max, next);
     if (next === current) return;
-    input.focus({ preventScroll: true });
     input.value = String(next);
     input.dispatchEvent(new Event('input', { bubbles: true }));
     input.dispatchEvent(new Event('change', { bubbles: true }));
@@ -182,18 +182,24 @@ function setupEffectsActions() {
     });
     if (deps.getElements().effectsPeqAddBandBtn) deps.getElements().effectsPeqAddBandBtn.addEventListener('click', addPeqBandPair);
     if (deps.getElements().effectsPeqCreatePresetBtn) deps.getElements().effectsPeqCreatePresetBtn.addEventListener('click', createPeqPreset);
-    document.addEventListener('mousedown', (event) => {
-        /* Keep focus on the number input when its stepper buttons are
-           pressed: losing focus would drop the input from deps.getActiveEditing()
-           and let the pending-save echo overwrite the user's value. */
-        const button = event.target instanceof Element ? event.target.closest('.stepper-btn') : null;
-        if (button) event.preventDefault();
-    });
-
     document.addEventListener('click', (event) => {
         const button = event.target instanceof Element ? event.target.closest('.stepper-btn') : null;
         if (button) nudgeStepperControl(button);
     });
+    // Protect the value while either button or the input owns focus. Save
+    // echoes must not require moving focus into the text editor.
+    document.addEventListener('focusin', (event) => {
+        const control = event.target instanceof Element ? event.target.closest('.stepper-control') : null;
+        const input = control?.querySelector('input[type="number"]');
+        if (input) deps.getActiveEditing().add(input);
+    }, true);
+    document.addEventListener('focusout', (event) => {
+        const control = event.target instanceof Element ? event.target.closest('.stepper-control') : null;
+        const input = control?.querySelector('input[type="number"]');
+        if (!input) return;
+        if (control.contains(event.relatedTarget)) deps.getActiveEditing().add(input);
+        else deps.getActiveEditing().delete(input);
+    }, true);
     wireNumberFieldLimits();
 
     root.FXRouteSubwooferUI.wireSubwooferControls();
@@ -292,13 +298,16 @@ function setupEffectsActions() {
 }
 
 async function fetchEffects() {
+    const extrasRevision = effectsExtrasRevision;
     try {
         const resp = await fetch('/api/dsp/presets');
         if (!resp.ok) throw new Error('Failed to fetch DSP presets');
         const data = await resp.json();
         const presetNames = (data.presets || []).map(p => p.name);
+        const extrasCurrent = extrasRevision === effectsExtrasRevision;
         deps.getState().dsp = {
             ...data,
+            global_extras: extrasCurrent ? data.global_extras : deps.getState().dsp?.global_extras,
             combineDraft: deps.getState().dsp?.combineDraft || root.FXRouteBankUI.getDefaultEffectsCombineDraft(),
             peqDraft: deps.getState().dsp?.peqDraft || {
                 presetName: '',
@@ -312,7 +321,7 @@ async function fetchEffects() {
         if (!Array.isArray(deps.getState().dsp.peqDraft?.leftBands) || !deps.getState().dsp.peqDraft.leftBands.length) deps.getState().dsp.peqDraft.leftBands = [defaultPeqBand()];
         if (!Array.isArray(deps.getState().dsp.peqDraft?.rightBands) || !deps.getState().dsp.peqDraft.rightBands.length) deps.getState().dsp.peqDraft.rightBands = [defaultPeqBand()];
         deps.getState().dsp.peqDraft.eqMode = normalizePeqEqMode(deps.getState().dsp.peqDraft?.eqMode);
-        if (data.global_extras) {
+        if (data.global_extras && extrasCurrent) {
             applyEffectsExtras({
                 limiterEnabled: !!data.global_extras?.limiter?.enabled,
                 headroomEnabled: !!data.global_extras?.headroom?.enabled,
@@ -848,6 +857,8 @@ function normalizeEffectsToneEffectMode(value, fallback = 'crystalizer') {
 }
 
 function applyEffectsExtras(extras = {}) {
+    // A poll may predate a queued step even after focus left its group.
+    if (_extrasDebounceTimer !== null || effectsExtrasSaveInFlight) return;
     if (deps.getElements().effectsLimiterEnabled) deps.getElements().effectsLimiterEnabled.checked = !!extras.limiterEnabled;
     if (deps.getElements().effectsHeadroomEnabled) deps.getElements().effectsHeadroomEnabled.checked = !!extras.headroomEnabled;
     if (deps.getElements().effectsHeadroomGainDb && !deps.getActiveEditing().has(deps.getElements().effectsHeadroomGainDb)) {
@@ -973,12 +984,15 @@ let effectsExtrasSaveInFlight = false;
 let effectsExtrasPendingResave = false;
 
 function saveEffectsExtrasDebounced(delayMs = EFFECTS_EXTRAS_TOGGLE_DEBOUNCE_MS) {
+    effectsExtrasRevision += 1;
     window.clearTimeout(_extrasDebounceTimer);
+    _extrasDebounceTimer = null;
     if (delayMs <= 0) {
         _doSaveEffectsExtras();
         return;
     }
     _extrasDebounceTimer = window.setTimeout(() => {
+        _extrasDebounceTimer = null;
         _doSaveEffectsExtras();
     }, delayMs);
 }
@@ -1038,6 +1052,7 @@ async function _doSaveEffectsExtras() {
         });
         const data = await resp.json().catch(() => ({}));
         if (!resp.ok) throw new Error(data.detail || 'Failed to save output extras');
+        effectsExtrasRevision += 1;
         deps.getState().dsp = deps.getState().dsp || {};
         deps.getState().dsp.global_extras = data.extras || {
             limiter: { enabled: !!extras.limiterEnabled, params: { thresholdDb: -1.0, attackMs: 5.0, releaseMs: 20.0, lookaheadMs: 5.0, stereoLinkPercent: 100.0 } },

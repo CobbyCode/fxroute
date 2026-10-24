@@ -182,23 +182,31 @@
         // pointer never holds) until the save settles.
         const preview = crossoverGraphPreview();
         const activeElement = (typeof document !== 'undefined' && document.activeElement) || null;
+        const fieldHasFocus = (field) => activeElement === field
+            || field?.closest?.('.stepper-control')?.contains(activeElement) === true;
         const draggedValue = (kind) => (preview && preview.kind === kind
             ? String(preview.frequency_hz) : null);
         const draggedHighpass = draggedValue('highpass');
         const draggedLowpass = draggedValue('lowpass');
         if (deps.getElements().effectsCrossoverFrequencyHighpass
-            && (draggedHighpass !== null || activeElement !== deps.getElements().effectsCrossoverFrequencyHighpass)) {
+            && (draggedHighpass !== null || !fieldHasFocus(deps.getElements().effectsCrossoverFrequencyHighpass))) {
             deps.getElements().effectsCrossoverFrequencyHighpass.value = draggedHighpass
                 ?? (settings.highpass?.frequency_hz ?? derivedHighpass?.frequency_hz ?? '');
-            deps.getElements().effectsCrossoverFrequencyHighpass.disabled = !showHighpass || busy || !!derivedHighpass;
+        }
+        if (deps.getElements().effectsCrossoverFrequencyHighpass) {
+            deps.getElements().effectsCrossoverFrequencyHighpass.disabled = !showHighpass || !!derivedHighpass
+                || (busy && !fieldHasFocus(deps.getElements().effectsCrossoverFrequencyHighpass));
             deps.getElements().effectsCrossoverFrequencyHighpass.title = derivedHighpass
                 ? `Set by the Subwoofer tile (${derivedHighpass.frequency_hz} Hz)` : '';
         }
         if (deps.getElements().effectsCrossoverFrequencyLowpass
-            && (draggedLowpass !== null || activeElement !== deps.getElements().effectsCrossoverFrequencyLowpass)) {
+            && (draggedLowpass !== null || !fieldHasFocus(deps.getElements().effectsCrossoverFrequencyLowpass))) {
             deps.getElements().effectsCrossoverFrequencyLowpass.value = draggedLowpass
                 ?? (settings.lowpass?.frequency_hz ?? '');
-            deps.getElements().effectsCrossoverFrequencyLowpass.disabled = !showLowpass || busy;
+        }
+        if (deps.getElements().effectsCrossoverFrequencyLowpass) {
+            deps.getElements().effectsCrossoverFrequencyLowpass.disabled = !showLowpass
+                || (busy && !fieldHasFocus(deps.getElements().effectsCrossoverFrequencyLowpass));
         }
         const families = ['off', ...Object.keys(catalog.capabilities?.filter_families || {})];
         for (const kind of ['highpass', 'lowpass']) {
@@ -251,13 +259,17 @@
             if (freqGroup) freqGroup.style.display = kindOff ? 'none' : '';
             if (slopeGroup) slopeGroup.style.display = kindOff ? 'none' : '';
         }
-        if (deps.getElements().effectsCrossoverLevel && ((typeof document !== 'undefined' && document.activeElement) || null) !== deps.getElements().effectsCrossoverLevel) {
+        if (deps.getElements().effectsCrossoverLevel && !fieldHasFocus(deps.getElements().effectsCrossoverLevel)) {
             showTrimValue(deps.getElements().effectsCrossoverLevel, settings.level_db ?? 0);
-            deps.getElements().effectsCrossoverLevel.disabled = busy;
         }
-        if (deps.getElements().effectsCrossoverDelay && ((typeof document !== 'undefined' && document.activeElement) || null) !== deps.getElements().effectsCrossoverDelay) {
+        if (deps.getElements().effectsCrossoverLevel) {
+            deps.getElements().effectsCrossoverLevel.disabled = busy && !fieldHasFocus(deps.getElements().effectsCrossoverLevel);
+        }
+        if (deps.getElements().effectsCrossoverDelay && !fieldHasFocus(deps.getElements().effectsCrossoverDelay)) {
             showTrimValue(deps.getElements().effectsCrossoverDelay, settings.alignment_ms ?? 0);
-            deps.getElements().effectsCrossoverDelay.disabled = busy;
+        }
+        if (deps.getElements().effectsCrossoverDelay) {
+            deps.getElements().effectsCrossoverDelay.disabled = busy && !fieldHasFocus(deps.getElements().effectsCrossoverDelay);
         }
         if (deps.getElements().effectsCrossoverPolarity) {
             deps.getElements().effectsCrossoverPolarity.value = settings.polarity || 'normal';
@@ -443,32 +455,40 @@
         return mutation;
     }
 
-    async function saveCrossoverWay() {
+    let crossoverSavePromise = Promise.resolve();
+
+    function saveCrossoverWay() {
         const fields = collectCrossoverWayMutation();
-        if (!fields) return;
-        // The L/R link shares only the crossover filter values with the mirror
-        // way. Trim (level/align/polarity) stays per-way physical tuning and is
-        // hidden while linked, so a linked save never touches it.
-        const mod = (root && root.FXRouteCrossover) || null;
-        const catalog = deps.getState().outputSystem.catalog;
-        const mirror = mod?.mirrorRole ? mod.mirrorRole(fields.role) : null;
-        const mirrorProcessing = catalog?.modes?.[catalog.active_mode]?.processing || {};
-        const linked = deps.getState().crossover.linkLR === true && mirror && mirror !== fields.role
-            && Object.prototype.hasOwnProperty.call(mirrorProcessing, mirror);
-        deps.getState().crossover.busy = true;
-        renderCrossoverTile();
-        try {
-            const { kind, ...rest } = fields;
-            await deps.applyMutation(kind, rest, false, { quiet: true });
-            if (linked) {
-                const { role: _role, level_db: _level, alignment_ms: _align, polarity: _polarity, ...mirrorShared } = rest;
-                await deps.applyMutation(kind, { ...mirrorShared, role: mirror }, false, { quiet: true });
-            }
-            await fetchCrossoverResponse();
-        } finally {
-            deps.getState().crossover.busy = false;
+        if (!fields) return Promise.resolve();
+        // Capture each press now and serialize its mutation. The shared output
+        // controller rejects concurrent writes instead of queuing them.
+        crossoverSavePromise = crossoverSavePromise.catch(() => {}).then(async () => {
+            // The L/R link shares only the crossover filter values with the mirror
+            // way. Trim (level/align/polarity) stays per-way physical tuning and is
+            // hidden while linked, so a linked save never touches it.
+            const mod = (root && root.FXRouteCrossover) || null;
+            const catalog = deps.getState().outputSystem.catalog;
+            if (catalog?.active_mode !== fields.mode) return;
+            const mirror = mod?.mirrorRole ? mod.mirrorRole(fields.role) : null;
+            const mirrorProcessing = catalog?.modes?.[catalog.active_mode]?.processing || {};
+            const linked = deps.getState().crossover.linkLR === true && mirror && mirror !== fields.role
+                && Object.prototype.hasOwnProperty.call(mirrorProcessing, mirror);
+            deps.getState().crossover.busy = true;
             renderCrossoverTile();
-        }
+            try {
+                const { kind, ...rest } = fields;
+                await deps.applyMutation(kind, rest, false, { quiet: true });
+                if (linked) {
+                    const { role: _role, level_db: _level, alignment_ms: _align, polarity: _polarity, ...mirrorShared } = rest;
+                    await deps.applyMutation(kind, { ...mirrorShared, role: mirror }, false, { quiet: true });
+                }
+                await fetchCrossoverResponse();
+            } finally {
+                deps.getState().crossover.busy = false;
+                renderCrossoverTile();
+            }
+        });
+        return crossoverSavePromise;
     }
 
     async function maybeApplyCrossoverStarters() {

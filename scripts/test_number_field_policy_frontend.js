@@ -71,7 +71,7 @@ function stepper({ value, step = '1', min = '', max = '', decimals = null, disab
     const s = stepper({ value: '0.7', step: '0.1', min: '-40', max: '40' });
     effects.nudgeStepperControl(s.inc);
     assert.equal(s.input.value, '0.8', '0.7 + 0.1 carries no float residue');
-    assert.deepEqual(s.input.events, ['focus', 'input', 'change']);
+    assert.deepEqual(s.input.events, ['input', 'change'], 'stepping must not focus the number input');
     effects.nudgeStepperControl(s.dec);
     effects.nudgeStepperControl(s.dec);
     assert.equal(s.input.value, '0.6');

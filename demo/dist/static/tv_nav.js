@@ -21,6 +21,8 @@
  *
  * Sliders reached by the remote are navigation stops: OK arms them, then
  * Left/Right change the value; OK again, Back or Up/Down ends the adjustment.
+ * Number fields are navigation stops too: OK or typing starts editing;
+ * OK/Escape commits and returns to navigation on the same field.
  * The footer is its own zone: Left/Right/Down never leave it, Up leaves it
  * from the top row.
  *
@@ -1079,6 +1081,20 @@
         return String(element.getAttribute?.('type') || 'text').toLowerCase();
     }
 
+    function isNumberInput(element) {
+        return element?.tagName === 'INPUT' && inputType(element) === 'number';
+    }
+
+    function finishNumberEditing(ctx, element) {
+        const id = element.id;
+        element.dispatchEvent(new Event('change', { bubbles: true }));
+        setEditing(ctx, null);
+        ctx.remote = true;
+        // A change handler may rebuild the editor synchronously.
+        const field = element.isConnected ? element : (id && ctx.doc.getElementById(id));
+        focusElement(field, ctx.doc);
+    }
+
     // Enter/Space must behave like a click on the focused element. Native
     // controls keep their own activation (buttons, links, summaries, picker
     // inputs); everything else that accepts a click gets one. This covers
@@ -1138,6 +1154,12 @@
         const action = keyAction(event);
         if (!action) {
             if (event.key?.length === 1 && isTextEntry(event.target)) setEditing(ctx, event.target);
+            if (event.key === 'Escape' && isNumberInput(event.target) && ctx.editing === event.target) {
+                event.preventDefault();
+                event.stopPropagation();
+                finishNumberEditing(ctx, event.target);
+                return;
+            }
             // Escape is the only way out of a control that owns all arrows.
             // An open dialog keeps Escape for the modal manager.
             if (event.key === 'Escape' && !root.FXRouteModal?.topRoot?.()) {
@@ -1228,6 +1250,12 @@
             return;
         }
         if (isTextEntry(target)) {
+            if (isNumberInput(target) && event.key === 'Enter') {
+                event.preventDefault();
+                if (ctx.editing === target || ctx.navFocus !== target) finishNumberEditing(ctx, target);
+                else setEditing(ctx, target);
+                return;
+            }
             if (ctx.navFocus === target && event.key === 'Enter') {
                 setEditing(ctx, ctx.editing === target ? null : target);
             }
@@ -1332,11 +1360,12 @@
             clearNavFocus(ctx);
         }, true);
         doc.addEventListener('input', event => {
-            if (isTextEntry(event.target)) setEditing(ctx, event.target);
+            // Stepping emits input on the paired, unfocused value field.
+            if (event.target === doc.activeElement && isTextEntry(event.target)) setEditing(ctx, event.target);
         }, true);
         doc.addEventListener('focusout', event => {
             event.target?.classList?.remove(FOCUS_CLASS);
-            if (event.target === ctx.editing && isRangeInput(event.target)) setEditing(ctx, null);
+            if (event.target === ctx.editing) setEditing(ctx, null);
         }, true);
         doc.getElementById('source-picker-close')
             ?.addEventListener('click', () => closeSourcePicker(doc));
