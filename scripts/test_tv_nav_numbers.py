@@ -59,16 +59,17 @@ def remote_field(page, field, minus, plus):
     assert focused(field), "Left must return to the value"
 
 
-def hold_save_response(page, path, method="POST"):
-    page.evaluate("""([path, method]) => {
+def hold_save_response(page, path, method="POST", count=1):
+    page.evaluate("""([path, method, count]) => {
         const original = window.fetch;
-        let held = false;
+        let held = 0;
+        window.__numberSavesHeld = 0;
         window.__releaseNumberSave = null;
         window.__restoreNumberFetch = () => { window.fetch = original; };
         window.fetch = async (url, options) => {
             const response = await original(url, options);
-            if (String(url) === path && (options?.method || 'GET') === method && !held) {
-                held = true;
+            if (String(url) === path && (options?.method || 'GET') === method && held < count) {
+                window.__numberSavesHeld = ++held;
                 // Freeze demo response objects like a real HTTP body.
                 const snapshot = new Response(JSON.stringify(await response.json()), {status: response.status});
                 await new Promise(resolve => { window.__releaseNumberSave = resolve; });
@@ -76,11 +77,11 @@ def hold_save_response(page, path, method="POST"):
             }
             return response;
         };
-    }""", [path, method])
+    }""", [path, method, count])
 
 
-def release_save_response(page):
-    page.evaluate("() => { window.__restoreNumberFetch(); window.__releaseNumberSave(); }")
+def release_save_response(page, restore=True):
+    page.evaluate("restore => { if (restore) window.__restoreNumberFetch(); window.__releaseNumberSave(); }", restore)
 
 
 def main():
@@ -179,6 +180,85 @@ def main():
             page.keyboard.press("ArrowLeft")
             assert focused(minus), "synthetic input armed an unfocused editor"
             print("PASS programmatic value events do not enter editing")
+
+            # An earlier save must not roll back a sub after navigation leaves
+            # its group: every later sub save also carries its neighbor's trim.
+            page.evaluate("flushSubwooferSettingsBeforeMeasurement()")
+            first, first_minus, first_plus = controls(page, "effects-subwoofer-level")
+            second, second_minus, second_plus = controls(page, "effects-subwoofer-sub2-level")
+            for control in (first, second):
+                control.fill("0")
+                control.press("Enter")
+                page.evaluate("flushSubwooferSettingsBeforeMeasurement()")
+            hold_save_response(page, "/api/audio/output-state/apply", count=2)
+            first_minus.focus()
+            page.keyboard.press("Enter")
+            page.wait_for_function("typeof window.__releaseNumberSave === 'function'")
+            for _ in range(9):
+                page.keyboard.press("Enter")
+            second_minus.focus()
+            page.keyboard.press("Enter")
+            release_save_response(page, restore=False)
+            page.wait_for_function("window.__numberSavesHeld === 2")
+            assert float(first.input_value()) == -1, "older save rolled back Sub 1 while its newer save is in flight"
+            # An additional neighbor step must not capture the old Sub 1 value.
+            page.keyboard.press("Enter")
+            release_save_response(page)
+            page.evaluate("flushSubwooferSettingsBeforeMeasurement()")
+            assert float(first.input_value()) == -1, "older save rolled back Sub 1 after navigation"
+            assert float(second.input_value()) == -0.2, "older save rolled back Sub 2"
+            page.focus("#effects-subwoofer-polarity")
+            page.evaluate("flushSubwooferSettingsBeforeMeasurement()")
+            page.evaluate("fetchOutputSystemCatalog(true)")
+            levels = page.evaluate("""() => {
+                const p = state.outputSystem.catalog.modes['stereo-sub'].processing;
+                return [p.sub1.level_db, p.sub2.level_db];
+            }""")
+            assert levels == [-1, -0.2], f"navigation re-saved stale sub levels: {levels}"
+            assert [float(first.input_value()), float(second.input_value())] == [-1, -0.2]
+            print("PASS both sub levels survive delayed saves and cross-control navigation")
+
+            # Keep a successful trim across a failed refresh AND a later failed
+            # neighbor write. The following retry must not overwrite that trim.
+            for control in (first, second):
+                control.fill("0")
+                control.press("Enter")
+                page.evaluate("flushSubwooferSettingsBeforeMeasurement()")
+            page.evaluate("""() => {
+                const original = window.fetch;
+                let posts = 0, failRefresh = false;
+                window.__restoreSubFailureFetch = () => { window.fetch = original; };
+                window.fetch = async (url, options) => {
+                    if (String(url) === '/api/audio/output-state/apply' && options?.method === 'POST') {
+                        if (++posts === 2) return new Response(JSON.stringify({detail:'test neighbor failure'}), {status:500});
+                        const response = await original(url, options);
+                        if (posts === 1) failRefresh = true;
+                        return response;
+                    }
+                    if (String(url) === '/api/audio/output-state' && failRefresh) {
+                        failRefresh = false;
+                        return new Response('{}', {status:500});
+                    }
+                    return original(url, options);
+                };
+            }""")
+            first.fill("-21")
+            first.press("Enter")
+            page.evaluate("flushSubwooferSettingsBeforeMeasurement()")
+            second_minus.focus()
+            page.evaluate("renderSubwooferPanel()")
+            assert float(first.input_value()) == -21, "failed GET lost an acknowledged sub level"
+            page.keyboard.press("Enter")
+            page.evaluate("flushSubwooferSettingsBeforeMeasurement().catch(() => null)")
+            page.evaluate("renderSubwooferPanel()")
+            assert float(first.input_value()) == -21, "failed neighbor save discarded the acknowledged baseline"
+            page.keyboard.press("Enter")
+            page.evaluate("flushSubwooferSettingsBeforeMeasurement()")
+            page.evaluate("window.__restoreSubFailureFetch()")
+            page.evaluate("fetchOutputSystemCatalog(true)")
+            saved_first = page.evaluate("state.outputSystem.catalog.modes['stereo-sub'].processing.sub1.level_db")
+            assert saved_first == -21, "neighbor retry overwrote the successful trim after network failures"
+            print("PASS acknowledged sub trim survives refresh/write failures and neighbor retry")
 
             # Server echoes must not overwrite a focused stepper's unsaved value.
             field, minus, plus = controls(page, "effects-bass-amount")

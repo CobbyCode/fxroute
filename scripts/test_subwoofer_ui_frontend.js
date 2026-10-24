@@ -270,6 +270,204 @@ const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
         assert.deepEqual(applied, [70, 90]);
     }
 
+    // Navigation alone must not send a full, possibly stale sub snapshot.
+    {
+        let writes = 0;
+        const state = { outputSystem: { catalog: subCatalog() } };
+        const elements = subElementsFixture();
+        initSubUI(state, elements, { applyMutation: async () => { writes++; return { ok: true }; } });
+        SubwooferUI.renderSubwooferPanel();
+        SubwooferUI.wireSubwooferControls();
+        elements.effectsSubwooferLevel.emit('focus');
+        elements.effectsSubwooferLevel.emit('blur');
+        await SubwooferUI.flushSubwooferSettingsBeforeMeasurement();
+        assert.equal(writes, 0, 'leaving an unchanged field must not re-save stale neighbor values');
+    }
+
+    // An old save echo must not replace a newer, unfocused local sub draft.
+    {
+        const state = { outputSystem: { catalog: subCatalog() } };
+        state.outputSystem.catalog.modes['stereo-sub'].processing.sub1.level_db = 6;
+        const elements = subElementsFixture();
+        let release;
+        const gate = new Promise(resolve => { release = resolve; });
+        initSubUI(state, elements, { applyMutation: async () => { await gate; return { ok: true }; } });
+        SubwooferUI.renderSubwooferPanel();
+        elements.effectsSubwooferLevel.value = '-24';
+        const save = SubwooferUI.saveSubwooferDebounced(0);
+        await delay(10);
+        SubwooferUI.renderSubwooferPanel();
+        const displayed = elements.effectsSubwooferLevel.value;
+        state.outputSystem.catalog.modes['stereo-sub'].processing.sub1.level_db = -24;
+        release();
+        await save;
+        await tick();
+        assert.equal(Number(displayed), -24, 'old catalog must not roll an unfocused pending trim back to +6 dB');
+        assert.equal(Number(elements.effectsSubwooferLevel.value), -24);
+    }
+
+    // A held save keeps only the newest pending remote step, not a long
+    // backlog that replays obsolete levels after the user stops pressing.
+    {
+        const state = { outputSystem: { catalog: subCatalog() } };
+        const elements = subElementsFixture();
+        const applied = [];
+        let release;
+        const gate = new Promise(resolve => { release = resolve; });
+        initSubUI(state, elements, { applyMutation: async (kind, fields) => {
+            applied.push(fields.processing.sub1.level_db);
+            if (applied.length === 1) await gate;
+            state.outputSystem.catalog.modes['stereo-sub'].processing.sub1 = fields.processing.sub1;
+            return { ok: true };
+        } });
+        elements.effectsSubwooferLevel.value = '-0.1';
+        const first = SubwooferUI.saveSubwooferDebounced(0);
+        await delay(10);
+        for (const value of ['-1', '-2', '-3']) {
+            elements.effectsSubwooferLevel.value = value;
+            SubwooferUI.saveSubwooferDebounced(0);
+            await delay(10);
+        }
+        release();
+        await first;
+        await SubwooferUI.flushSubwooferSettingsBeforeMeasurement();
+        assert.deepEqual(applied, [-0.1, -3], 'remote repeats must coalesce behind the active save');
+    }
+
+    // Returning to the in-flight value cancels the newer pending request,
+    // including its draft, before another sub can collect that neighbor.
+    {
+        const state = { outputSystem: { catalog: subCatalog() } };
+        const elements = subElementsFixture();
+        let release;
+        const gate = new Promise(resolve => { release = resolve; });
+        initSubUI(state, elements, { applyMutation: async (kind, fields) => {
+            await gate;
+            state.outputSystem.catalog.modes['stereo-sub'].processing.sub1 = fields.processing.sub1;
+            return { ok: true };
+        } });
+        elements.effectsSubwooferLevel.value = '-11';
+        const first = SubwooferUI.saveSubwooferDebounced(0);
+        await delay(10);
+        elements.effectsSubwooferLevel.value = '-12';
+        SubwooferUI.saveSubwooferDebounced(0);
+        elements.effectsSubwooferLevel.value = '-11';
+        SubwooferUI.saveSubwooferDebounced(0);
+        SubwooferUI.renderSubwooferPanel();
+        const displayed = Number(elements.effectsSubwooferLevel.value);
+        release();
+        await first;
+        await SubwooferUI.flushSubwooferSettingsBeforeMeasurement();
+        assert.equal(displayed, -11, 'reverse step must discard the canceled local draft');
+    }
+
+    // Switching Surround groups while a save is held must retain all
+    // outstanding per-group patches when the pending request is coalesced.
+    {
+        const catalog = subCatalog();
+        catalog.active_mode = 'surround';
+        catalog.modes.surround = catalog.modes['stereo-sub'];
+        const config = catalog.modes.surround;
+        config.topology.roles = ['main_l', 'main_r', 'center', 'sub1'];
+        config.bass_management = { sub_link: false, sub_filters: {
+            front: { frequency_hz: 80 }, center: { frequency_hz: 110 } } };
+        const state = { outputSystem: { catalog } };
+        const elements = subElementsFixture();
+        let release;
+        const gate = new Promise(resolve => { release = resolve; });
+        let writes = 0;
+        initSubUI(state, elements, { applyMutation: async (kind, fields) => {
+            if (++writes === 1) await gate;
+            config.bass_management.sub_filters = { ...config.bass_management.sub_filters, ...fields.sub_filters };
+            return { ok: true };
+        } });
+        SubwooferUI.setSubwooferSelectedGroup('front');
+        SubwooferUI.renderSubwooferPanel();
+        elements.effectsSubwooferLeftFrequency.value = '90';
+        const first = SubwooferUI.saveSubwooferDebounced(0);
+        await delay(10);
+        elements.effectsSubwooferLeftFrequency.value = '100';
+        SubwooferUI.saveSubwooferDebounced(0);
+        SubwooferUI.setSubwooferSelectedGroup('center');
+        SubwooferUI.renderSubwooferPanel();
+        elements.effectsSubwooferLeftFrequency.value = '120';
+        SubwooferUI.saveSubwooferDebounced(0);
+        release();
+        await first;
+        await SubwooferUI.flushSubwooferSettingsBeforeMeasurement();
+        assert.equal(config.bass_management.sub_filters.front.frequency_hz, 100, 'coalescing must keep the earlier pending group edit');
+        assert.equal(config.bass_management.sub_filters.center.frequency_hz, 120);
+    }
+
+    // A successful POST may be followed by a failed refresh. Its acknowledged
+    // trim must remain visible and survive the next neighbor save.
+    {
+        const catalog = subCatalog();
+        const config = catalog.modes['stereo-sub'];
+        config.topology.sub_mode = 'dual-mono';
+        config.topology.sub_roles = ['sub1', 'sub2'];
+        config.processing = { sub1: { level_db: 0 }, sub2: { level_db: 0 } };
+        const state = { outputSystem: { catalog } };
+        const elements = subElementsFixture();
+        let revision = 4;
+        let committed;
+        initSubUI(state, elements, { applyMutation: async (kind, fields) => {
+            committed = fields.processing;
+            // The POST is real success, but a failed GET leaves revision 4.
+            return { revision: ++revision, live_applied: true };
+        } });
+        SubwooferUI.renderSubwooferPanel();
+        elements.effectsSubwooferLevel.value = '-21';
+        await SubwooferUI.saveSubwooferDebounced(0);
+        const displayed = Number(elements.effectsSubwooferLevel.value);
+        elements.effectsSubwooferSub2Level.value = '-1';
+        await SubwooferUI.saveSubwooferDebounced(0);
+        const savedNeighbor = committed.sub1.level_db;
+        catalog.revision = 6;
+        config.processing = committed;
+        SubwooferUI.renderSubwooferPanel();
+        catalog.revision = 7;
+        config.processing.sub1 = { ...config.processing.sub1, level_db: -22 };
+        SubwooferUI.renderSubwooferPanel();
+        assert.equal(displayed, -21, 'failed post-save refresh must not repaint the pre-save trim');
+        assert.equal(savedNeighbor, -21, 'neighbor save must not overwrite the acknowledged trim');
+        assert.equal(Number(elements.effectsSubwooferLevel.value), -22, 'fresh server state must release the acknowledged draft');
+    }
+
+    // A later failed save must not discard an earlier acknowledged baseline
+    // that a failed refresh has not yet put into the catalog.
+    {
+        const catalog = subCatalog();
+        const config = catalog.modes['stereo-sub'];
+        config.topology.sub_mode = 'dual-mono';
+        config.topology.sub_roles = ['sub1', 'sub2'];
+        config.processing = { sub1: { level_db: 0 }, sub2: { level_db: 0 } };
+        const state = { outputSystem: { catalog } };
+        const elements = subElementsFixture();
+        let calls = 0;
+        let committed;
+        initSubUI(state, elements, { applyMutation: async (kind, fields) => {
+            if (++calls === 2) throw new Error('neighbor save failed');
+            committed = fields.processing;
+            return { revision: calls === 1 ? 5 : 6, live_applied: true };
+        } });
+        SubwooferUI.renderSubwooferPanel();
+        elements.effectsSubwooferLevel.value = '-21';
+        await SubwooferUI.saveSubwooferDebounced(0);
+        elements.effectsSubwooferSub2Level.value = '-1';
+        await assert.rejects(SubwooferUI.saveSubwooferDebounced(0), /neighbor save failed/);
+        SubwooferUI.renderSubwooferPanel();
+        const displayed = Number(elements.effectsSubwooferLevel.value);
+        elements.effectsSubwooferSub2Level.value = '-2';
+        await SubwooferUI.saveSubwooferDebounced(0);
+        const savedNeighbor = committed.sub1.level_db;
+        catalog.revision = 6;
+        config.processing = committed;
+        SubwooferUI.renderSubwooferPanel();
+        assert.equal(displayed, -21, 'failed later save must retain the earlier acknowledged trim');
+        assert.equal(savedNeighbor, -21, 'retrying the neighbor must retain the earlier successful trim');
+    }
+
     // A mode change before the commit rejects into the tile feedback.
     {
         const state = { outputSystem: { catalog: subCatalog() } };

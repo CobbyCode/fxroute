@@ -96,13 +96,97 @@ const freshCatalog = (revision) => ({ active_mode: 'stereo', revision,
         globalThis.fetch = realFetch;
     }
     {
-        // A failed fetch nulls the catalog but still refreshes downstream.
+        // A failed refresh retains the last known catalog and still paints.
         const { state, calls } = makeHarness({
             fetchImpl: async () => { throw new Error('down'); } });
         const catalog = await Controller.fetchOutputSystemCatalog(true);
-        assert.equal(catalog, null);
-        assert.equal(state.outputSystem.catalog, null);
+        assert.equal(catalog?.revision, 5, 'failed refresh must retain the last known catalog');
+        assert.equal(state.outputSystem.catalog?.revision, 5);
         assert.ok(calls.includes('renderOutputSection'));
+        globalThis.fetch = realFetch;
+    }
+
+    {
+        const { state } = makeHarness({ catalog: null,
+            fetchImpl: async () => { throw new Error('initial fetch failed'); } });
+        assert.equal(await Controller.fetchOutputSystemCatalog(true), null);
+        assert.equal(state.outputSystem.catalog, null);
+        globalThis.fetch = realFetch;
+    }
+
+    // A delayed poll cannot replace a catalog from a later completed fetch.
+    {
+        let release;
+        const gate = new Promise(resolve => { release = resolve; });
+        let reads = 0;
+        const { state } = makeHarness({ fetchImpl: async () => {
+            const revision = ++reads === 1 ? 6 : 7;
+            if (revision === 6) await gate;
+            return { ok: true, json: async () => freshCatalog(revision) };
+        } });
+        const old = Controller.fetchOutputSystemCatalog(true);
+        await Controller.fetchOutputSystemCatalog(true);
+        release();
+        await old;
+        assert.equal(state.outputSystem.catalog.revision, 7, 'late poll must not roll back committed output state');
+        globalThis.fetch = realFetch;
+    }
+
+    // An obsolete failed request cannot erase the newer revision guard and
+    // thereby allow another old successful poll to roll state back.
+    {
+        let releaseOld, releaseFailure;
+        const oldGate = new Promise(resolve => { releaseOld = resolve; });
+        const failureGate = new Promise(resolve => { releaseFailure = resolve; });
+        let reads = 0;
+        const { state } = makeHarness({ fetchImpl: async () => {
+            const request = ++reads;
+            if (request === 1) {
+                await oldGate;
+                return { ok: true, json: async () => freshCatalog(6) };
+            }
+            if (request === 2) {
+                await failureGate;
+                throw new Error('obsolete poll failed');
+            }
+            return { ok: true, json: async () => freshCatalog(7) };
+        } });
+        const old = Controller.fetchOutputSystemCatalog(true);
+        const failure = Controller.fetchOutputSystemCatalog(true);
+        await Controller.fetchOutputSystemCatalog(true);
+        releaseFailure();
+        await failure;
+        const afterFailure = state.outputSystem.catalog?.revision;
+        releaseOld();
+        await old;
+        assert.equal(afterFailure, 7, 'obsolete failed poll must retain the newer accepted catalog');
+        assert.equal(state.outputSystem.catalog.revision, 7, 'old success must still be rejected after the failed poll');
+        globalThis.fetch = realFetch;
+    }
+
+    // Even a failing poll started after the new revision must not erase the
+    // guard while an older successful response is still outstanding.
+    {
+        let releaseOld;
+        const oldGate = new Promise(resolve => { releaseOld = resolve; });
+        let reads = 0;
+        const { state } = makeHarness({ fetchImpl: async () => {
+            const request = ++reads;
+            if (request === 1) {
+                await oldGate;
+                return { ok: true, json: async () => freshCatalog(6) };
+            }
+            if (request === 3) throw new Error('newer refresh failed');
+            return { ok: true, json: async () => freshCatalog(7) };
+        } });
+        const old = Controller.fetchOutputSystemCatalog(true);
+        await Controller.fetchOutputSystemCatalog(true);
+        await Controller.fetchOutputSystemCatalog(true);
+        const afterFailure = state.outputSystem.catalog?.revision;
+        releaseOld();
+        await old;
+        assert.equal(afterFailure, 7, 'failed refresh must preserve the last known revision');
+        assert.equal(state.outputSystem.catalog.revision, 7, 'old response cannot replace state after a newer failed refresh');
         globalThis.fetch = realFetch;
     }
 
