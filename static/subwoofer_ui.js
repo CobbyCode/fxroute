@@ -307,7 +307,8 @@
 
     function routedSubwooferView() {
         let catalog = deps.getState().outputSystem?.catalog;
-        if (catalog && _subwooferCommittedDraft?.settings.mode === catalog.active_mode
+        if (!catalog?.modes?.[catalog.active_mode]) return { mode: 'stereo', roles: [] };
+        if (_subwooferCommittedDraft && _subwooferCommittedDraft.settings.mode === catalog.active_mode
                 && catalog.revision >= _subwooferCommittedDraft.revision) {
             _subwooferCommittedDraft = null;
         }

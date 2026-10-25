@@ -20,6 +20,7 @@ const EffectsUI = require('../static/output_effects_ui.js');
 const StreamingRuntime = require('../static/streaming_runtime.js');
 const PlaybackUI = require('../static/playback_ui.js');
 const SubwooferUI = require('../static/subwoofer_ui.js');
+require('../static/output_state.js');
 const SavedActions = require('../static/measurement_saved_actions.js');
 const SavedUI = require('../static/measurement_saved_ui.js');
 
@@ -293,7 +294,6 @@ async function main() {
 
     // 8. Failed subwoofer save stays retryable with identical values.
     {
-        global.FXRouteOutputState = { subwooferView: () => ({ mode: 'subwoofer-2.1', roles: ['sub'] }) };
         const elements = {
             effectsSubwooferFrequencyNumber: { value: '80' }, effectsSubwooferFamily: { value: 'linkwitz-riley' },
             effectsSubwooferSlope: { value: '24' }, effectsSubwooferLink: null,
@@ -304,7 +304,9 @@ async function main() {
         let mutations = 0;
         let failNext = true;
         SubwooferUI.init({
-            getState: () => ({ outputSystem: { catalog: { active_mode: 'subwoofer-2.1' } } }),
+            getState: () => ({ outputSystem: { catalog: { active_mode: 'stereo-sub', revision: 1,
+                modes: { 'stereo-sub': { topology: { sub_mode: 'mono', sub_roles: ['sub1'] },
+                    processing: { sub1: {} }, bass_management: {} } } } } }),
             getElements: () => elements,
             getActiveEditing: () => new Set(),
             applyMutation: async () => {
@@ -313,12 +315,12 @@ async function main() {
                 return { ok: true };
             },
         });
-        await SubwooferUI.saveSubwooferDebounced(0).catch(() => {});
+        await assert.rejects(SubwooferUI.saveSubwooferDebounced(0), /Output mode changed/);
         assert.equal(mutations, 1, 'first save attempted');
         failNext = false;
-        await SubwooferUI.saveSubwooferDebounced(0).catch(() => {});
+        await SubwooferUI.saveSubwooferDebounced(0);
         assert.equal(mutations, 2, 'identical retry really saves after failure');
-        delete global.FXRouteOutputState;
+        assert.equal(elements.effectsSubwooferFeedback.textContent, '', 'successful retry clears the failure');
     }
 
     // 9. Successful extras save clears a previous failure label.

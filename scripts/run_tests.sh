@@ -22,6 +22,7 @@
 #   scripts/run_tests.sh --list     # print categorized test inventory
 #   scripts/run_tests.sh --all      # also attempt .104-only tests
 #   scripts/run_tests.sh --verbose  # show per-test output
+# FXROUTE_TEST_TIMEOUT_SECONDS overrides the per-file limit (default: 600).
 
 set -uo pipefail
 
@@ -60,6 +61,12 @@ for arg in "$@"; do
         *) echo "unknown option: $arg" >&2; exit 2 ;;
     esac
 done
+
+TEST_TIMEOUT_SECONDS="${FXROUTE_TEST_TIMEOUT_SECONDS:-600}"
+if [[ ! "$TEST_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]]; then
+    echo "FXROUTE_TEST_TIMEOUT_SECONDS must be a positive integer" >&2
+    exit 2
+fi
 
 PYTHON="python3"
 NODE="node"
@@ -227,15 +234,20 @@ run_one() {
         return 0
     fi
     if [ "$VERBOSE" = "1" ]; then
-        if "$runner" "$name" >/tmp/fxroute-test-$$.log 2>&1; then
+        if "$PYTHON" scripts/run_test_with_timeout.py "$TEST_TIMEOUT_SECONDS" "$runner" "$name" >/tmp/fxroute-test-$$.log 2>&1; then
             echo "PASS  $name"
             PASS=$((PASS + 1))
         else
-            if [ $? -eq 77 ]; then
+            local status=$?
+            if [ "$status" -eq 77 ]; then
                 echo "SKIP  $name (prerequisite unavailable on this host)"
                 SKIP=$((SKIP + 1))
             else
-                echo "FAIL  $name"
+                if [ "$status" -eq 124 ]; then
+                    echo "FAIL  $name (timeout after ${TEST_TIMEOUT_SECONDS}s)"
+                else
+                    echo "FAIL  $name"
+                fi
                 cat /tmp/fxroute-test-$$.log
                 FAILED_TESTS+=("$name")
                 FAIL=$((FAIL + 1))
@@ -244,7 +256,7 @@ run_one() {
         rm -f /tmp/fxroute-test-$$.log
     else
         local out
-        out=$("$runner" "$name" 2>&1)
+        out=$("$PYTHON" scripts/run_test_with_timeout.py "$TEST_TIMEOUT_SECONDS" "$runner" "$name" 2>&1)
         local status=$?
         if [ "$status" -eq 0 ]; then
             echo "PASS  $name"
@@ -253,7 +265,11 @@ run_one() {
             echo "SKIP  $name (prerequisite unavailable on this host)"
             SKIP=$((SKIP + 1))
         else
-            echo "FAIL  $name"
+            if [ "$status" -eq 124 ]; then
+                echo "FAIL  $name (timeout after ${TEST_TIMEOUT_SECONDS}s)"
+            else
+                echo "FAIL  $name"
+            fi
             echo "$out" | tail -20 | sed 's/^/      /'
             FAILED_TESTS+=("$name")
             FAIL=$((FAIL + 1))

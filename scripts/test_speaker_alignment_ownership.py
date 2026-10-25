@@ -5,10 +5,13 @@ from contextlib import asynccontextmanager
 import sys
 from pathlib import Path
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from test_measurement_speaker_service import ServiceFixture
 from measurement.session import MeasurementSampleRateSession
+import measurement.session as measurement_session
 
 
 class SpeakerOwnershipTests(ServiceFixture, unittest.IsolatedAsyncioTestCase):
@@ -101,6 +104,12 @@ class KeeperWiringTests(ServiceFixture, unittest.IsolatedAsyncioTestCase):
 
 
 class SessionExclusionTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        services = patch.object(measurement_session, "_services", SimpleNamespace(
+            input_entry_guard=None, get_dsp_runtime=lambda: None))
+        services.start()
+        self.addCleanup(services.stop)
+
     async def test_speaker_excludes_other_graph_owners_between_way_captures(self):
         session = MeasurementSampleRateSession()
         session.active = True

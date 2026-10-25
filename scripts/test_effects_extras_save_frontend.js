@@ -135,6 +135,7 @@ function makeContext({ responses = [], stateDsp = null } = {}) {
         let _extrasDebounceTimer = null;
         let effectsExtrasSaveInFlight = false;
         let effectsExtrasPendingResave = false;
+        let effectsExtrasRevision = 0;
         let effectsCompareLoadInFlight = false;
         const EFFECTS_EXTRAS_TOGGLE_DEBOUNCE_MS = 0;
         ${extractConst('EFFECTS_HEADROOM_ALLOWED_GAIN_DB')}

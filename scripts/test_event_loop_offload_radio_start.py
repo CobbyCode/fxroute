@@ -290,6 +290,7 @@ class EventLoopOffloadTest(unittest.IsolatedAsyncioTestCase):
             def __init__(self):
                 self._deps = _Deps()
                 self._player = None
+                self._dsp_runtime = None
                 self._staged_target_url = None
 
         request = TransitionRequest(

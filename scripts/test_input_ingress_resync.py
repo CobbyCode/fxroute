@@ -118,6 +118,7 @@ class ReleaseHookTests(unittest.IsolatedAsyncioTestCase):
             hook_calls.append(True)
 
         services = SimpleNamespace(
+            get_dsp_runtime=lambda: None, get_player=lambda: None,
             get_current_track_info=lambda: None,
             begin_playback_transition_attempt=lambda: 0,
             end_playback_transition_attempt=lambda: None,
@@ -153,6 +154,7 @@ class ReleaseHookTests(unittest.IsolatedAsyncioTestCase):
             raise RuntimeError("resync hook exploded")
 
         services = SimpleNamespace(
+            get_dsp_runtime=lambda: None, get_player=lambda: None,
             get_current_track_info=lambda: None,
             begin_playback_transition_attempt=lambda: 0,
             end_playback_transition_attempt=lambda: None,
@@ -213,6 +215,7 @@ class ReleaseTierRestoreTests(unittest.IsolatedAsyncioTestCase):
             self.hook_calls.append(True)
 
         services = SimpleNamespace(
+            get_dsp_runtime=lambda: None, get_player=lambda: None,
             get_current_track_info=lambda: None,
             begin_playback_transition_attempt=lambda: 0,
             end_playback_transition_attempt=lambda: None,

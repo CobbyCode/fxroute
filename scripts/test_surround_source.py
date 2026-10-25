@@ -92,6 +92,7 @@ class SourceOrderTests(unittest.IsolatedAsyncioTestCase):
         class Adapter(_RuntimeSourceMixin, _RuntimeOutputModeMixin):
             pass
         adapter = Adapter()
+        adapter._dsp_runtime = None
         player = SimpleNamespace(state={"current_file": "music", "playing": True, "paused": False},
                                  set_pause=lambda paused: None)
         adapter._player = player

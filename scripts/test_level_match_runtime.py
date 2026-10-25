@@ -89,11 +89,25 @@ class UntrimmedRuntimeTests(unittest.IsolatedAsyncioTestCase):
     configure = fixtures.JobTests.configure
     run_job = fixtures.JobTests.run_job
 
+    def cleanup_gate(self):
+        gate = asyncio.Event()
+        self._cleanup_gates.append(gate)
+        return gate
+
+    async def asyncTearDown(self):
+        for gate in getattr(self, '_cleanup_gates', []):
+            gate.set()
+        task = api._slot.task
+        if task is not None and not task.done():
+            await asyncio.wait_for(task, 3)
+
     def wire(self, *, mode="stereo-sub", failure=False, unequal=True):
         from measurement.level_match_runtime import build_level_match_scope
 
+        self._cleanup_gates = []
+
         services = patch.object(fixtures.speaker_sweep.measurement_session, "_services",
-                                SimpleNamespace(input_entry_guard=None))
+                                SimpleNamespace(input_entry_guard=None, get_dsp_runtime=lambda: None))
         services.start()
         self.addCleanup(services.stop)
         roles = ["left_low", "right_low", "left_high", "right_high", "sub1"]
@@ -284,7 +298,7 @@ class UntrimmedRuntimeTests(unittest.IsolatedAsyncioTestCase):
     async def test_common_trim_run_waits_for_child_cleanup_before_success(self):
         self.wire(unequal=False)
         entered = asyncio.Event()
-        gate = asyncio.Event()
+        gate = self.cleanup_gate()
 
         async def drain(job_id):
             entered.set()
@@ -298,7 +312,7 @@ class UntrimmedRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.session.has_active_jobs)
         self.assertEqual(self.table.entries("stereo-sub"), {})
         gate.set()
-        await api._slot.task
+        await asyncio.wait_for(api._slot.task, 3)
         self.assertEqual(api._slot.job["status"], "completed", api._slot.job["error"])
         self.assertFalse(self.session.has_active_jobs)
 
@@ -311,7 +325,7 @@ class UntrimmedRuntimeTests(unittest.IsolatedAsyncioTestCase):
         observed = self.store.get_job
         jobs = {}
         drain_entered = asyncio.Event()
-        gate = asyncio.Event()
+        gate = self.cleanup_gate()
 
         async def apply_mask(mask):
             return 0
@@ -352,7 +366,7 @@ class UntrimmedRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.session.has_active_jobs)
         self.assertEqual(self.table.entries("stereo-sub"), {})
         gate.set()
-        await api._slot.task
+        await asyncio.wait_for(api._slot.task, 3)
         self.assertEqual(api._slot.job["status"], "completed", api._slot.job["error"])
         self.assertTrue(all(task.done() for task in runner.tasks.values()))
         self.assertFalse(self.session.has_active_jobs)
@@ -360,7 +374,7 @@ class UntrimmedRuntimeTests(unittest.IsolatedAsyncioTestCase):
     async def test_rest_cancel_during_final_restore_does_not_store_or_complete(self):
         self.wire()
         entered = asyncio.Event()
-        gate = asyncio.Event()
+        gate = self.cleanup_gate()
         original = self.native.guarded_rebuild_rendered
 
         async def transition(new, **kwargs):
@@ -372,10 +386,10 @@ class UntrimmedRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.native.guarded_rebuild_rendered = transition
         started = await api.start_level_match(input_id="mic", input_key="", mic_input_channel="1",
                                                calibration_ref="", bank_id="global")
-        await entered.wait()
+        await asyncio.wait_for(entered.wait(), 2)
         await api.cancel_level_match_job(started["job"]["id"])
         gate.set()
-        await api._slot.task
+        await asyncio.wait_for(api._slot.task, 3)
         self.assertEqual(api._slot.job["status"], "cancelled")
         self.assertEqual(self.table.entries("stereo-sub"), {})
         self.assertEqual(self.native.snapshot(), self.original)
@@ -419,7 +433,7 @@ class UntrimmedRuntimeTests(unittest.IsolatedAsyncioTestCase):
         await api.start_level_match(input_id="mic", input_key="", mic_input_channel="1",
                                     calibration_ref="", bank_id="global")
         await self.session.request_close()
-        await api._slot.task
+        await asyncio.wait_for(api._slot.task, 3)
         self.assertNotEqual(api._slot.job["status"], "completed")
         self.assertEqual(self.store.started, [])
         self.assertEqual(self.table.entries("stereo-sub"), {})
@@ -437,7 +451,7 @@ class UntrimmedRuntimeTests(unittest.IsolatedAsyncioTestCase):
     async def test_cancellation_drains_capture_before_restoring_and_unlocking(self):
         self.wire()
         entered = asyncio.Event()
-        gate = asyncio.Event()
+        gate = self.cleanup_gate()
         original = self.store.start_measurement
 
         async def start(**kwargs):
@@ -458,13 +472,13 @@ class UntrimmedRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.store.drain_job = drain
         await api.start_level_match(input_id="mic", input_key="", mic_input_channel="1",
                                     calibration_ref="", bank_id="global")
-        await entered.wait()
+        await asyncio.wait_for(entered.wait(), 2)
         api._slot.task.cancel()
         await asyncio.sleep(0)
         self.assertTrue(self.session.has_active_jobs)
         self.assertNotEqual(self.native.snapshot()["config"], self.original["config"])
         gate.set()
-        await api._slot.task
+        await asyncio.wait_for(api._slot.task, 3)
         self.assertEqual(api._slot.job["status"], "cancelled")
         self.assertEqual(self.native.snapshot(), self.original)
         self.assertFalse(self.session.has_active_jobs)

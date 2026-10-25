@@ -71,7 +71,7 @@
         const title = auto.available
             ? 'Suggest up to 12 filters from the measurement and the target curve'
             : auto.reason;
-        return `<button type="button" class="measurement-peq-auto-chip${auto.busy ? ' is-busy' : ''}" data-measurement-peq-auto${auto.available ? '' : ' disabled'} title="${deps.escapeHtml(title)}" aria-label="Auto: suggest PEQ filters">${auto.busy ? 'Auto…' : 'Auto'}</button>`;
+        return `<button type="button" class="measurement-peq-auto-chip${auto.busy ? ' is-busy' : ''}" data-measurement-peq-auto${auto.available ? '' : ' disabled'} data-tooltip="${deps.escapeHtml(title)}" aria-label="Auto: suggest PEQ filters">${auto.busy ? 'Auto…' : 'Auto'}</button>`;
     }
 
     function renderMeasurementPanelEditorsSection({ measurementState, current, measurements, graphEntries, assistMode, activeEditor, graphView, frequencyView, peq, conv, activePeqFilter }) {

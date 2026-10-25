@@ -174,6 +174,14 @@ const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
     }
 
     // Panel visibility follows the routed mode, never the settings dialog.
+    for (const catalog of [{}, { revision: 1 }, { active_mode: 'stereo-sub', revision: 1 },
+        { active_mode: 'stereo-sub', revision: 1, modes: {} }]) {
+        const card = stubEl();
+        initSubUI({ outputSystem: { catalog } }, { effectsSubwooferCard: card });
+        assert.equal(SubwooferUI.routedSubwooferView().mode, 'stereo', 'incomplete catalogs have no routed subs');
+        SubwooferUI.renderSubwooferPanel();
+        assert.equal(card.classList.has('hidden'), true, 'incomplete catalogs hide the tile');
+    }
     {
         const card = stubEl();
         initSubUI({ outputSystem: { catalog: null } }, { effectsSubwooferCard: card });

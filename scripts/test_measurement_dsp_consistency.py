@@ -206,7 +206,8 @@ class MeasurementConsistencyTests(unittest.IsolatedAsyncioTestCase):
         session = measurement_session.MeasurementSampleRateSession()
         session.active = True
         with mock.patch.object(main, "measurement_sr_session", session), mock.patch.object(
-                measurement_session, "_services", SimpleNamespace(input_entry_guard=entry_guard)):
+                measurement_session, "_services", SimpleNamespace(
+                    input_entry_guard=entry_guard, get_dsp_runtime=lambda: self.native)):
             writer = asyncio.create_task(dsp_api.save_dsp_extras(
                 lifecycle.FakeRequest({"toneEffectEnabled": True})))
             await asyncio.wait_for(entered.wait(), 1)

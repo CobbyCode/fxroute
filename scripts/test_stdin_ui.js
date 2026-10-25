@@ -98,7 +98,7 @@ assert.ok(extractFunction('renderSettingsPanel').includes('renderSourceSection()
     'the settings panel renders the same source section');
 const onOpenAt = appSource.indexOf('socket.onopen');
 const onOpen = appSource.slice(onOpenAt, appSource.indexOf('socket.onclose', onOpenAt));
-assert.ok(onOpen.includes('fetchAudioSourceOverview()'), 'a (re)connect must recover missed source pushes');
+assert.ok(onOpen.includes('resyncAfterReconnect()'), 'a (re)connect must run the shared recovery');
 
 // Revision order, epochs, full replacement, fetch errors and save ownership,
 // run on the real code.
@@ -114,6 +114,14 @@ const sourceSandbox = {
     renders: 0,
     toasts: [],
     requests: [],
+    PlaybackCore: { resyncPlaybackAfterReconnect: async () => {} },
+    EffectsUI: { fetchEffects: async () => { throw new Error('effects unavailable'); } },
+    LibraryUI: { fetchTracks: async () => {}, fetchAlbums: async () => {},
+        fetchPlaylists: async () => {}, fetchDownloadStatus: async () => {} },
+    radioModule: { fetchStations: async () => {} },
+    fetchAudioOutputOverview: async () => {},
+    fetchOutputSystemCatalog: async () => {},
+    window: { FXRouteSrcSettings: { refresh: async () => {} } },
     Number,
     JSON,
     Array,
@@ -135,6 +143,7 @@ vm.runInContext([
     // extractFunction slices from `function`; restore the async keyword.
     `async ${extractFunction('saveAudioSourceSelection')}`,
     `async ${extractFunction('fetchAudioSourceOverview')}`,
+    `async ${extractFunction('resyncAfterReconnect')}`,
 ].join('\n'), sourceSandbox);
 const flush = () => new Promise((resolve) => setImmediate(resolve));
 const respond = (request, data, ok = true) => request.resolve({ ok, json: async () => data });
@@ -256,6 +265,22 @@ const full = (mode, revision, extra = {}) => ({
     const selectHtml = renderElements.settingsSourceSelect.innerHTML;
     assert.match(selectHtml, /<option value="external-input::scarlett::pair:3-4" disabled>External input: Scarlett — Input 3–4 \(unavailable\)<\/option>/);
     assert.equal(renderElements.settingsSourceSelect.value, 'external-input::scarlett::pair:3-4');
+
+    // Reconnect recovers a missed STDIN push even if a sibling refresh fails.
+    const beforeReconnect = sourceSandbox.requests.length;
+    const beforeRenders = sourceSandbox.renders;
+    const reconnect = sourceSandbox.resyncAfterReconnect();
+    await flush();
+    assert.equal(sourceSandbox.requests.length, beforeReconnect + 1);
+    const request = sourceSandbox.requests.at(-1);
+    assert.equal(request.url, '/api/audio/source-mode');
+    assert.equal(request.method, 'GET');
+    respond(request, full('stdin-input', 3, { stdin: { state: 'streaming', routed: true } }));
+    await reconnect;
+    assert.equal(sourceMode().mode, 'stdin-input');
+    assert.equal(sourceMode().stdin.state, 'streaming');
+    assert.equal(sourceMode().stdin.routed, true);
+    assert.ok(sourceSandbox.renders > beforeRenders, 'recovered source state is rendered');
 
     console.log('STDIN UI tests passed');
 })().catch((error) => {

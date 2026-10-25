@@ -50,6 +50,7 @@ class _Adapter(_RuntimeSnapshotMixin):
     def __init__(self):
         self._deps = _Deps()
         self._player = None
+        self._dsp_runtime = None
         self._staged_target_url = None
 
 

@@ -53,6 +53,7 @@ window.fetch = (url, opts) => {
         status: 200, headers: { 'Content-Type': 'application/json' },
     }));
     const s = window.__libstub;
+    if (u.endsWith('/api/audio/output-state')) return json(s.outputCatalog || {});
     if (u.includes('/api/library/status')) {
         return json({
             scanning: s.scanning,
@@ -85,6 +86,8 @@ def _run():
         with sync_playwright() as p:
             browser = p.chromium.launch()
             page = browser.new_page(viewport={"width": 1440, "height": 900})
+            errors = []
+            page.on("pageerror", lambda error: errors.append(error.stack))
             page.add_init_script(STUB)
             page.goto(f"http://127.0.0.1:{PORT}/static/index.html")
             page.wait_for_function("typeof window.FXRouteContentState === 'object'", timeout=15000)
@@ -162,14 +165,18 @@ def _run():
                 "finished: albums view falls back to the empty message",
                 "No albums found. Import music with album tags." in finished["text"],
             )
+            check("empty output catalog does not interrupt page initialization", not errors)
             browser.close()
 
         # --- finished scan on an empty library, no playlists: empty states stay
         with sync_playwright() as p2:
             browser2 = p2.chromium.launch()
             page2 = browser2.new_page(viewport={"width": 1440, "height": 900})
+            errors2 = []
+            page2.on("pageerror", lambda error: errors2.append(error.stack))
             page2.add_init_script(
-                "window.__libstubSeed = { scanning: false, tracks_found: 0, files_seen: 0, playlists: [] };"
+                "window.__libstubSeed = { scanning: false, tracks_found: 0, files_seen: 0, playlists: [],"
+                " outputCatalog: { revision: 1 } };"
             )
             page2.add_init_script(STUB)
             page2.goto(f"http://127.0.0.1:{PORT}/static/index.html")
@@ -186,6 +193,7 @@ def _run():
                 "finished: tracks view falls back to the empty message",
                 "No tracks yet. Import a file or URL to get started." in idle_tracks,
             )
+            check("catalog without active mode does not interrupt page initialization", not errors2)
             browser2.close()
     finally:
         server.shutdown()

@@ -115,6 +115,27 @@ const freshCatalog = (revision) => ({ active_mode: 'stereo', revision,
     }
 
     // A delayed poll cannot replace a catalog from a later completed fetch.
+    for (const invalid of [null, {}, { revision: 6 },
+        { active_mode: 'stereo', modes: { stereo: {} } },
+        { active_mode: 'stereo', revision: -1, modes: { stereo: {} } },
+        { active_mode: 'stereo', revision: '6', modes: { stereo: {} } },
+        { active_mode: 'stereo', revision: 6, modes: {} },
+        { active_mode: 'stereo', revision: 6, modes: { stereo: null } }]) {
+        for (const previous of [null, catalogFixture()]) {
+            const { state, calls } = makeHarness({ catalog: previous,
+                fetchImpl: async () => ({ ok: true, json: async () => invalid }) });
+            assert.equal(await Controller.fetchOutputSystemCatalog(true), previous,
+                'malformed refresh must not replace the last usable catalog');
+            assert.equal(state.outputSystem.catalog, previous);
+            assert.ok(calls.includes('renderSubwoofer'), 'failed catalog reads do not abort downstream rendering');
+            globalThis.fetch = async () => ({ ok: true, json: async () => freshCatalog(7) });
+            assert.equal((await Controller.fetchOutputSystemCatalog(true)).revision, 7,
+                'a later valid catalog recovers normally');
+            globalThis.fetch = realFetch;
+        }
+    }
+
+    // A delayed poll cannot replace a catalog from a later completed fetch.
     {
         let release;
         const gate = new Promise(resolve => { release = resolve; });

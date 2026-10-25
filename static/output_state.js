@@ -505,6 +505,12 @@ async function fetchCatalog(fetchImpl) {
     const resp = await fetchImpl('/api/audio/output-state');
     const data = await resp.json().catch(() => ({}));
     if (!resp.ok) throw new Error((data && data.detail) || 'Output state catalog failed');
+    if (!Number.isInteger(data?.revision) || data.revision < 0
+            || !OUTPUT_MODES.includes(data.active_mode)
+            || !data.modes?.[data.active_mode] || typeof data.modes[data.active_mode] !== 'object'
+            || Array.isArray(data.modes[data.active_mode])) {
+        throw new Error('Output state catalog is incomplete');
+    }
     return data;
 }
 

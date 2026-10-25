@@ -105,10 +105,12 @@ let autoState = { available: false, busy: false, reason: 'Auto needs a measureme
 editors.init({ getMeasurementPeqAutoAvailability: () => autoState });
 editors.renderMeasurementPanelEditorsSection(ctx);
 assert.match(elements.measurementPeqChips.innerHTML,
-    /data-measurement-peq-slot="11"[^]*<button type="button" class="measurement-peq-auto-chip" data-measurement-peq-auto disabled title="Auto needs a measurement[^"]*"[^>]*>Auto<\/button>$/);
+    /data-measurement-peq-slot="11"[^]*<button type="button" class="measurement-peq-auto-chip" data-measurement-peq-auto disabled data-tooltip="Auto needs a measurement[^"]*"[^>]*>Auto<\/button>$/);
+assert.doesNotMatch(elements.measurementPeqChips.innerHTML, /\stitle=/, 'Auto uses the shared tooltip layer');
+assert.match(elements.measurementPeqChips.innerHTML, /aria-label="Auto: suggest PEQ filters"/);
 autoState = { available: true, busy: false, reason: '' };
 editors.renderMeasurementPanelEditorsSection(ctx);
-assert.match(elements.measurementPeqChips.innerHTML, /class="measurement-peq-auto-chip" data-measurement-peq-auto title="Suggest up to 12 filters[^"]*"[^>]*>Auto</);
+assert.match(elements.measurementPeqChips.innerHTML, /class="measurement-peq-auto-chip" data-measurement-peq-auto data-tooltip="Suggest up to 12 filters[^"]*"[^>]*>Auto</);
 autoState = { available: false, busy: true, reason: 'Auto is fitting filters…' };
 editors.renderMeasurementPanelEditorsSection(ctx);
 assert.match(elements.measurementPeqChips.innerHTML, /measurement-peq-auto-chip is-busy" data-measurement-peq-auto disabled[^>]*>Auto…</);
