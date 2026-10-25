@@ -247,7 +247,7 @@ def run():
                 page.keyboard.press(' ')
                 assert page.evaluate('window.__rowClicks') == 1, 'Space no longer activates a focused row'
 
-            def own_arrow_rows(page):
+            def own_arrow_tabs(page):
                 # The tab strip handles Left/Right itself: no second move off the strip.
                 first = page.evaluate("Array.from(document.querySelectorAll('.tab-btn')).find(b => !b.hidden && b.offsetParent).id")
                 page.focus('#' + first)
@@ -257,23 +257,6 @@ def run():
                 second = page.evaluate('document.activeElement.id')
                 assert second != first and page.evaluate('document.activeElement.classList.contains("tab-btn")')
                 assert page.get_attribute('#' + second, 'aria-selected') == 'true'
-                # A chip row bound by the panel UI moves one chip per key press.
-                page.evaluate("""() => {
-                    const row = document.createElement('div');
-                    row.id = 'chip-row';
-                    row.innerHTML = [0, 1, 2, 3].map(i => `<button id="chip-${i}" type="button">${i}</button>`).join('');
-                    document.body.appendChild(row);
-                    window.FXRouteMeasurementPanelUI.bindChipArrowKeyNavigation(row, 'button');
-                }""")
-                page.focus('#chip-0')
-                page.keyboard.press('ArrowRight')
-                assert page.evaluate('document.activeElement.id') == 'chip-1', 'chip row skipped a chip'
-                page.keyboard.press('ArrowLeft')
-                page.keyboard.press('ArrowLeft')
-                assert page.evaluate('document.activeElement.id') == 'chip-3', 'chip row lost its wrap-around'
-                # Up/Down still belong to the spatial navigation.
-                page.keyboard.press('ArrowUp')
-                assert page.evaluate('document.activeElement.id') != 'chip-3'
 
             def initial_context_focus(page):
                 page.evaluate("""() => {
@@ -429,7 +412,7 @@ def run():
                 ('search exit and native typing', search_exit),
                 ('typed text keeps Alt+Left and page keys', typed_text_keeps_keys),
                 ('Space on the bare page keeps scrolling', space_without_focus),
-                ('rows with their own arrow keys move once', own_arrow_rows),
+                ('tab strips with their own arrow keys move once', own_arrow_tabs),
                 ('combine name exit', combine_exit),
                 ('catalog D-pad access', catalog),
                 ('select choose and cancel', select_interaction),

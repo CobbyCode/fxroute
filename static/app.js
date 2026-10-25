@@ -5087,10 +5087,6 @@ function setupMeasurementActions() {
     }
     window.FXRouteMeasurementLevelMatch?.bindEvents();
     window.FXRouteMeasurementPolarityCheck?.bindEvents();
-    const smoothingChipsRow = document.getElementById('measurement-smoothing-chips');
-    if (smoothingChipsRow) window.FXRouteMeasurementPanelUI.bindChipArrowKeyNavigation(smoothingChipsRow, '[data-measurement-smoothing]');
-    const measurementViewToggle = document.querySelector('.measurement-view-toggle');
-    if (measurementViewToggle) window.FXRouteMeasurementPanelUI.bindChipArrowKeyNavigation(measurementViewToggle, '[data-measurement-view]');
     if (elements.measurementInputSelect) {
         const scanMeasurementInputsOnceForSelect = () => {
             if (measurementInputScanOnFocusDone) return;

@@ -330,32 +330,6 @@
         deps.renderMeasurementIrDiagnostics(graphEntries, frequencyView);
     }
 
-    const chipNavigationBound = new WeakSet();
-    /* Arrow keys walk a horizontal chip group with wrap-around; disabled chips
-       are skipped and Enter/Space keep working via the browser defaults. The
-       group tells the remote navigation (tv_nav.js) that it owns Left/Right. */
-    function bindChipArrowKeyNavigation(container, chipSelector) {
-        if (!container || chipNavigationBound.has(container)) return;
-        chipNavigationBound.add(container);
-        container.setAttribute('data-own-arrows', '');
-        container.addEventListener('keydown', (event) => {
-            if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
-            const chips = Array.from(container.querySelectorAll(chipSelector))
-                .filter(button => !button.disabled);
-            if (!chips.length) return;
-            const currentIndex = chips.indexOf(deps.getDocument().activeElement);
-            let next;
-            if (currentIndex < 0) {
-                next = event.key === 'ArrowRight' ? chips[0] : chips[chips.length - 1];
-            } else {
-                const offset = event.key === 'ArrowRight' ? 1 : -1;
-                next = chips[(currentIndex + offset + chips.length) % chips.length];
-            }
-            event.preventDefault();
-            next.focus({ preventScroll: true });
-        });
-    }
-
     return {
         init,
         renderMeasurementPanelSetupSection,
@@ -365,6 +339,5 @@
         renderMeasurementPanelActionsSection,
         renderMeasurementPanelViewSection,
         renderMeasurementPanelStatusSection,
-        bindChipArrowKeyNavigation,
     };
 });

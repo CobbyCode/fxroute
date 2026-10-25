@@ -54,7 +54,7 @@
     // Protection rows): Left/Right follow the group's control order.
     const EFFECTS_CARD_SELECTOR = '.effects-card';
     const EFFECT_GROUP_SELECTOR = '.effects-effect, .effects-extras-row';
-    // Set by rows that handle Left/Right themselves (see app.js, measurement_panel_ui.js).
+    // Set by tab strips that handle Left/Right themselves (see app.js).
     const OWN_ARROWS_SELECTOR = '[data-own-arrows]';
 
     // Anything a remote can land on. tabIndex >= 0 is checked separately so
@@ -652,8 +652,9 @@
             ? active
             : null;
         const ctx = docStates.get(doc);
+        const measurementCard = current && current.closest('.measurement-card');
         const effectsCard = current && (direction === 'left' || direction === 'right')
-            && current.closest(EFFECTS_CARD_SELECTOR);
+            && !measurementCard && current.closest(EFFECTS_CARD_SELECTOR);
         if (effectsCard) {
             const target = effectsStep(doc, scope, current, effectsCard, direction);
             return target ? focusElement(target, doc) : false;
@@ -708,6 +709,9 @@
                 && !inIndependentScrollport(element, current, doc))
             .map(element => ({ element, rect: rectOf(element) }))
             .filter(candidate => candidate.rect
+                // Measurement arrows follow rendered rows, not chip groups.
+                && (!measurementCard || (horizontal
+                    ? sharesRow(from, candidate.rect) : !sharesRow(from, candidate.rect)))
                 && !(footerTop !== null && centerY(candidate.rect) >= footerTop));
         if (footerTop !== null) {
             // Up from the footer lands on what is visible above it, not on a
@@ -731,7 +735,17 @@
         const pageCandidates = direction === 'down' && !footer
             ? candidates.filter(candidate => !candidate.element.closest(FOOTER_SELECTOR))
             : candidates;
-        const target = pickSpatial(from, peers, direction)
+        // A short button between full-width fields is still the next vertical
+        // neighbour. Centre-based drift alone can skip it on narrow layouts.
+        const column = measurementCard && !horizontal ? local.filter(candidate =>
+            overlapsAxis(from, candidate.rect, direction)
+            && spatialScore(from, candidate.rect, direction) !== null) : [];
+        column.sort((a, b) => Math.abs(centerY(a.rect) - centerY(from))
+            - Math.abs(centerY(b.rect) - centerY(from)));
+        const nearestMeasurementRow = column[0];
+        const measurementTarget = nearestMeasurementRow && pickSpatial(from,
+            column.filter(candidate => sharesRow(nearestMeasurementRow.rect, candidate.rect)), direction);
+        const target = measurementTarget || pickSpatial(from, peers, direction)
             || pickSpatial(from, local, direction) || pickSpatial(from, pageCandidates, direction)
             || pickSpatial(from, candidates, direction);
         // Entering a track list lands on a Play button, from above on the first.
