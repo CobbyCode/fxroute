@@ -13,9 +13,10 @@ ISO via SourceForge. Khadas/VIM1S stays internal and gets no public image.
 
 ### Release provenance
 
-- Source stand: `main` @ `80fafdcb` plus the VERSION/CHANGELOG/documentation
-  bump. B1-B5 from the Beta 15 blocker list are included and were verified on
-  the `.104` test machine before this stand.
+- Source stand: `main` @ `80fafdcb` plus the Beta 15 release-preparation
+  commits (version, changelog and documentation, repaired test contracts, ISO
+  build container fix). B1-B5 from the Beta 15 blocker list are included and
+  were verified on the `.104` test machine before this stand.
 - No Armbian image changes this cycle; the installer work is limited to the
   NFS client package set, the USB gadget helper and fail-closed HTTP validation.
 - The web demo snapshot follows this stand (`demo/dist` parity is green).

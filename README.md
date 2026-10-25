@@ -51,7 +51,7 @@ Web demo screenshots (simulated playback and measurements). Click an image for f
 
 **System**
 
-- Control from any browser on the LAN; optional local HTTPS via Caddy
+- Control from any browser on the LAN, including a TV remote or keyboard (arrows, OK, Back, Home, media keys); optional local HTTPS via Caddy
 - A read-only power hint for amplifier smart-plug automation ([Home Assistant](#home-assistant))
 - In-app maintenance updates, plus the downloadable images above
 
