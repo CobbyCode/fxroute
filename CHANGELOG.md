@@ -1,5 +1,198 @@
 # Changelog
 
+## 1.0-beta15 (2026-10-26)
+
+Fifteenth public beta and the release candidate of the 1.0 line. It makes the
+Library one place for local music and TIDAL (Artists view, one search, mixed
+playlists), adds NFS libraries and a USB audio gadget input, selects the HDMI
+Stereo/5.1/7.1 transport from the receiver automatically, makes the interface
+fully usable from a TV remote, and hardens measurement calibration as well as
+state synchronization between clients. Distribution is unchanged: web demo on
+GitHub Pages, Raspberry Pi 4/5 images via GitHub Release, x86_64 Ubuntu 26.04
+ISO via SourceForge. Khadas/VIM1S stays internal and gets no public image.
+
+### Release provenance
+
+- Source stand: `main` @ `80fafdcb` plus the VERSION/CHANGELOG/documentation
+  bump. B1-B5 from the Beta 15 blocker list are included and were verified on
+  the `.104` test machine before this stand.
+- No Armbian image changes this cycle; the installer work is limited to the
+  NFS client package set, the USB gadget helper and fail-closed HTTP validation.
+- The web demo snapshot follows this stand (`demo/dist` parity is green).
+
+### Library and TIDAL
+
+- **Artists view** built from the music tags: the album artist, or the track
+  artist for compilations and untagged files. A "feat." credit is split into
+  the main artist and each guest while the tags stay unchanged. An artist page
+  shows About, albums, tracks and **Discover Similar**; with TIDAL connected,
+  favorite artists join the list (matching names merge), carry the TIDAL image
+  and heart, and a matching page adds an **On TIDAL** section.
+- **One search** across the Library and TIDAL with result tabs for Albums,
+  Tracks, Artists and Playlists. Each tab lists the library (local items and
+  TIDAL favorites) first and the TIDAL catalog second; Enter searches TIDAL at
+  once, Esc clears. Folders and open album/playlist details filter in place.
+- **TIDAL lives in the Library.** The separate TIDAL tab and the device-login
+  flow are gone; TIDAL albums, tracks, artists and playlists appear as
+  favorites inside the shared Library views, and the heart keeps managing them
+  on the TIDAL account.
+- **Mixed playlists and queues** hold local tracks and TIDAL references in one
+  order. A queue start keeps that order, skips TIDAL entries while TIDAL is not
+  connected, and auto-advance skips a TIDAL track that cannot be played. The
+  M3U8 export leaves TIDAL entries out and names them in comment lines.
+- **Playlists have their own tab** and are managed from their detail: the heart
+  deletes a local playlist or removes a TIDAL playlist from the favorites;
+  smart mixes (Top 40, Favorite Tracks) carry no heart. Favorites now lists
+  only hearted albums, tracks and artists.
+- Favorited quality variants of the same album count as one favorite. Library
+  artists are matched to TIDAL in chunks of at most 5000 names.
+- The official TIDAL logos replace the placeholder mark and are kept off cover
+  art.
+- Library reliability: the saved library is restored without stopping playback
+  or holding the switch lock, scans and restore errors survive a later switch,
+  album discovery runs off the event loop, artwork I/O is isolated from network
+  status reads, cached albums refresh after a scan, and a failed artist About
+  lookup is retried.
+
+### Network libraries
+
+- **NFS exports work next to SMB shares.** Discovery combines the neighbour
+  table, a bounded subnet sweep, SMB guest listings, NFS `showmount` and a
+  read-only NFSv4 namespace fallback; a share that denies listing can be added
+  manually as `server:/export/path` (bracketed IPv6 supported).
+- Saved NFS libraries mount through read-only, boot-safe systemd automounts
+  with soft RPC retries and v4/v3 negotiation; removal deletes the saved choice
+  and the FXRoute-managed mount, never music files.
+- `MUSIC_LIBRARY_NFS_HOSTS` restricts discovery like the existing SMB host
+  variable. The installer provides the NFS client package set.
+
+### Outputs, HDMI and SRC
+
+- **HDMI transport is selected automatically** as Stereo, 5.1 or 7.1 from the
+  output mode, the highest assigned output and the receiver's reported LPCM
+  channels and rates (ELD). The receiver's capacity, not the active profile,
+  decides which routing outputs are offered.
+- Routing is stored **per HDMI connector and mode** and found by connector or
+  device identity; a profile change keeps volume and mute and does not restart
+  the service. A narrower profile is applied only after two consecutive
+  narrower targets, while an unsupported profile falls back immediately. After
+  a receiver is lost or replaced, a supported profile is restored for the
+  connector's routing.
+- Output switching is device-scoped and survives a replacement server: the
+  switch mute is owned and persisted, a rollback completes after failed
+  upgrades, user level edits are preserved, MPV channels are aligned after an
+  automatic HDMI upgrade, and unsupported MPV layouts are downmixed to stereo.
+- Fatal SRC faults are distinguished from a pending latency read; a committed
+  graph stays in place while latency is unavailable, cold recovery keeps the
+  fatal state, and a playback start is refused up front when the SRC plugin
+  cannot load. Sink replacement and relinking recover the converter without
+  losing the first block or the output levels.
+- A queue start keeps precedence over an older optimistic play request, and a
+  newer remote volume retry is no longer overwritten by an older one.
+- Effects links are repaired from the current graph state, with bounded retries
+  that keep an exception inside the retry loop.
+
+### USB audio input
+
+- **Persistent USB audio gadget (UAC2)** input: a Linux USB device-controller
+  port presents **FXRoute USB Audio** to a computer, and its capture stream is
+  used like any external input, including Custom Mapping and Auto input select.
+  A fixed USB rate avoids host-driven ALSA restarts, the gadget has a safe
+  On/Off lifecycle, and `scripts/install_usb_gadget.sh` sets up and removes the
+  controller permissions for the audio user.
+
+### Remote and keyboard control
+
+- The web interface is **fully usable from a TV remote** that sends the
+  standard arrow, Enter, Backspace, Home and Escape keys.
+- Focus moves predictably through the page, tiles and cards, track rows, DSP
+  effect groups, the playback bar, detail views, dialogs and remote-friendly
+  dropdowns. Left/Right stop at the ends of a row, Down reaches the seek slider
+  from the transport buttons, sliders are armed with OK and then adjusted with
+  Left/Right, and text fields are navigation stops instead of arrow traps.
+- Back and Backspace work one level at a time (dialog, detail view, panel),
+  Home closes open layers instead of leaving the app, and Space in a text field
+  stays typed text. Focus survives status re-renders, and the focus ring keeps
+  its contrast on cards and favorite controls.
+- **Hardware media keys** control the active FXRoute source through MPRIS,
+  including taking them back from a paused Spotify client; with an external,
+  Bluetooth or STDIN input selected they do nothing.
+
+### Measurement
+
+- **Auto PEQ** suggests filters from the measured response, keeps the combined
+  correction within the configured boost/cut limits and avoids overcutting.
+  The selected PEQ or Convolver assistant is shown immediately.
+- **Polarity Check** models convolver impulse responses, withholds a verdict
+  when the DSP path rotates the measured band or is unknown, and when the
+  sample grid can flip the result. Zero-delay polarity winners and mono matrix
+  axes are preserved through Auto Sub Optimize.
+- **SPL calibration is bound to the output it was measured on**, all legacy
+  calibrations are kept, and every calibration is validated before the capture
+  stops. Captures whose noise level is still rising are rejected, and a cold
+  noise start gets additional settling time.
+- Loudness calibration is resolved per output device instead of globally.
+- A paused MPV ingress is isolated for the session, so a measurement does not
+  capture or disturb paused playback.
+- Measurement settings survive a failed read, and job failures are logged with
+  their original traceback.
+
+### DSP and playback
+
+- **Surround plays multichannel files with their real positions** instead of
+  only a downmix, and a mono Center gets the full crossover way selection.
+- FIR filters support up to 65536 taps.
+- Stage-pair plugin masks swap configurations when they change, biquads recover
+  after non-finite audio, and JSON-escaped IR paths are decoded correctly.
+- The PEQ mirror and IR reader are shared between measurement paths, and the
+  polarity phase reader is split out of the generic measurement module.
+- Automatic input selection is fenced across graph changes, and a policy-rate
+  restore keeps retrying until it commits, so a graph change cannot leave the
+  wrong sample rate behind.
+
+### Cross-client state
+
+- DSP settings and shared output settings are synchronized across connected
+  controls. A WebSocket snapshot is rendered as authoritative state without
+  writing it back, local editor drafts and pending edits are preserved, and a
+  successful output mutation publishes an invalidation that makes every client
+  re-read the committed output catalog.
+
+### Fixes
+
+- A long-running page that predates the served frontend assets reloads itself
+  once instead of running stale JavaScript.
+- Numeric fields keep their remote focus and persist repeated steps, subwoofer
+  trims survive asynchronous saves, and measurement controls are navigated by
+  rendered position.
+- The demo answers calibration conflicts like the backend and shows SMB and NFS
+  shares side by side.
+- Qobuz releases its login lock during status polling; TIDAL distinguishes a
+  catalog failure from an authentication failure and keeps a created playlist
+  when seeding fails; streaming favorites require explicit booleans.
+- The installer fails completion when its HTTP validation fails.
+
+### Documentation
+
+- The manual and README describe the current feature set; implementation notes
+  moved into `docs/`. The Ubuntu 26.04 ISO documentation is English-only and
+  the retired Leap documentation is gone. The playback SRC notes record the
+  shipped state and date the open High32 limit.
+
+### Known limitations
+
+- Sustained High-quality conversion of 32 channels on a fully loaded 4-core
+  host remains unqualified; the contention runs predate the startup-FIFO and
+  shortfall-concealment fixes (see `docs/playback-src.md`).
+- Room correction is stereo/group based as documented; the Advanced wizard's
+  listening-position workflow requires a host microphone.
+
+Public release artifact names (to be built from tag `v1.0-beta15`):
+
+- `fxroute-1.0-beta15-rpi4-trixie-current.img.xz` (+ `.sha256`)
+- `fxroute-1.0-beta15-rpi5-trixie-current.img.xz` (+ `.sha256`)
+- `fxroute-1.0-beta15-x86_64-ubuntu26.04.iso` (SourceForge, + `.sha256`)
+
 ## 1.0-beta14 (2026-10-17)
 
 First stand since `1.0-beta12`: the Surround rebuild (third output mode

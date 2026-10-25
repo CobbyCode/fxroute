@@ -4,7 +4,7 @@ FXRoute turns a small Linux audio PC into a browser-controlled music and DSP sys
 
 This is the user manual. The [README](README.md) covers the feature overview, installation, and the web demo; [docs/INSTALLER.md](docs/INSTALLER.md) covers the installer and streaming providers in depth. Implementation details that only matter for diagnosis live in `docs/` and are linked from the sections they belong to.
 
-Screenshots show the Beta 14 frontend in the web demo. Playback, example presets, and measurements are simulated; they are not measurements of your room. Click an image to view it at full resolution.
+Screenshots show the frontend in the web demo. Playback, example presets, and measurements are simulated; they are not measurements of your room. Click an image to view it at full resolution.
 
 ## Contents
 
@@ -109,7 +109,7 @@ FXRoute works from a sofa without an air pointer. A TV remote that sends standar
 
 **Media keys.** Power, volume and mute keys keep their system behavior. Media keys (Play/Pause, Next, Previous, Stop) control the active FXRoute source from any keyboard or remote, even when the browser does not have the focus. FXRoute registers its own media player with the desktop (MPRIS; on GNOME the media-keys daemon) and takes the keys back from paused players such as Spotify Desktop, so Spotify is only controlled while it is the active source. With an external, Bluetooth or STDIN input selected, media keys do nothing.
 
-[![Beta 14 main view: Radio with saved stations, Station Catalog, playback controls, and L/R/Sub output meters](media/screenshots/radio-overview.png)](media/screenshots/radio-overview.png)
+[![Main view: Radio with saved stations, Station Catalog, playback controls, and L/R/Sub output meters](media/screenshots/radio-overview.png)](media/screenshots/radio-overview.png)
 
 ## 4. Sources
 

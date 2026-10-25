@@ -55,6 +55,9 @@ window.fetch = (url, opts) => {
         return json({ available: true, active_rate: 44100, supported_rates: [44100, 48000] });
     }
     if (u.includes('/api/streaming/')) return json({ installed: false, available: false });
+    // A successful extras save: a transport failure would trigger the real
+    // save path's recovery read and show its status line in the tile.
+    if (u.includes('/api/dsp/extras')) return json({ extras: null });
     return realFetch(url, opts);
 };
 """

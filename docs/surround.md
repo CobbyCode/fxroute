@@ -17,11 +17,11 @@ Surround is an output mode in the existing Output System. The mode is remembered
 - Sub 1/Sub 2 use the existing mono/dual-mono adjustment and optimization paths. No parallel Surround optimizer or DSP engine is created.
 
 <p align="center">
-  <a href="../media/screenshots/surround-easy.png"><img src="../media/screenshots/surround-easy.png" width="48%" alt="Beta 14 Surround Global in Easy view: separate Front, Center, Side and Rear presets for A and B"></a>
-  <a href="../media/screenshots/surround-expert.png"><img src="../media/screenshots/surround-expert.png" width="48%" alt="Beta 14 Surround in Expert view: Ind. Banks A/B assignments and separate Global status"></a>
+  <a href="../media/screenshots/surround-easy.png"><img src="../media/screenshots/surround-easy.png" width="48%" alt="Surround Global in Easy view: separate Front, Center, Side and Rear presets for A and B"></a>
+  <a href="../media/screenshots/surround-expert.png"><img src="../media/screenshots/surround-expert.png" width="48%" alt="Surround in Expert view: Ind. Banks A/B assignments and separate Global status"></a>
 </p>
 
-*Beta 14 web-demo examples, with simulated presets. Easy compares the Global group selections; Expert also exposes the area banks and Ind. Banks. See the [manual](../MANUAL.md#56-surround-output-mode) for the controls, [output routing](../media/screenshots/surround-routing.png) for the role assignments, and the [room diagram](../media/screenshots/room-diagram.png) for a group-scoped Advanced measurement.*
+*Web-demo examples, with simulated presets. Easy compares the Global group selections; Expert also exposes the area banks and Ind. Banks. See the [manual](../MANUAL.md#56-surround-output-mode) for the controls, [output routing](../media/screenshots/surround-routing.png) for the role assignments, and the [room diagram](../media/screenshots/room-diagram.png) for a group-scoped Advanced measurement.*
 
 ## Digital ingress
 
