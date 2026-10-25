@@ -326,21 +326,26 @@ async function main() {
     // 9. Successful extras save clears a previous failure label.
     {
         const feedback = { textContent: '', className: '' };
-        const elements = new Proxy({ effectsExtrasFeedback: feedback }, {
-            get: (t, p) => (p in t ? t[p] : stubEl()),
-        });
-        const state = { dsp: { available: false, presets: [], preset_count: 0 } };
+        const elements = { effectsExtrasFeedback: feedback, effectsLimiterEnabled: stubEl(),
+            effectsInfo: stubEl(), effectsDeleteBtn: stubEl(), effectsStatus: stubEl() };
+        const state = { dsp: { available: false, presets: [], preset_count: 0,
+            global_extras: { limiter: { enabled: false } } } };
         EffectsUI.init({ getState: () => state, getElements: () => elements, showToast: () => {} });
         const realFetch = global.fetch;
         let failNext = true;
-        global.window.FXRouteBankUI = { isCompareLoadBusy: () => false };
-        global.fetch = async () => (failNext
-            ? { ok: false, json: async () => ({ detail: 'offline' }) }
-            : { ok: true, json: async () => ({ extras: {} }) });
+        global.window.FXRouteBankUI = { ...BankUI, isCompareLoadBusy: () => false };
+        global.fetch = async (_url, options) => {
+            if (options?.method !== 'POST') return { ok: true, json: async () => ({ available: false,
+                presets: [], global_extras: { limiter: { enabled: false } } }) };
+            return failNext ? { ok: false, json: async () => ({ detail: 'offline' }) }
+                : { ok: true, json: async () => ({ extras: { limiter: { enabled: true } } }) };
+        };
         try {
+            elements.effectsLimiterEnabled.checked = true;
             await EffectsUI._doSaveEffectsExtras();
             assert.equal(feedback.textContent, 'Failed', 'failure label set');
             failNext = false;
+            elements.effectsLimiterEnabled.checked = true;
             await EffectsUI._doSaveEffectsExtras();
             assert.equal(feedback.textContent, '', 'success clears the failure label');
         } finally {

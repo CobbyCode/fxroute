@@ -1707,7 +1707,6 @@ function connectWebSocket() {
         elements.offlineIndicator.classList.add('hidden');
         PlaybackCore.stopMetadataPolling();
         PlaybackCore.startPeakStatusPolling();
-        void resyncAfterReconnect();
         if (isMeasurementPanelOpen()) void MeasurementFlows.recoverAutoSubJob();
         // A restarted server is the usual deploy: see whether this page predates it.
         if (wsOutageSeen) {
@@ -1863,34 +1862,10 @@ function handleWebSocketMessage(msg) {
                 StreamingRuntime.handleIncomingQobuzState(data.qobuz, { renderFooter: true });
             }
             if (data.player && data.player.state && data.player.state.dsp) {
-                state.dsp = data.player.state.dsp;
-                if (state.dsp?.global_extras) {
-                    EffectsUI.applyEffectsExtras({
-                        limiterEnabled: !!state.dsp.global_extras?.limiter?.enabled,
-                        headroomEnabled: !!state.dsp.global_extras?.headroom?.enabled,
-                        headroomGainDb: Number(state.dsp.global_extras?.headroom?.params?.gainDb ?? -3),
-                        autogainEnabled: !!state.dsp.global_extras?.autogain?.enabled,
-                        autogainTargetDb: Number(state.dsp.global_extras?.autogain?.params?.targetDb ?? -12),
-                        loudnessEnabled: !!state.dsp.global_extras?.loudness?.enabled,
-                        loudnessStrength: state.dsp.global_extras?.loudness?.params?.strength ?? 10,
-                        loudnessFftSize: Number(state.dsp.global_extras?.loudness?.params?.fftSize ?? 4096),
-                        loudnessVolumeDb: Number(state.dsp.global_extras?.loudness?.params?.volumeDb ?? 0),
-                        delayEnabled: !!state.dsp.global_extras?.delay?.enabled,
-                        delayLeftMs: Number(state.dsp.global_extras?.delay?.params?.leftMs || 0),
-                        delayRightMs: Number(state.dsp.global_extras?.delay?.params?.rightMs || 0),
-                        bassEnabled: !!state.dsp.global_extras?.bass_enhancer?.enabled,
-                        bassAmount: Number(state.dsp.global_extras?.bass_enhancer?.params?.amount || 0),
-                        toneEffectEnabled: !!state.dsp.global_extras?.tone_effect?.enabled,
-                        toneEffectMode: String(state.dsp.global_extras?.tone_effect?.mode || 'crystalizer'),
-                        upmixerEnabled: !!state.dsp.global_extras?.upmixer?.enabled,
-                        upmixerMode: String(state.dsp.global_extras?.upmixer?.params?.mode || 'fast'),
-                        upmixerCenter: state.dsp.global_extras?.upmixer?.params?.center ?? 6,
-                        upmixerSurround: state.dsp.global_extras?.upmixer?.params?.surround ?? 6,
-                        upmixerFftSize: Number(state.dsp.global_extras?.upmixer?.params?.fftSize ?? 2048),
-                    });
-                }
-                EffectsUI.renderEffects();
+                EffectsUI.acceptDspState(data.player.state.dsp);
             }
+            // Broadcasts are enabled only after the server queues init.
+            void resyncAfterReconnect();
             break;
         case 'playback': {
             const nextTrackId = data?.current_track?.id || null;
@@ -1976,6 +1951,10 @@ function handleWebSocketMessage(msg) {
         case 'src':
             window.FXRouteSrcSettings.update(data);
             break;
+        case 'output_state':
+            void fetchOutputSystemCatalog(true);
+            void EffectsUI.fetchEffects();
+            break;
         case 'download':
             state.download = data;
             LibraryUI.updateDownloadUI();
@@ -1987,14 +1966,9 @@ function handleWebSocketMessage(msg) {
             }
             break;
         case 'dsp':
-            const presetNames = (data.presets || []).map(p => p.name);
-            state.dsp = {
-                ...data,
-                combineDraft: state.dsp?.combineDraft || window.FXRouteBankUI.getDefaultEffectsCombineDraft(),
-                peqDraft: state.dsp?.peqDraft || { presetName: '', eqMode: 'IIR', leftBands: [EffectsUI.defaultPeqBand()], rightBands: [EffectsUI.defaultPeqBand()] },
-            };
-            state.dsp.combineDraft = window.FXRouteBankUI.normalizeEffectsCombineDraft(state.dsp.combineDraft, presetNames);
-            EffectsUI.renderEffects();
+            EffectsUI.acceptDspState(data);
+            // Preset creation/import may also assign a shared output bank.
+            void fetchOutputSystemCatalog(true);
             break;
         case 'download_complete':
             showToast(`Download complete: ${data.filename}`, 'success');

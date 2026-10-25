@@ -40,9 +40,10 @@ function harness({ failConnections = false, throwConnections = false, rejectRefr
             sockets.push(this);
             if (failConnections) setTimeout(() => this.close(), 1);
         }
-        open() {
+        open({ init = true } = {}) {
             this.readyState = Transport.OPEN;
             this.onopen();
+            if (init) this.message({ type: 'init', data: {} });
         }
         close() {
             this.readyState = Transport.CLOSED;
@@ -93,7 +94,10 @@ function harness({ failConnections = false, throwConnections = false, rejectRefr
         fetchAudioSourceOverview: refresh('source'),
         fetchAudioOutputOverview: refresh('outputs'),
         fetchOutputSystemCatalog: refresh('catalog'),
-        handleWebSocketMessage: msg => messages.push(msg),
+        handleWebSocketMessage: msg => {
+            if (msg.type === 'init') void context.resyncAfterReconnect();
+            else messages.push(msg);
+        },
         showToast: (...args) => toasts.push(args),
     });
     if (realLibrary) {
@@ -305,6 +309,17 @@ test('a reconnect refreshes all state omitted from the server init frame', async
         assert.ok(h.calls.some(([called]) => called === name), `missing ${name} resync`);
     }
     assert.ok(h.calls.some(([name, force]) => name === 'catalog' && force === true), 'bypass stale catalog cache');
+});
+
+test('resync waits for server init so settings changed during initialization cannot be missed', async () => {
+    const h = harness();
+    h.run('setupWebSocket()');
+    h.sockets[0].open({ init: false });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.ok(!h.calls.some(([name]) => name === 'effects'), 'no snapshot read before broadcasts are enabled');
+    h.sockets[0].message({ type: 'init', data: {} });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.ok(h.calls.some(([name]) => name === 'effects'), 'read after init recovers settings missed during initialization');
 });
 
 test('one rejected state refresh does not prevent the other reconnect refreshes', async () => {

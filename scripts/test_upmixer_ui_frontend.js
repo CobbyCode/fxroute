@@ -13,6 +13,7 @@ const repoRoot = path.resolve(__dirname, '..');
 const indexSource = fs.readFileSync(path.join(repoRoot, 'static', 'index.html'), 'utf8');
 const Effects = require('../static/output_effects_ui.js');
 const Controller = require('../static/output_system_controller.js');
+global.FXRouteUiHelpers = require('../static/ui_helpers.js');
 
 function element(extra = {}) {
     const hidden = new Set(['hidden']);

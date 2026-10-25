@@ -6214,6 +6214,12 @@ async def apply_audio_output_state(request: Request):
         body = await request.json()
     except Exception:
         raise HTTPException(status_code=400, detail='Invalid JSON body, expected {"expected_revision": <int>, "mutation": {...}}')
+
+    async def apply_and_notify():
+        result = await output_application.apply(body)
+        await manager.broadcast({"type": "output_state", "data": {"revision": result["revision"]}})
+        return result
+
     if isinstance(body, dict) and (body.get("mutation") or {}).get("kind") == "switch_mode":
         with _hdmi_transition_scope():
             async with _source_transition_lock():
@@ -6222,8 +6228,8 @@ async def apply_audio_output_state(request: Request):
                 if not await _wait_for_hdmi_transport_change("Output-mode transition"):
                     raise HTTPException(status_code=503,
                                         detail="HDMI layout change is still in progress; retry the transition")
-                return await finish_then_cancel(output_application.apply(body), what="Output-mode transition")
-    return await output_application.apply(body)
+                return await finish_then_cancel(apply_and_notify(), what="Output-mode transition")
+    return await apply_and_notify()
 
 
 @app.get('/api/audio/av-sync')

@@ -5,13 +5,12 @@
   already read when the post-gate live re-read fails, never to an empty
   dict that would sync the helper with a sparse config.
 - The limiter time params are engine-port bounded (at/rt 0.25..20 ms,
-  lk 0.1..20 ms, release default 20 ms); the frontend fallback must match
-  the canonical backend defaults.
+  lk 0.1..20 ms, release default 20 ms); status publishes canonical defaults.
 """
 
 import asyncio
-import re
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -167,20 +166,12 @@ class LimiterCanonicalBoundsTests(unittest.TestCase):
         self.assertEqual(params["releaseMs"], 20.0)
         self.assertEqual(params["lookaheadMs"], 20.0)
 
-    def test_frontend_fallback_matches_canonical_release_default(self) -> None:
+    def test_status_publishes_canonical_limiter_release_default(self) -> None:
         from dsp.manager import DSPManager
 
-        app_js = (ROOT / "static" / "app.js").read_text(encoding="utf-8")
-        effects_js = (ROOT / "static" / "output_effects_ui.js").read_text(encoding="utf-8")
-        matches = re.findall(r"releaseMs:\s*([0-9.]+)", app_js + effects_js)
-        self.assertTrue(matches,
-                        "no releaseMs fallback found in static/app.js or output_effects_ui.js")
-        canonical = DSPManager.LIMITER_DEFAULTS["params"]["releaseMs"]
-        for value in matches:
-            self.assertEqual(
-                float(value), float(canonical),
-                f"frontend releaseMs fallback {value} != backend default {canonical}",
-            )
+        with tempfile.TemporaryDirectory() as home:
+            status = DSPManager(home=Path(home)).get_status()
+        self.assertEqual(status["global_extras"]["limiter"]["params"]["releaseMs"], 20.0)
 
     def test_app_js_version_is_bumped_pattern(self) -> None:
         index_html = (ROOT / "static" / "index.html").read_text(encoding="utf-8")

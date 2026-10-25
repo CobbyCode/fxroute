@@ -123,10 +123,13 @@ function makeContext({ responses = [], stateDsp = null } = {}) {
         },
         showToast: (message) => { toasts.push(message); },
         renderEffects: () => {},
+        loadSavedEffectsExtras: () => {},
+        fetchEffects: async () => {},
         // The extracted effects functions read state/DOM/toast via deps.
         deps: {
             getState: () => state,
             getElements: () => elements,
+            getActiveEditing: () => new Set(),
             showToast: (message) => { toasts.push(message); },
         },
     };
@@ -135,7 +138,12 @@ function makeContext({ responses = [], stateDsp = null } = {}) {
         let _extrasDebounceTimer = null;
         let effectsExtrasSaveInFlight = false;
         let effectsExtrasPendingResave = false;
-        let effectsExtrasRevision = 0;
+        let effectsDspRevision = 0;
+        let effectsExtrasRendered = null;
+        let effectsExtrasRenderedText = null;
+        let effectsExtrasTextDraft = {};
+        let effectsExtrasPending = {};
+        let effectsExtrasSending = {};
         let effectsCompareLoadInFlight = false;
         const EFFECTS_EXTRAS_TOGGLE_DEBOUNCE_MS = 0;
         ${extractConst('EFFECTS_HEADROOM_ALLOWED_GAIN_DB')}
@@ -152,6 +160,9 @@ function makeContext({ responses = [], stateDsp = null } = {}) {
         ${extractFunction('normalizeEffectsUpmixerMode')}
         ${extractFunction('normalizeEffectsUpmixerFftSize')}
         ${extractFunction('collectEffectsExtras')}
+        ${extractFunction('collectEffectsExtrasText')}
+        ${extractFunction('effectsExtrasValues')}
+        ${extractFunction('captureEffectsExtrasChanges')}
         ${extractFunction('buildEffectsExtrasSaveBody')}
         ${extractFunction('setEffectsExtrasFeedback')}
         ${extractFunction('saveEffectsExtrasDebounced')}
@@ -190,7 +201,7 @@ async function main() {
         assert.equal(env.fetchCalls[0].opts.method, 'POST');
         assert.ok(!('loudnessEnabled' in env.fetchCalls[0].body), 'limiter save must not carry loudnessEnabled');
         assert.equal(env.fetchCalls[0].body.limiterEnabled, true);
-        assert.equal(env.fetchCalls[0].body.bassEnabled, false);
+        assert.ok(!('bassEnabled' in env.fetchCalls[0].body), 'unmodified bass must stay out of the patch');
         assert.ok(env.state.dsp.global_extras.limiter.enabled, 'response must update the client extras state');
         assert.ok(!env.state.dsp.global_extras.loudness.enabled);
     }
@@ -277,7 +288,7 @@ async function main() {
         assert.equal(env.fetchCalls.length, 2, 'no extra save loop afterwards');
     }
 
-    // 6. A failed loudness save keeps the transition flag on the retry.
+    // 6. A deliberate retry after a failed loudness save still carries the flag.
     {
         const env = makeContext({
             responses: [
@@ -292,6 +303,10 @@ async function main() {
         assert.equal(env.fetchCalls.length, 1);
         assert.equal(env.fetchCalls[0].body.loudnessEnabled, true);
         assert.deepEqual(env.toasts, ['boom']);
+        env.elements.effectsLoudnessEnabled.checked = false;
+        env.context._doSaveEffectsExtras('saving');
+        await tick();
+        env.elements.effectsLoudnessEnabled.checked = true;
         env.context._doSaveEffectsExtras('saving');
         await tick(); await tick();
         assert.equal(env.fetchCalls.length, 2);

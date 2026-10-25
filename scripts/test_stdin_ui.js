@@ -96,9 +96,7 @@ for (const call of ['renderSourceSection()', 'applySourceModeUiState()', 'Playba
 }
 assert.ok(extractFunction('renderSettingsPanel').includes('renderSourceSection()'),
     'the settings panel renders the same source section');
-const onOpenAt = appSource.indexOf('socket.onopen');
-const onOpen = appSource.slice(onOpenAt, appSource.indexOf('socket.onclose', onOpenAt));
-assert.ok(onOpen.includes('resyncAfterReconnect()'), 'a (re)connect must run the shared recovery');
+// The real init-dispatch recovery is exercised by test_shared_state_sync.js.
 
 // Revision order, epochs, full replacement, fetch errors and save ownership,
 // run on the real code.

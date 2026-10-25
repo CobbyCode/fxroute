@@ -38,7 +38,13 @@
     }
 
     const EFFECTS_EXTRAS_TOGGLE_DEBOUNCE_MS = 800;
-    let effectsExtrasRevision = 0;
+    let effectsDspRevision = 0;
+    let effectsFetchSerial = 0;
+    let effectsExtrasRendered = null;
+    let effectsExtrasRenderedText = null;
+    let effectsExtrasTextDraft = {};
+    let effectsExtrasPending = {};
+    let effectsExtrasSending = {};
     // Mirrors dsp.native_config.PEQ_Q_MIN/PEQ_Q_MAX (LSP para_equalizer Q port bound).
     const PEQ_Q_MIN = 0.1;
     const PEQ_Q_MAX = 100;
@@ -298,59 +304,37 @@ function setupEffectsActions() {
 }
 
 async function fetchEffects() {
-    const extrasRevision = effectsExtrasRevision;
+    const revision = effectsDspRevision;
+    const serial = ++effectsFetchSerial;
     try {
         const resp = await fetch('/api/dsp/presets');
         if (!resp.ok) throw new Error('Failed to fetch DSP presets');
         const data = await resp.json();
-        const presetNames = (data.presets || []).map(p => p.name);
-        const extrasCurrent = extrasRevision === effectsExtrasRevision;
-        deps.getState().dsp = {
-            ...data,
-            global_extras: extrasCurrent ? data.global_extras : deps.getState().dsp?.global_extras,
-            combineDraft: deps.getState().dsp?.combineDraft || root.FXRouteBankUI.getDefaultEffectsCombineDraft(),
-            peqDraft: deps.getState().dsp?.peqDraft || {
-                presetName: '',
-                eqMode: 'IIR',
-                leftBands: [defaultPeqBand()],
-                rightBands: [defaultPeqBand()],
-            },
-            assistStack: Array.isArray(deps.getState().dsp?.assistStack) ? deps.getState().dsp.assistStack : [],
-        };
-        deps.getState().dsp.combineDraft = root.FXRouteBankUI.normalizeEffectsCombineDraft(deps.getState().dsp.combineDraft, presetNames);
-        if (!Array.isArray(deps.getState().dsp.peqDraft?.leftBands) || !deps.getState().dsp.peqDraft.leftBands.length) deps.getState().dsp.peqDraft.leftBands = [defaultPeqBand()];
-        if (!Array.isArray(deps.getState().dsp.peqDraft?.rightBands) || !deps.getState().dsp.peqDraft.rightBands.length) deps.getState().dsp.peqDraft.rightBands = [defaultPeqBand()];
-        deps.getState().dsp.peqDraft.eqMode = normalizePeqEqMode(deps.getState().dsp.peqDraft?.eqMode);
-        if (data.global_extras && extrasCurrent) {
-            applyEffectsExtras({
-                limiterEnabled: !!data.global_extras?.limiter?.enabled,
-                headroomEnabled: !!data.global_extras?.headroom?.enabled,
-                headroomGainDb: Number(data.global_extras?.headroom?.params?.gainDb ?? -3),
-                autogainEnabled: !!data.global_extras?.autogain?.enabled,
-                autogainTargetDb: Number(data.global_extras?.autogain?.params?.targetDb ?? -12),
-                loudnessEnabled: !!data.global_extras?.loudness?.enabled,
-                loudnessStrength: data.global_extras?.loudness?.params?.strength ?? 10,
-                loudnessFftSize: Number(data.global_extras?.loudness?.params?.fftSize ?? 4096),
-                loudnessVolumeDb: Number(data.global_extras?.loudness?.params?.volumeDb ?? 0),
-                delayEnabled: !!data.global_extras?.delay?.enabled,
-                delayLeftMs: Number(data.global_extras?.delay?.params?.leftMs || 0),
-                delayRightMs: Number(data.global_extras?.delay?.params?.rightMs || 0),
-                bassEnabled: !!data.global_extras?.bass_enhancer?.enabled,
-                bassAmount: Number(data.global_extras?.bass_enhancer?.params?.amount || 0),
-                toneEffectEnabled: !!data.global_extras?.tone_effect?.enabled,
-                toneEffectMode: String(data.global_extras?.tone_effect?.mode || 'crystalizer'),
-                upmixerEnabled: !!data.global_extras?.upmixer?.enabled,
-                upmixerMode: String(data.global_extras?.upmixer?.params?.mode || 'fast'),
-                upmixerCenter: data.global_extras?.upmixer?.params?.center ?? 6,
-                upmixerSurround: data.global_extras?.upmixer?.params?.surround ?? 6,
-                upmixerFftSize: Number(data.global_extras?.upmixer?.params?.fftSize ?? 2048),
-            });
-        }
-        renderEffects();
+        // A push or completed save supersedes reads started before it.
+        if (serial !== effectsFetchSerial || revision !== effectsDspRevision) return;
+        acceptDspState(data);
         void deps.fetchOutputSystemCatalog();
     } catch (e) {
-        if (deps.getElements().effectsStatus) deps.getElements().effectsStatus.innerHTML = '<div style="color: var(--danger);">DSP presets are unavailable</div>';
+        if (serial === effectsFetchSerial && revision === effectsDspRevision && deps.getElements().effectsStatus) {
+            deps.getElements().effectsStatus.innerHTML = '<div style="color: var(--danger);">DSP presets are unavailable</div>';
+        }
     }
+}
+
+function acceptDspState(data) {
+    effectsDspRevision += 1;
+    const presetNames = (data.presets || []).map(p => p.name);
+    deps.getState().dsp = {
+        ...data,
+        combineDraft: deps.getState().dsp?.combineDraft || root.FXRouteBankUI.getDefaultEffectsCombineDraft(),
+        peqDraft: deps.getState().dsp?.peqDraft || getDefaultPeqDraft(),
+        assistStack: Array.isArray(deps.getState().dsp?.assistStack) ? deps.getState().dsp.assistStack : [],
+    };
+    deps.getState().dsp.combineDraft = root.FXRouteBankUI.normalizeEffectsCombineDraft(deps.getState().dsp.combineDraft, presetNames);
+    if (!Array.isArray(deps.getState().dsp.peqDraft?.leftBands) || !deps.getState().dsp.peqDraft.leftBands.length) deps.getState().dsp.peqDraft.leftBands = [defaultPeqBand()];
+    if (!Array.isArray(deps.getState().dsp.peqDraft?.rightBands) || !deps.getState().dsp.peqDraft.rightBands.length) deps.getState().dsp.peqDraft.rightBands = [defaultPeqBand()];
+    deps.getState().dsp.peqDraft.eqMode = normalizePeqEqMode(deps.getState().dsp.peqDraft?.eqMode);
+    renderEffects();
 }
 
 function defaultPeqBand() {
@@ -747,6 +731,7 @@ async function createPeqPreset() {
 }
 
 function renderEffects() {
+    loadSavedEffectsExtras();
     const fx = deps.getState().dsp;
     const presets = fx.presets || [];
     const presetNames = presets.map(p => p.name);
@@ -856,48 +841,55 @@ function normalizeEffectsToneEffectMode(value, fallback = 'crystalizer') {
     return EFFECTS_TONE_EFFECT_MODES.has(normalized) ? normalized : fallback;
 }
 
+function canApplyEffectsExtra(control, key) {
+    const editing = deps.getActiveEditing().has(control);
+    const uncommitted = key in effectsExtrasPending || key in effectsExtrasSending || key in effectsExtrasTextDraft;
+    return control && !(editing && uncommitted);
+}
+
 function applyEffectsExtras(extras = {}) {
-    // A poll may predate a queued step even after focus left its group.
-    if (_extrasDebounceTimer !== null || effectsExtrasSaveInFlight) return;
+    // Rebase only local edits; unrelated settings follow the backend at once.
+    extras = { ...extras, ...effectsExtrasSending, ...effectsExtrasPending };
     if (deps.getElements().effectsLimiterEnabled) deps.getElements().effectsLimiterEnabled.checked = !!extras.limiterEnabled;
     if (deps.getElements().effectsHeadroomEnabled) deps.getElements().effectsHeadroomEnabled.checked = !!extras.headroomEnabled;
-    if (deps.getElements().effectsHeadroomGainDb && !deps.getActiveEditing().has(deps.getElements().effectsHeadroomGainDb)) {
+    if (canApplyEffectsExtra(deps.getElements().effectsHeadroomGainDb, 'headroomGainDb')) {
         deps.getElements().effectsHeadroomGainDb.value = String(normalizeEffectsHeadroomGainDb(extras.headroomGainDb, -3));
     }
     if (deps.getElements().effectsAutogainEnabled) deps.getElements().effectsAutogainEnabled.checked = !!extras.autogainEnabled;
-    if (deps.getElements().effectsAutogainTargetDb && !deps.getActiveEditing().has(deps.getElements().effectsAutogainTargetDb)) {
+    if (canApplyEffectsExtra(deps.getElements().effectsAutogainTargetDb, 'autogainTargetDb')) {
         deps.getElements().effectsAutogainTargetDb.value = String(normalizeEffectsAutogainTargetDb(extras.autogainTargetDb, -12));
     }
     if (deps.getElements().effectsLoudnessEnabled) deps.getElements().effectsLoudnessEnabled.checked = !!extras.loudnessEnabled;
-    if (deps.getElements().effectsLoudnessStrength && !deps.getActiveEditing().has(deps.getElements().effectsLoudnessStrength)) {
+    if (canApplyEffectsExtra(deps.getElements().effectsLoudnessStrength, 'loudnessStrength')) {
         deps.getElements().effectsLoudnessStrength.value = normalizeEffectsLoudnessStrength(extras.loudnessStrength, 10);
     }
-    if (deps.getElements().effectsLoudnessFftSize && !deps.getActiveEditing().has(deps.getElements().effectsLoudnessFftSize)) {
+    if (canApplyEffectsExtra(deps.getElements().effectsLoudnessFftSize, 'loudnessFftSize')) {
         deps.getElements().effectsLoudnessFftSize.value = String(normalizeEffectsLoudnessFftSize(extras.loudnessFftSize, 4096));
     }
     if (deps.getElements().effectsBassEnabled) deps.getElements().effectsBassEnabled.checked = !!extras.bassEnabled;
-    // Only update amount when bass is enabled — otherwise keep field value (user may re-enable)
-    if (deps.getElements().effectsBassAmount && !!extras.bassEnabled && !deps.getActiveEditing().has(deps.getElements().effectsBassAmount)) {
+    if (canApplyEffectsExtra(deps.getElements().effectsBassAmount, 'bassAmount')) {
         deps.getElements().effectsBassAmount.value = String(root.FXRouteUiHelpers.roundToDecimals(Number(extras.bassAmount || 0), 2));
     }
     if (deps.getElements().effectsUpmixerEnabled) deps.getElements().effectsUpmixerEnabled.checked = !!extras.upmixerEnabled;
-    if (deps.getElements().effectsUpmixerMode && !deps.getActiveEditing().has(deps.getElements().effectsUpmixerMode)) {
+    if (canApplyEffectsExtra(deps.getElements().effectsUpmixerMode, 'upmixerMode')) {
         deps.getElements().effectsUpmixerMode.value = normalizeEffectsUpmixerMode(extras.upmixerMode, 'fast');
     }
-    if (deps.getElements().effectsUpmixerFftSize && !deps.getActiveEditing().has(deps.getElements().effectsUpmixerFftSize)) {
+    if (canApplyEffectsExtra(deps.getElements().effectsUpmixerFftSize, 'upmixerFftSize')) {
         deps.getElements().effectsUpmixerFftSize.value = String(normalizeEffectsUpmixerFftSize(extras.upmixerFftSize, 2048));
     }
-    if (deps.getElements().effectsUpmixerCenter && !deps.getActiveEditing().has(deps.getElements().effectsUpmixerCenter)) {
+    if (canApplyEffectsExtra(deps.getElements().effectsUpmixerCenter, 'upmixerCenter')) {
         deps.getElements().effectsUpmixerCenter.value = normalizeEffectsUpmixerStrength(extras.upmixerCenter, 6);
     }
-    if (deps.getElements().effectsUpmixerSurround && !deps.getActiveEditing().has(deps.getElements().effectsUpmixerSurround)) {
+    if (canApplyEffectsExtra(deps.getElements().effectsUpmixerSurround, 'upmixerSurround')) {
         deps.getElements().effectsUpmixerSurround.value = normalizeEffectsUpmixerStrength(extras.upmixerSurround, 6);
     }
     if (deps.getElements().effectsToneEffectEnabled) deps.getElements().effectsToneEffectEnabled.checked = !!extras.toneEffectEnabled;
-    if (deps.getElements().effectsToneEffectMode && !deps.getActiveEditing().has(deps.getElements().effectsToneEffectMode)) {
+    if (canApplyEffectsExtra(deps.getElements().effectsToneEffectMode, 'toneEffectMode')) {
         deps.getElements().effectsToneEffectMode.value = normalizeEffectsToneEffectMode(extras.toneEffectMode, 'crystalizer');
     }
     updateEffectsExtrasUi();
+    effectsExtrasRendered = collectEffectsExtras();
+    effectsExtrasRenderedText = collectEffectsExtrasText();
 }
 
 function updateEffectsExtrasUi() {
@@ -944,7 +936,12 @@ function updateEffectsUpmixerUi() {
 function loadSavedEffectsExtras() {
     const fx = deps.getState().dsp;
     if (!fx?.global_extras) return;
-    applyEffectsExtras({
+    applyEffectsExtras(effectsExtrasValues(fx.global_extras));
+}
+
+function effectsExtrasValues(globalExtras = {}) {
+    const fx = { global_extras: globalExtras };
+    return {
         limiterEnabled: !!fx.global_extras?.limiter?.enabled,
         headroomEnabled: !!fx.global_extras?.headroom?.enabled,
         headroomGainDb: Number(fx.global_extras?.headroom?.params?.gainDb ?? -3),
@@ -966,7 +963,7 @@ function loadSavedEffectsExtras() {
         upmixerCenter: fx.global_extras?.upmixer?.params?.center ?? 6,
         upmixerSurround: fx.global_extras?.upmixer?.params?.surround ?? 6,
         upmixerFftSize: Number(fx.global_extras?.upmixer?.params?.fftSize ?? 2048),
-    });
+    };
 }
 
 function describeEffectsExtras(extras) {
@@ -983,8 +980,35 @@ let _extrasDebounceTimer = null;
 let effectsExtrasSaveInFlight = false;
 let effectsExtrasPendingResave = false;
 
+function collectEffectsExtrasText() {
+    const text = {};
+    for (const key of Object.keys(collectEffectsExtras())) {
+        const control = deps.getElements()[`effects${key[0].toUpperCase()}${key.slice(1)}`];
+        if (control?.value !== undefined) text[key] = String(control.value);
+    }
+    return text;
+}
+
+function captureEffectsExtrasChanges() {
+    const values = collectEffectsExtras();
+    const previous = effectsExtrasRendered || effectsExtrasValues(deps.getState().dsp?.global_extras);
+    const text = collectEffectsExtrasText();
+    const previousText = effectsExtrasRenderedText || Object.fromEntries(Object.entries(previous).map(([key, value]) => [key, String(value)]));
+    for (const [key, value] of Object.entries(values)) {
+        if (value !== previous[key]) effectsExtrasPending[key] = value;
+    }
+    // Clearing a zero-valued field changes its text, but not its save delta.
+    for (const [key, value] of Object.entries(text)) {
+        const control = deps.getElements()[`effects${key[0].toUpperCase()}${key.slice(1)}`];
+        if (value !== previousText[key]) effectsExtrasTextDraft[key] = value;
+        if (!deps.getActiveEditing().has(control)) delete effectsExtrasTextDraft[key];
+    }
+    effectsExtrasRendered = values;
+    effectsExtrasRenderedText = text;
+}
+
 function saveEffectsExtrasDebounced(delayMs = EFFECTS_EXTRAS_TOGGLE_DEBOUNCE_MS) {
-    effectsExtrasRevision += 1;
+    captureEffectsExtrasChanges();
     window.clearTimeout(_extrasDebounceTimer);
     _extrasDebounceTimer = null;
     if (delayMs <= 0) {
@@ -1033,6 +1057,7 @@ function buildEffectsExtrasSaveBody(extras, serverExtras) {
 }
 
 async function _doSaveEffectsExtras() {
+    captureEffectsExtrasChanges();
     const compareBusy = (typeof window !== 'undefined' && window.FXRouteBankUI?.isCompareLoadBusy?.())
         ?? (typeof globalThis !== 'undefined' && globalThis.FXRouteBankUI?.isCompareLoadBusy?.())
         ?? false;
@@ -1040,10 +1065,17 @@ async function _doSaveEffectsExtras() {
         effectsExtrasPendingResave = true;
         return;
     }
+    const body = buildEffectsExtrasSaveBody(effectsExtrasPending, deps.getState().dsp?.global_extras);
+    effectsExtrasPending = {};
+    if (!Object.keys(body).length) {
+        loadSavedEffectsExtras();
+        return;
+    }
     effectsExtrasSaveInFlight = true;
     effectsExtrasPendingResave = false;
-    const extras = collectEffectsExtras();
-    const body = buildEffectsExtrasSaveBody(extras, deps.getState().dsp?.global_extras);
+    effectsExtrasSending = body;
+    const sendingText = { ...effectsExtrasTextDraft };
+    const revision = effectsDspRevision;
     try {
         const resp = await fetch('/api/dsp/extras', {
             method: 'POST',
@@ -1052,43 +1084,30 @@ async function _doSaveEffectsExtras() {
         });
         const data = await resp.json().catch(() => ({}));
         if (!resp.ok) throw new Error(data.detail || 'Failed to save output extras');
-        effectsExtrasRevision += 1;
-        deps.getState().dsp = deps.getState().dsp || {};
-        deps.getState().dsp.global_extras = data.extras || {
-            limiter: { enabled: !!extras.limiterEnabled, params: { thresholdDb: -1.0, attackMs: 5.0, releaseMs: 20.0, lookaheadMs: 5.0, stereoLinkPercent: 100.0 } },
-            headroom: { enabled: !!extras.headroomEnabled, params: { gainDb: extras.headroomGainDb } },
-            autogain: { enabled: !!extras.autogainEnabled, params: { targetDb: extras.autogainTargetDb } },
-            loudness: {
-                enabled: !!extras.loudnessEnabled,
-                params: {
-                    ...(deps.getState().dsp?.global_extras?.loudness?.params || {}),
-                    strength: extras.loudnessStrength,
-                    fftSize: extras.loudnessFftSize,
-                },
-            },
-            delay: { enabled: !!extras.delayEnabled, params: { leftMs: extras.delayLeftMs, rightMs: extras.delayRightMs } },
-            bass_enhancer: { enabled: !!extras.bassEnabled, params: { amount: extras.bassAmount, harmonics: 8.5, scope: 100.0, blend: 0.0 } },
-            tone_effect: { enabled: !!extras.toneEffectEnabled, mode: extras.toneEffectMode },
-            upmixer: {
-                enabled: !!extras.upmixerEnabled,
-                params: {
-                    ...(deps.getState().dsp?.global_extras?.upmixer?.params || {}),
-                    mode: extras.upmixerMode,
-                    center: extras.upmixerCenter,
-                    surround: extras.upmixerSurround,
-                    fftSize: extras.upmixerFftSize,
-                },
-            },
-        };
-        renderEffects();
+        // A later push may already contain a newer remote commit.
+        if (revision === effectsDspRevision && data.extras) {
+            effectsDspRevision += 1;
+            deps.getState().dsp = deps.getState().dsp || {};
+            deps.getState().dsp.global_extras = data.extras;
+        }
         // Success clears a previous failure label: the tile must never keep
         // reporting "Failed" after the latest commit already fixed it.
         setEffectsExtrasFeedback('', '');
     } catch (error) {
+        // A rejected edit must not remain visible as if it had committed.
+        // Keep only newer user edits and recover uncertain transport failures.
+        void fetchEffects();
         setEffectsExtrasFeedback('Failed', 'error');
         deps.showToast(error.message || 'Failed to save output extras', 'error');
     } finally {
         effectsExtrasSaveInFlight = false;
+        effectsExtrasSending = {};
+        for (const key of Object.keys(body)) {
+            if (!(key in effectsExtrasPending) && effectsExtrasTextDraft[key] === sendingText[key]) {
+                delete effectsExtrasTextDraft[key];
+            }
+        }
+        renderEffects();
         if (effectsExtrasPendingResave) {
             effectsExtrasPendingResave = false;
             saveEffectsExtrasDebounced(EFFECTS_EXTRAS_TOGGLE_DEBOUNCE_MS);
@@ -1104,6 +1123,7 @@ function setEffectsExtrasFeedback(message, cls) {
 
     return {
         init,
+        acceptDspState,
         _doSaveEffectsExtras,
         addPeqBandPair,
         applyEffectsExtras,

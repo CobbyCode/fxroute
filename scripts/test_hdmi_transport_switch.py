@@ -818,7 +818,7 @@ class HdmiTransportSwitchTests(unittest.IsolatedAsyncioTestCase):
 
         async def apply(body):
             applied.set()
-            return {"status": "ok"}
+            return {"status": "ok", "revision": 1}
 
         main.runtime.hdmi_transport_change_depth = 1
         try:
@@ -827,7 +827,7 @@ class HdmiTransportSwitchTests(unittest.IsolatedAsyncioTestCase):
                 await asyncio.sleep(0.2)
                 self.assertFalse(applied.is_set(), "The transition must not start mid change")
                 main.runtime.hdmi_transport_change_depth = 0
-                self.assertEqual(await asyncio.wait_for(task, 5), {"status": "ok"})
+                self.assertEqual(await asyncio.wait_for(task, 5), {"status": "ok", "revision": 1})
         finally:
             main.runtime.hdmi_transport_change_depth = 0
         self.assertTrue(applied.is_set())

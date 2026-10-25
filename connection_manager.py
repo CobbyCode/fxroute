@@ -138,6 +138,7 @@ class ConnectionManager:
             "playback",
             "spotify",
             "dsp",
+            "output_state",
             "playback_peak_warning",
             "source",
         }
