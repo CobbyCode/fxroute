@@ -197,14 +197,17 @@ def test_limiter_input_is_level_neutral_post_limiter_level(tmp_path):
         (-25.9, 2, 0.0, -18.0, True),
     )
     for volume_db, strength, calibration_db, autogain_db, autogain_on in cases:
-        manager = DSPManager(home=tmp_path / "home")
+        # A calibration belongs to the output it was measured on: the work
+        # point reads the record of the rendering output, never a global one.
+        manager = DSPManager(home=tmp_path / "home", active_device_reader=lambda: "test-output")
         manager.save_global_extras({
             "limiter": {"enabled": True, "params": {}},
             "autogain": {"enabled": autogain_on, "params": {"targetDb": autogain_db}},
             "loudness": {"enabled": True, "params": {
                 "fftSize": 4096, "strength": strength, "volumeDb": volume_db,
-                "calibration": {"requiredAdjustmentDb": calibration_db},
-                "calibrationProfiles": {}}},
+                "calibration": {},
+                "calibrationProfiles": {"test-output": {
+                    "requiredAdjustmentDb": calibration_db}}}},
         })
         text = manager.compile_engine_text([
             {"name": "FL", "source": 0}, {"name": "FR", "source": 1}])

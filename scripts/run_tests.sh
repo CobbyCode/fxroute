@@ -103,6 +103,7 @@ NATIVE_HELPER_TESTS=(
     "scripts/test_native_dsp_effects.py"
     "scripts/test_native_dsp_filters.py"
     "scripts/test_native_dsp_ir_limiter.py"
+    "scripts/test_native_dsp_ir_paths.py"
     "scripts/test_native_dsp_kernel_parity.py"
     "scripts/test_native_dsp_matrix.py"
     "scripts/test_native_dsp_output_conv.py"

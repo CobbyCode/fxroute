@@ -179,7 +179,10 @@ if [[ "$BUILDER" == "docker" && "$INSIDE_DOCKER" -eq 0 ]]; then
   # livefs-edit stacks overlay mounts: upper/work must live on a real
   # filesystem, not on the container's own overlay /tmp. Bind a host dir.
   mkdir -p "$WORK_DIR/ctmp"
+  # --privileged alone leaves the container's own /dev without loop nodes;
+  # livefs-edit needs /dev/loop-control and /dev/loopN from the host.
   docker run --rm --privileged \
+    -v /dev:/dev \
     -v "$ROOT_DIR:$ROOT_DIR" \
     -v "$(dirname "$BASE_ISO"):$(dirname "$BASE_ISO")" \
     -v "$WORK_DIR:$WORK_DIR" \
