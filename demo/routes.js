@@ -794,7 +794,9 @@
             : (config.routing[out.key] || (config.crossover_enabled ? [] : ['main_l', 'main_r'])).slice();
         const topology = outputStateTopology(mode, routing.slice(0, channels || routing.length),
             fixedStereo ? false : config.crossover_enabled);
-        return { mode, roles: topology.roles };
+        // The subs are the only roles that share the bass bus; the meter sim
+        // needs that to know whether a bass position receives signal.
+        return { mode, roles: topology.roles, subs: topology.sub_roles.length > 0 };
     }
     S.setMeterLayoutProvider(demoMeterLayout);
     function outputStateCatalog() {
@@ -2047,7 +2049,7 @@
         return 'read';
     }
 
-    function j(data, status = 200, headers = {}) {
+    function j(data, status = 200, headers = {}, pace = paceKind) {
         // headers + blob(): the real frontend download paths read
         // Content-Disposition and consume resp.blob() (see
         // getDownloadFilenameFromResponse / triggerBlobDownload).
@@ -2080,11 +2082,11 @@
             text: () => Promise.resolve(bodyText),
             blob: () => Promise.resolve(makeDemoBlob(bodyText, mime)),
         };
-        return (typeof S.pacedResolve === 'function' ? S.pacedResolve : (value) => Promise.resolve(value))(response, paceKind);
+        return (typeof S.pacedResolve === 'function' ? S.pacedResolve : (value) => Promise.resolve(value))(response, pace);
     }
 
-    function err(detail, status = 404) {
-        return j({ detail }, status);
+    function err(detail, status = 404, pace = paceKind) {
+        return j({ detail }, status, {}, pace);
     }
 
     // The live backend pushes the audio-source overview over the WebSocket
@@ -2854,6 +2856,287 @@
     restoreDemoSession();
     syncDspToState();
 
+    // ── Radio Browser ───────────────────────────────────────────────────
+    // The real backend searches radio-browser.info server-side (radio/api.py)
+    // and normalizes the hits. The demo has no backend of its own, so the
+    // browser asks the public, CORS-enabled mirrors directly, in the same
+    // order and with the same result shape. The existing radio UI already
+    // debounces input and drops stale responses (static/radio.js
+    // ONLINE_SEARCH_DEBOUNCE_MS / onlineRequestId). A failed lookup falls
+    // back to the curated demo catalog, marked as fallback data.
+    const RADIO_BROWSER_MIRRORS = [
+        'https://de1.api.radio-browser.info',
+        'https://de2.api.radio-browser.info',
+        'https://all.api.radio-browser.info',
+    ];
+    const RADIO_BROWSER_TIMEOUT_MS = 4000;
+    const RADIO_BROWSER_QUERY_LIMIT = 12;
+    const RADIO_BROWSER_RESULT_LIMIT = 30;
+    const RADIO_BROWSER_CACHE_MS = 60000;
+    const RADIO_BROWSER_FALLBACK_CACHE_MS = 20000;
+    const RADIO_BROWSER_FALLBACK_PREFIX = 'demo-';
+    const RADIO_BROWSER_FALLBACK_COUNTRY = 'Demo catalog';
+    const radioBrowserCache = new Map();
+    // Last normalized hits by stationuuid, so favoriting a result does not
+    // need a second network round trip.
+    const radioBrowserHits = new Map();
+
+    function demoBrowserHttpUrl(value) {
+        const cleaned = String(value || '').trim();
+        return /^https?:\/\/[^\s/]+/i.test(cleaned) ? cleaned : '';
+    }
+
+    function demoBrowserInt(value) {
+        const parsed = parseInt(value, 10);
+        return Number.isFinite(parsed) ? parsed : 0;
+    }
+
+    function demoBrowserTimeout() {
+        if (typeof AbortController !== 'function' || typeof window.setTimeout !== 'function') {
+            return { signal: undefined, done() {} };
+        }
+        const controller = new AbortController();
+        const timer = window.setTimeout(() => controller.abort(), RADIO_BROWSER_TIMEOUT_MS);
+        return {
+            signal: controller.signal,
+            done() { if (typeof window.clearTimeout === 'function') window.clearTimeout(timer); },
+        };
+    }
+
+    async function demoRadioBrowserRequest(path, params) {
+        const search = new URLSearchParams();
+        Object.entries(params).forEach(([key, value]) => search.set(key, String(value)));
+        let lastError = null;
+        for (const mirror of RADIO_BROWSER_MIRRORS) {
+            const timeout = demoBrowserTimeout();
+            try {
+                const response = await origFetch(`${mirror}${path}?${search.toString()}`, {
+                    headers: { Accept: 'application/json' },
+                    cache: 'no-store',
+                    signal: timeout.signal,
+                });
+                if (!response.ok) throw new Error(`Radio Browser HTTP ${response.status}`);
+                const data = await response.json();
+                if (!Array.isArray(data)) throw new Error('Radio Browser returned an invalid response');
+                return data;
+            } catch (error) {
+                lastError = error;
+            } finally {
+                timeout.done();
+            }
+        }
+        throw lastError || new Error('Radio Browser provider is unavailable');
+    }
+
+    function demoBrowserSavedStation(payload) {
+        const input = String(payload.url || '').trim();
+        const resolved = String(payload.url_resolved || '').trim();
+        return stations.find(station => {
+            const savedInput = String(station.input_url || station.stream_url || '').trim();
+            const savedStream = String(station.stream_url || '').trim();
+            return (input && savedInput === input) || (resolved && savedStream === resolved);
+        }) || null;
+    }
+
+    function demoBrowserPayload(item) {
+        const stationuuid = String(item.stationuuid || '').trim();
+        const title = String(item.name || '').trim();
+        const url = demoBrowserHttpUrl(item.url);
+        const urlResolved = demoBrowserHttpUrl(item.url_resolved);
+        if (!stationuuid || !title || !url || !urlResolved) return null;
+        const favicon = demoBrowserHttpUrl(item.favicon);
+        const payload = {
+            stationuuid,
+            title,
+            url,
+            url_resolved: urlResolved,
+            favicon,
+            image: favicon,
+            country: String(item.country || '').trim(),
+            countrycode: String(item.countrycode || '').trim(),
+            language: String(item.language || '').trim(),
+            tags: String(item.tags || '').trim(),
+            codec: String(item.codec || '').trim(),
+            bitrate: demoBrowserInt(item.bitrate),
+            lastcheckok: demoBrowserInt(item.lastcheckok),
+            clickcount: demoBrowserInt(item.clickcount),
+            is_saved: false,
+            saved_station_id: null,
+        };
+        const saved = demoBrowserSavedStation(payload);
+        payload.is_saved = !!saved;
+        payload.saved_station_id = saved ? saved.id : null;
+        radioBrowserHits.set(stationuuid, payload);
+        return payload;
+    }
+
+    // Mirror of radio.api._browser_stream_meets_quality.
+    function demoBrowserStreamMeetsQuality(payload) {
+        const codec = String(payload.codec || '').trim().toUpperCase();
+        if (codec.startsWith('AAC')) return payload.bitrate >= 96;
+        if (codec === 'MP3') return payload.bitrate >= 128;
+        if (codec.includes('VORBIS') || codec === 'OGG' || codec.startsWith('OGG ')) return payload.bitrate >= 96;
+        return true;
+    }
+
+    function demoRadioBrowserRank(batches, query) {
+        const needle = String(query || '').toLowerCase();
+        const seenUuids = new Set();
+        const seenUrls = new Set();
+        const ranked = [];
+        batches.forEach((items, fieldRank) => {
+            for (const item of items.slice(0, RADIO_BROWSER_QUERY_LIMIT)) {
+                if (!item || typeof item !== 'object') continue;
+                const payload = demoBrowserPayload(item);
+                if (!payload || !demoBrowserStreamMeetsQuality(payload)) continue;
+                const urls = new Set([payload.url, payload.url_resolved].filter(Boolean));
+                if (seenUuids.has(payload.stationuuid) || [...urls].some(url => seenUrls.has(url))) continue;
+                seenUuids.add(payload.stationuuid);
+                urls.forEach(url => seenUrls.add(url));
+                const nameMatch = payload.title.toLowerCase().includes(needle);
+                ranked.push({ rank: nameMatch ? 0 : fieldRank + 1, payload });
+            }
+        });
+        ranked.sort((left, right) => left.rank - right.rank
+            || right.payload.clickcount - left.payload.clickcount
+            || left.payload.title.localeCompare(right.payload.title));
+        return ranked.slice(0, RADIO_BROWSER_RESULT_LIMIT).map(entry => entry.payload);
+    }
+
+    function demoRadioBrowserFallbackPayload(station) {
+        const uuid = RADIO_BROWSER_FALLBACK_PREFIX + station.id;
+        const saved = stations.find(item =>
+            item.input_url === (station.input_url || station.stream_url)
+            || item.stream_url === station.stream_url);
+        const payload = {
+            stationuuid: uuid,
+            title: station.title,
+            url: station.input_url || station.stream_url || '',
+            url_resolved: station.stream_url || '',
+            favicon: station.image_url || '',
+            image: station.image_url || '',
+            country: RADIO_BROWSER_FALLBACK_COUNTRY,
+            countrycode: '',
+            language: '',
+            tags: 'demo, offline fallback',
+            codec: 'MP3',
+            bitrate: 128,
+            lastcheckok: 1,
+            clickcount: 0,
+            is_saved: !!saved,
+            saved_station_id: saved ? saved.id : null,
+            fallback: true,
+        };
+        radioBrowserHits.set(uuid, payload);
+        return payload;
+    }
+
+    function demoRadioBrowserFallback(query) {
+        const needle = String(query || '').toLowerCase();
+        return catalogStations
+            .filter(station => [station.title, station.artist, (station.genres || []).join(' ')]
+                .join(' ').toLowerCase().includes(needle))
+            .slice(0, RADIO_BROWSER_RESULT_LIMIT)
+            .map(demoRadioBrowserFallbackPayload);
+    }
+
+    async function demoRadioBrowserSearch(rawQuery) {
+        const query = String(rawQuery || '').trim();
+        if (!query) return err('Station search query is required', 400, 'read');
+        const cacheKey = query.toLowerCase();
+        const cached = radioBrowserCache.get(cacheKey);
+        if (cached && Date.now() - cached.at < cached.ttl) return j(cached.items, 200, {}, 'read');
+        const common = { hidebroken: 'true', order: 'clickcount', reverse: 'true', limit: RADIO_BROWSER_QUERY_LIMIT };
+        const settled = await Promise.allSettled(['name', 'tag'].map(field =>
+            demoRadioBrowserRequest('/json/stations/search', { ...common, [field]: query })));
+        const successful = settled.filter(entry => entry.status === 'fulfilled');
+        if (!successful.length) {
+            const fallback = demoRadioBrowserFallback(query);
+            if (fallback.length) {
+                radioBrowserCache.set(cacheKey, { at: Date.now(), ttl: RADIO_BROWSER_FALLBACK_CACHE_MS, items: fallback });
+                return j(fallback, 200, {}, 'read');
+            }
+            return err('Radio Browser provider is unavailable', 502, 'read');
+        }
+        const items = demoRadioBrowserRank(successful.map(entry => entry.value), query);
+        radioBrowserCache.set(cacheKey, { at: Date.now(), ttl: RADIO_BROWSER_CACHE_MS, items });
+        return j(items, 200, {}, 'read');
+    }
+
+    function demoBrowserMarkSaved(uuid, stationId) {
+        const mark = (item) => {
+            if (!item || item.stationuuid !== uuid) return;
+            item.is_saved = true;
+            item.saved_station_id = stationId;
+        };
+        mark(radioBrowserHits.get(uuid));
+        for (const entry of radioBrowserCache.values()) entry.items.forEach(mark);
+    }
+
+    function demoBrowserSavedPayload(station) {
+        // Shape mirror of radio.api._station_api_payload.
+        return {
+            id: station.id,
+            title: station.title,
+            image: station.custom_image_url || station.image_url || '',
+            image_url: station.image_url || '',
+            custom_image_url: station.custom_image_url || '',
+            cached_custom_image_url: '',
+            stream_url: station.stream_url || '',
+            input_url: station.input_url || station.stream_url || '',
+            artist: 'Radio',
+        };
+    }
+
+    async function demoRadioBrowserStation(uuid) {
+        const key = String(uuid || '');
+        const hit = radioBrowserHits.get(key);
+        if (hit) return hit;
+        if (key.startsWith(RADIO_BROWSER_FALLBACK_PREFIX)) {
+            const station = catalogStations.find(item =>
+                item.id === key.slice(RADIO_BROWSER_FALLBACK_PREFIX.length));
+            return station ? demoRadioBrowserFallbackPayload(station) : null;
+        }
+        const items = await demoRadioBrowserRequest('/json/stations/byuuid', { uuids: key });
+        const item = items.find(candidate =>
+            String(candidate.stationuuid || '').trim() === key);
+        return item ? demoBrowserPayload(item) : null;
+    }
+
+    async function demoRadioBrowserSelection(uuid) {
+        let payload = null;
+        try {
+            payload = await demoRadioBrowserStation(uuid);
+        } catch (error) {
+            return err('Radio Browser provider is unavailable', 502, 'read');
+        }
+        if (!payload) return err('Radio Browser station not found', 404, 'read');
+        const saved = demoBrowserSavedStation(payload);
+        if (saved) return j({ status: 'ok', station: demoBrowserSavedPayload(saved) }, 200, {}, 'read');
+        const id = 'station_' + payload.stationuuid;
+        const station = {
+            id,
+            title: payload.title,
+            name: payload.title,
+            artist: 'Radio',
+            provider: 'Radio Browser',
+            genres: String(payload.tags || '').split(',').map(tag => tag.trim()).filter(Boolean),
+            input_url: payload.url,
+            stream_url: payload.url_resolved,
+            image_url: payload.favicon,
+            logo_url: payload.favicon,
+            custom_image_url: payload.favicon,
+            country: payload.country,
+            countrycode: payload.countrycode,
+            language: payload.language,
+            codec: payload.codec,
+            bitrate: payload.bitrate,
+        };
+        stations.push(station);
+        demoBrowserMarkSaved(payload.stationuuid, id);
+        return j({ status: 'ok', station: demoBrowserSavedPayload(station) }, 200, {}, 'read');
+    }
+
     // ── fetch interceptor ───────────────────────────────────────────────
     const origFetch = window.fetch;
     window.fetch = function (url, opts) {
@@ -2974,35 +3257,13 @@
             return j({ station: { id, title: cat.title } });
         }
         if (p === '/api/station-browser/search') {
-            const q = String(query.get('query') || '').toLowerCase();
-            const results = catalogStations
-                .filter(s => !q || s.title.toLowerCase().includes(q) || s.artist.toLowerCase().includes(q) || (s.genres || []).join(' ').toLowerCase().includes(q))
-                .map(s => ({
-                    stationuuid: s.id,
-                    name: s.title,
-                    url: s.input_url || s.stream_url,
-                    url_resolved: s.stream_url,
-                    homepage: 'https://example.invalid/' + s.id,
-                    favicon: s.image_url || '',
-                    tags: (s.genres || []).join(','),
-                    country: 'Demo',
-                    language: 'EN',
-                    codec: 'MP3',
-                    bitrate: 128,
-                    is_saved: stations.some(st => st.id === 'station_' + s.id),
-                    saved_station_id: stations.some(st => st.id === 'station_' + s.id) ? 'station_' + s.id : null,
-                }));
-            return j(results);
+            return demoRadioBrowserSearch(query.get('query'));
         }
         const browserSelection = p.match(/^\/api\/station-browser\/([^/]+)\/selection$/);
         if (browserSelection && post) {
-            const uuid = browserSelection[1];
-            const cat = catalogStations.find(s => s.id === uuid);
-            const id = 'station_' + uuid;
-            if (!stations.find(s => s.id === id)) {
-                stations.push({ ...(cat || { id: uuid, title: uuid, name: uuid, artist: 'Radio', provider: 'Online' }), id });
-            }
-            return j({ station: { id, title: (cat && cat.title) || uuid } });
+            let uuid = browserSelection[1];
+            try { uuid = decodeURIComponent(uuid); } catch (error) { /* keep the raw id */ }
+            return demoRadioBrowserSelection(uuid);
         }
 
         // ── Library (served from the selected library catalog) ──────────

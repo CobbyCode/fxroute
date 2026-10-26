@@ -324,19 +324,139 @@
         l: 0, r: 0, fl: 0, fr: 0, c: -4, lfe: -8, sub: -8, sub_l: -8, sub_r: -8,
         sl: -11, sr: -11, rl: -12, rr: -12,
     };
+    // ── Program channel assignment ──────────────────────────────────────
+    // A Surround layout has the eight positioned program inputs
+    // (audio.output_topology.SURROUND_POSITIONS); every other mode is the
+    // stereo bus. The source declares its real channel layout and is stereo
+    // when it says nothing. Only the upmixer feeds Center/Surround positions
+    // from a stereo source, and its steering strengths 0..10 set how much is
+    // extracted; a routed position without signal stays on the meter floor.
+    const PROGRAM_POSITIONS = ['FL', 'FR', 'FC', 'LFE', 'SL', 'SR', 'BL', 'BR'];
+    const STEREO_POSITIONS = ['FL', 'FR'];
+    const PROGRAM_LAYOUTS = {
+        mono: STEREO_POSITIONS, '1.0': STEREO_POSITIONS, '2.0': STEREO_POSITIONS,
+        stereo: STEREO_POSITIONS, '2.1': ['FL', 'FR', 'LFE'],
+        '3.0': ['FL', 'FR', 'FC'], quad: ['FL', 'FR', 'SL', 'SR'],
+        '4.0': ['FL', 'FR', 'SL', 'SR'], '5.0': ['FL', 'FR', 'FC', 'SL', 'SR'],
+        '5.1': ['FL', 'FR', 'FC', 'LFE', 'SL', 'SR'],
+        '7.0': ['FL', 'FR', 'FC', 'SL', 'SR', 'BL', 'BR'],
+        '7.1': ['FL', 'FR', 'FC', 'LFE', 'SL', 'SR', 'BL', 'BR'],
+    };
+    const PROGRAM_BY_CHANNEL_COUNT = {
+        1: STEREO_POSITIONS, 2: STEREO_POSITIONS, 3: ['FL', 'FR', 'FC'],
+        4: ['FL', 'FR', 'SL', 'SR'], 5: ['FL', 'FR', 'FC', 'SL', 'SR'],
+        6: ['FL', 'FR', 'FC', 'LFE', 'SL', 'SR'],
+        7: ['FL', 'FR', 'FC', 'SL', 'SR', 'BL', 'BR'],
+        8: ['FL', 'FR', 'FC', 'LFE', 'SL', 'SR', 'BL', 'BR'],
+    };
+    function sourceChannelLayout() {
+        // Radio streams are stereo in the demo, whatever a station page says.
+        if (currentSource === 'radio') return STEREO_POSITIONS;
+        const track = currentTrack || {};
+        const declared = track.channel_layout ?? track.channelLayout ?? track.audio_layout
+            ?? track.layout ?? track.channels ?? track.channel_count;
+        if (Array.isArray(declared)) {
+            const positions = declared.map(position => String(position || '').trim().toUpperCase())
+                .filter(position => PROGRAM_POSITIONS.includes(position));
+            return positions.length ? positions : STEREO_POSITIONS;
+        }
+        const count = Number(declared);
+        if (Number.isInteger(count) && PROGRAM_BY_CHANNEL_COUNT[count]) {
+            return PROGRAM_BY_CHANNEL_COUNT[count];
+        }
+        const name = String(declared || '').trim().toLowerCase().replace(/\s+/g, '');
+        return PROGRAM_LAYOUTS[name] || STEREO_POSITIONS;
+    }
+    function upmixProgramPositions(mode, keys) {
+        const upmix = dspExtras && dspExtras.upmixer;
+        if (mode !== 'surround' || !upmix || !upmix.enabled) return [];
+        const params = upmix.params || {};
+        const extracted = (strength, positions) => {
+            const value = Math.max(0, Math.min(10, Number(strength) || 0));
+            if (!value) return [];
+            const trim = -(10 - value);
+            return positions.map(position => [position, trim]);
+        };
+        const present = new Set(keys);
+        return [
+            ...(present.has('c') ? extracted(params.center, ['FC']) : []),
+            ...(present.has('sl') ? extracted(params.surround, ['SL']) : []),
+            ...(present.has('sr') ? extracted(params.surround, ['SR']) : []),
+            ...(present.has('rl') ? extracted(params.surround, ['BL']) : []),
+            ...(present.has('rr') ? extracted(params.surround, ['BR']) : []),
+        ];
+    }
+    function programChannelMap(mode, keys) {
+        // Position -> extraction trim in dB; a native channel is never trimmed.
+        const program = new Map();
+        for (const position of sourceChannelLayout()) program.set(position, 0);
+        for (const [position, trim] of upmixProgramPositions(mode, keys)) {
+            if (!program.has(position)) program.set(position, trim);
+        }
+        return program;
+    }
+    function meterFeedPlan(mode, keys, program, subsRouted) {
+        // Meter position -> relative trim of the program channel feeding it.
+        // Mirrors dsp.processing_plan routing: own position first, then the
+        // Surround fold-downs (Center to the fronts, Side/Rear to the other
+        // pair or the fronts), and the shared bass bus for every sub role.
+        const present = new Set(keys);
+        const feeds = new Map();
+        const add = (key, trim = 0) => {
+            if (!present.has(key)) return;
+            const value = Number(trim) || 0;
+            if (!feeds.has(key) || value > feeds.get(key)) feeds.set(key, value);
+        };
+        if (mode !== 'surround') {
+            if (program.has('FL')) add('l');
+            if (program.has('FR')) add('r');
+            if (subsRouted && program.size) add('sub');
+            if (subsRouted && program.has('FL')) add('sub_l');
+            if (subsRouted && program.has('FR')) add('sub_r');
+            return feeds;
+        }
+        let foldFronts = false;
+        const own = (position, key) => {
+            if (!program.has(position)) return;
+            if (present.has(key)) add(key, program.get(position));
+            else foldFronts = true;
+        };
+        own('FL', 'fl');
+        own('FR', 'fr');
+        if (program.has('FC')) {
+            if (present.has('c')) add('c', program.get('FC'));
+            else foldFronts = true;
+        }
+        for (const [position, ownKey, otherKey] of [
+            ['SL', 'sl', 'rl'], ['SR', 'sr', 'rr'], ['BL', 'rl', 'sl'], ['BR', 'rr', 'sr'],
+        ]) {
+            if (!program.has(position)) continue;
+            if (present.has(ownKey)) add(ownKey, program.get(position));
+            else if (present.has(otherKey)) add(otherKey, program.get(position));
+            else foldFronts = true;
+        }
+        if (foldFronts) { add('fl'); add('fr'); }
+        if (subsRouted && program.size) add('lfe');
+        return feeds;
+    }
     const meterChannelEnv = {};
     function channelsSnapshot(nowTs, active, capDb) {
         const layout = meterLayoutProvider();
         const keys = layout ? meterPositionKeys(layout.mode, layout.roles) : [];
         if (keys.length < 3) return null;
+        const subsRouted = layout.subs !== undefined ? !!layout.subs
+            : keys.some(key => key === 'lfe' || key === 'sub' || key === 'sub_l' || key === 'sub_r');
+        const feeds = meterFeedPlan(layout.mode, keys,
+            programChannelMap(layout.mode, keys), subsRouted);
         const leftSide = new Set(['l', 'fl', 'sl', 'rl', 'sub_l']);
         const vu = [];
         const detected = [];
         keys.forEach((key, index) => {
             const program = leftSide.has(key) ? meterEnv.l : meterEnv.r;
             const drift = Math.sin(nowTs / 1900 + index * 1.7) * 2.2;
-            const target = active
-                ? Math.min(program + (METER_POSITION_OFFSET_DB[key] ?? -10) + drift + dspMeterOffsetDb, capDb)
+            const trim = feeds.get(key);
+            const target = active && trim !== undefined
+                ? Math.min(program + (METER_POSITION_OFFSET_DB[key] ?? -10) + trim + drift + dspMeterOffsetDb, capDb)
                 : -60;
             const previous = meterChannelEnv[key] ?? -60;
             const level = previous + (target - previous) * (target >= previous ? 0.5 : 0.25);
