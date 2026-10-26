@@ -394,6 +394,23 @@ class ArmbianImageTests(unittest.TestCase):
         self.assertIn("Reached target .*basic\\.target", self.qemu)
         self.assertIn("network/API checks require hardware or generic virt", self.qemu)
 
+    def test_qemu_runner_blacklists_the_emulated_watchdog_driver(self):
+        """QEMU emulates bcm2835_wdt, so the initramfs rmd disarm step resets
+        the guest before the root filesystem mounts. The workaround belongs on
+        the QEMU command line only; the image and its boot files stay as built."""
+        raspi_branch = self.qemu.split(
+            'if [[ "$MACHINE" == "raspi4b" ]]; then\n  mcopy', 1
+        )[1].split("\nelse\n", 1)[0]
+        self.assertIn(
+            'WATCHDOG_WORKAROUND="initcall_blacklist=bcm2835_wdt_driver_init"',
+            raspi_branch,
+        )
+        self.assertIn("$WATCHDOG_WORKAROUND $KERNEL_CMDLINE", raspi_branch)
+        self.assertIn('-append "$KERNEL_CMDLINE"', raspi_branch)
+        # The boot files are only read out of the image, never written back.
+        self.assertIn('"::cmdline.txt" "$CMDLINE_FILE"', self.qemu)
+        self.assertNotIn('"$CMDLINE_FILE" "::cmdline.txt"', self.qemu)
+
     def test_qemu_runner_overlay_inherits_raw_image_size(self):
         self.assertIn("qemu-img", self.qemu)
         self.assertIn('DISK_IMAGE="$WORK_DIR/image.qcow2"', self.qemu)

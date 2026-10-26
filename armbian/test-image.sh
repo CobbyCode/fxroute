@@ -31,6 +31,11 @@ shared Pi 4/Pi 5 kernel and rootfs reach basic.target; QEMU's Pi 4 machine has
 no usable network device for API validation. Pi 5 boot, storage, Ethernet,
 USB, thermal, and audio hardware still require a physical board test.
 
+The raspi4b boot passes initcall_blacklist=bcm2835_wdt_driver_init on the QEMU
+command line only: QEMU emulates bcm2835_wdt, and without that the initramfs
+rpi_wd disarm step resets the guest before the root filesystem mounts. The
+image itself is never modified by this workaround.
+
 The virt machine expects a generic UEFI arm64 Armbian image, such as the
 uefi-arm64 board output. Override the host AAVMF files with
 FXROUTE_ARMBIAN_UEFI_CODE and FXROUTE_ARMBIAN_UEFI_VARS_TEMPLATE when needed.
@@ -180,7 +185,12 @@ if [[ "$MACHINE" == "raspi4b" ]]; then
   mcopy -i "$IMAGE@@$BOOT_PARTITION_OFFSET" "::bcm2711-rpi-4-b.dtb" "$DTB_IMAGE"
   KERNEL_CMDLINE="${KERNEL_CMDLINE//console=serial0/console=ttyAMA1}"
   KERNEL_CMDLINE="${KERNEL_CMDLINE// console=tty1/}"
-  KERNEL_CMDLINE="earlycon=pl011,mmio32,0xfe201000 $KERNEL_CMDLINE"
+  # QEMU emulates bcm2835_wdt, so the initramfs rpi_wd disarm step resets the
+  # guest before the root filesystem mounts. Blacklisting that driver init
+  # keeps the emulated boot alive. This changes only the QEMU command line
+  # below; the image, the boot files and the hardware path stay untouched.
+  WATCHDOG_WORKAROUND="initcall_blacklist=bcm2835_wdt_driver_init"
+  KERNEL_CMDLINE="earlycon=pl011,mmio32,0xfe201000 $WATCHDOG_WORKAROUND $KERNEL_CMDLINE"
   machine_args=(
     -M "raspi4b,usb=on"
     -kernel "$KERNEL_IMAGE"
@@ -189,6 +199,7 @@ if [[ "$MACHINE" == "raspi4b" ]]; then
     -append "$KERNEL_CMDLINE"
     -drive "file=$DISK_IMAGE,format=qcow2,if=sd"
   )
+  printf '%s\n' "[armbian-qemu] raspi4b: emulation-only $WATCHDOG_WORKAROUND on the QEMU command line"
 else
   ssh_port="$(find_free_port 22000)"
   setup_port="$(find_free_port 27000)"

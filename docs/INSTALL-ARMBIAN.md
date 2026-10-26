@@ -117,6 +117,13 @@ path are unchanged.
 QEMU 11 provides a `raspi4b` machine but no Raspberry Pi 5 machine. After
 building an image, run the shared ARM64 boot check:
 
+The runner passes `initcall_blacklist=bcm2835_wdt_driver_init` on the QEMU
+command line: QEMU emulates the `bcm2835_wdt` watchdog, and without the
+blacklist the initramfs `rpi_wd` disarm step resets the guest before the root
+filesystem mounts. This is an emulation-only workaround, applied to the
+`-append` argument of the local QEMU process; the image and its boot files are
+not modified.
+
 ```bash
 ./armbian/test-image.sh \
   --machine raspi4b \
