@@ -29,6 +29,11 @@ mkdir -p "$(dirname "$MARKER")"
 
 note() { printf '%s\n' "$*" >> "$LOG" 2>/dev/null || true; }
 
+# Mark the volatile RAM session for the backend: is_live_mode() then reports
+# the Live Mode banner. The marker lives in the RAM overlay and is gone after
+# reboot; installed systems never reach this script.
+sudo -n touch /etc/fxroute-live 2>/dev/null || note "could not create /etc/fxroute-live"
+
 # Visible failure hint on the live desktop. Failures leave no MARKER, so the
 # next login retries instead of sticking with a dead kiosk forever.
 write_hint() {
