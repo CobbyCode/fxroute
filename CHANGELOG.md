@@ -182,6 +182,39 @@ ISO via SourceForge. Khadas/VIM1S stays internal and gets no public image.
   the retired Leap documentation is gone. The playback SRC notes record the
   shipped state and date the open High32 limit.
 
+### Verification
+
+- Full local suite: **702 passed, 0 failed, 22 skipped**. The 22 skips are
+  the 17 native DSP Python suites and the five C wrappers that need the
+  native build dependencies on the `.104` test machine; the runner records
+  the missing `pkg-config` packages as the reason.
+- The product ISO and its test-seed build are built from `f99e7823`
+  (`source.tar` SHA-256
+  `9865a210aa6e38dd563f5f824d5a21b5946305788414889fb37d49e82d310684`).
+  Both carry the three boot entries with isolated Desktop/Headless seeds
+  and an unchanged signed Ubuntu boot chain. SHA-256:
+  - `fxroute-1.0-beta15-x86_64-ubuntu26.04.iso` —
+    `233a78d4082430a0c9eb257450c4a7fd1597f1f33c1697a6f8ac5d7c0963c470`
+  - `fxroute-1.0-beta15-TESTSEED-DO-NOT-RELEASE-x86_64-ubuntu26.04.iso`
+    (test build, not for publication) —
+    `6be51e7607fbfc943fda5da837da2aa361d3b6b678afc6fbc114179d1a37625a`
+- QEMU acceptance (UEFI, Secure Boot off, 4 vCPU / 6 GB):
+  - **Try FXRoute Live**: the live session starts, FXRoute answers as
+    `1.0-beta15`, the Live Mode banner is visible, the PipeWire graph and the
+    native DSP engine run, radio playback advances, and sample rate reports
+    44.1 kHz.
+  - **Install FXRoute Desktop**: unattended install, first boot completes,
+    GDM autologin with Firefox kiosk, services, web UI, native DSP and radio
+    playback.
+  - **Install FXRoute Headless**: same install path without a desktop; no
+    display manager, Firefox or GNOME, `multi-user.target`, SSH, services, web
+    UI and radio playback.
+  - The final ISOs differ from the accepted install ISOs only in the live
+    autostart (never executed on installed systems) and documentation; all
+    three GRUB entries and both seeds are byte-identical.
+- `.104`: deployed and verified with an active service, HTTP 200, version
+  `1.0-beta15` and the current asset versions.
+
 ### Known limitations
 
 - Sustained High-quality conversion of 32 channels on a fully loaded 4-core
