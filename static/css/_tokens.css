@@ -80,6 +80,8 @@
     --tile-min: 208px;
     --tile-min-radio: 164px;
     --tile-gap: clamp(0.85rem, 1.2vw, 1.1rem);
+    /* TIDAL marks: TIDAL's minimum height is 13 px; one step above it. */
+    --tidal-mark-h: max(14px, 0.875rem);
     /* Slate/Blue palette: every remaining raw slate/blue literal lives
        here once. The semantic Sub1/Sub2/info accents alias into it so the
        effects and measurement cards keep their role names at use sites. */

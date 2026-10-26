@@ -759,6 +759,17 @@ async function clearQueue() {
     }
 }
 
+// A new play takes priority over any in-flight one. The superseded request
+// returns early on its stale id, so its optimistic markers are dropped here.
+function supersedePendingPlayback() {
+    if (playbackActionInFlight) {
+        pendingPlaybackRequestId++;
+        playbackActionInFlight = false;
+    }
+    clearPendingOptimisticTrack();
+    clearPendingFooterSingleTrackStart();
+}
+
 // Playback actions
 async function playRadio(stationId) {
     pendingFooterSingleTrackStart = null;
@@ -767,11 +778,7 @@ async function playRadio(stationId) {
         deps.showToast('Station not found', 'error');
         return;
     }
-    // Cancel any in-flight action — new play takes priority
-    if (playbackActionInFlight) {
-        pendingPlaybackRequestId++;
-        playbackActionInFlight = false;
-    }
+    supersedePendingPlayback();
     const requestId = ++pendingPlaybackRequestId;
     playbackActionInFlight = true;
     armLocalFooterHold();
@@ -838,11 +845,7 @@ async function playLocal(trackId, queueTrackIds = null) {
         deps.showToast('Track not found', 'error');
         return;
     }
-    // Cancel any in-flight action — new play takes priority
-    if (playbackActionInFlight) {
-        pendingPlaybackRequestId++;
-        playbackActionInFlight = false;
-    }
+    supersedePendingPlayback();
     const shouldUseQueue = Array.isArray(queueTrackIds) && queueTrackIds.length > 1 && queueTrackIds.includes(trackId);
     const requestId = ++pendingPlaybackRequestId;
     pendingFooterSingleTrackStart = shouldUseQueue ? null : {
@@ -917,6 +920,66 @@ async function playLocal(trackId, queueTrackIds = null) {
         deps.getState().playback.paused = false;
         deps.updatePlaybackUI();
         deps.showToast('Failed to start playback', 'error');
+    }
+}
+
+const TIDAL_REF_PREFIX = 'tidal:';
+
+// Short note for entries a mixed queue had to leave out ("Starting 7/9 ...").
+function mixedQueueSkipNote(summary) {
+    const skipped = (summary && summary.skipped) || {};
+    const reasons = [];
+    if (skipped.tidal_not_connected) reasons.push('TIDAL is not connected');
+    const unavailable = (skipped.unavailable || 0) + (skipped.missing || 0);
+    if (unavailable) reasons.push(`${unavailable} not available`);
+    if (!reasons.length) return '';
+    return `Starting ${summary.queued}/${summary.requested} tracks — ${reasons.join(', ')}`;
+}
+
+// Plays one queue of local track ids and "tidal:<id>" references (saved
+// playlists, Favorite Tracks). The backend leaves out what cannot play right
+// now (TIDAL while not connected, tracks that are gone) and reports it.
+async function playLibraryRefs(startRef, refs) {
+    const queueRefs = Array.isArray(refs) ? refs.filter(Boolean) : [];
+    if (!queueRefs.length) return;
+    const start = queueRefs.includes(startRef) ? startRef : queueRefs[0];
+    const startsOnTidal = String(start).startsWith(TIDAL_REF_PREFIX);
+    supersedePendingPlayback();
+    const requestId = ++pendingPlaybackRequestId;
+    playbackActionInFlight = true;
+    try {
+        const resp = await deps.fetchFn('/api/play', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                source: startsOnTidal ? 'tidal' : 'local',
+                track_id: startsOnTidal ? String(start).slice(TIDAL_REF_PREFIX.length) : start,
+                queue_refs: queueRefs,
+                shuffle: !!deps.getState().library.shuffle,
+                loop: !!deps.getState().library.loop,
+            }),
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) {
+            if (resp.status === 401) throw new Error('Connect TIDAL to play these tracks');
+            throw new Error(deps.formatTransitionErrorDetail(data.detail, 'Play command failed'));
+        }
+        if (requestId !== pendingPlaybackRequestId) return;
+        playbackActionInFlight = false;
+        applyNativePlayResponse(data);
+        if (data.playback) syncLibraryStateFromPlaybackContext(true);
+        triggerSamplerateBurstPolling();
+        const playedTrack = data?.playback?.current_track || data?.track || null;
+        const queueCount = (((data || {}).playback || {}).queue || {}).count || 0;
+        if (playedTrack) {
+            deps.maybeShowNativeTrackCue(playedTrack, queueCount > 1 ? `Queue started · ${queueCount} tracks` : 'Now playing');
+        }
+        const note = mixedQueueSkipNote(data.queue_summary);
+        if (note) deps.showToast(note, 'info');
+    } catch (e) {
+        if (requestId !== pendingPlaybackRequestId) return;
+        playbackActionInFlight = false;
+        deps.showToast(e && e.message ? e.message : 'Failed to start playback', 'error');
     }
 }
 
@@ -1346,6 +1409,8 @@ function armLocalFooterHold(ms = 1200) {
         clearQueue,
         playRadio,
         playLocal,
+        playLibraryRefs,
+        mixedQueueSkipNote,
         applyNativePlayResponse,
         footerContentFreezeActive,
         armFooterContentFreeze,

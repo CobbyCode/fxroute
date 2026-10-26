@@ -47,6 +47,7 @@
     function speakerKey(role) {
         if (role.startsWith('left_')) return 'fl';
         if (role.startsWith('right_')) return 'fr';
+        if (role.startsWith('center_')) return 'c';
         return SPEAKER_KEYS[role] || null;
     }
 
@@ -80,15 +81,23 @@
         }));
         const latency = sync?.latency;
         const delayMs = latency?.ready && Number.isFinite(latency.actual_ms) ? latency.actual_ms : null;
-        const calibration = extras?.loudness?.params?.calibration || {};
+        // The extras carry the calibration of the output that renders; an output without one reads none.
+        const params = extras?.loudness?.params || {};
+        const calibration = params.calibration || {};
         const calibrated = calibration.measuredSplDb != null && Number.isFinite(Number(calibration.measuredSplDb));
         const offset = calibration.requiredAdjustmentDb;
+        // Outputs that have a calibration of their own, shown when this one has none.
+        const otherOutputs = calibrated ? [] : Object.values(params.calibrationProfiles || {})
+            .filter(record => record && record.measuredSplDb != null && Number.isFinite(Number(record.measuredSplDb)))
+            .map(record => String(record.outputProfileLabel || record.outputProfileId || '').trim())
+            .filter(Boolean);
         return {
             levels, subs, delayMs,
             spl: {
                 db: calibrated ? Number(calibration.measuredSplDb) : SPL_DEFAULT_DB,
                 isDefault: !calibrated,
                 offsetDb: calibrated && offset != null && Number.isFinite(Number(offset)) ? Number(offset) : null,
+                ...(otherOutputs.length ? { otherOutputs } : {}),
             },
         };
     }
@@ -107,6 +116,12 @@
         return `<span class="effects-cal-group" data-tooltip="${tooltip}"><span class="effects-cal-label">${label}</span><span class="effects-cal-values">${body}</span></span>`;
     }
 
+    // Output names come from hardware and reach an attribute.
+    function escapeAttribute(value) {
+        return String(value).replace(/[&<>"']/g, character => (
+            { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[character]));
+    }
+
     function overviewHtml(summary) {
         const rows = [];
         if (summary.levels.length) {
@@ -122,7 +137,10 @@
         const spl = summary.spl;
         const splDetail = spl.isDefault ? ' <span class="effects-cal-tag">default</span>'
             : (spl.offsetDb == null ? '' : ` <span class="effects-cal-note">${signedDb(spl.offsetDb)} dB</span>`);
-        const splTooltip = spl.isDefault ? 'SPL Calibration: not calibrated, default reference'
+        const splTooltip = spl.isDefault
+            ? (spl.otherOutputs
+                ? `SPL Calibration: not calibrated for this output, default reference (calibrated: ${escapeAttribute(spl.otherOutputs.join(', '))})`
+                : 'SPL Calibration: not calibrated, default reference')
             : `SPL Calibration: measured level${spl.offsetDb == null ? '' : ' and Loudness offset'}`;
         rows.push([
             group('Delay', 'Effective delay (AV Sync)', summary.delayMs == null

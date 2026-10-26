@@ -46,6 +46,8 @@
         deleteMeasurementPeqFilter: () => {},
         handleMeasurementPeqNumberInputArrowKey: () => {},
         focusMeasurementPeqPanelContext: () => {},
+        getMeasurementPeqAutoAvailability: () => ({ available: false, busy: false, reason: '' }),
+        runMeasurementPeqAuto: () => false,
         renderMeasurementPanel: () => {},
         scheduleMeasurementGraphRender: () => {},
     };
@@ -64,10 +66,18 @@
         return `<button type="button" class="${classes}" ${getMeasurementSlotChipStyle(color, active)} data-measurement-slot-index="${index}" ${attributes}>${deps.escapeHtml(label)}</button>`;
     }
 
+    function renderMeasurementPeqAutoChip() {
+        const auto = deps.getMeasurementPeqAutoAvailability();
+        const title = auto.available
+            ? 'Suggest up to 12 filters from the measurement and the target curve'
+            : auto.reason;
+        return `<button type="button" class="measurement-peq-auto-chip${auto.busy ? ' is-busy' : ''}" data-measurement-peq-auto${auto.available ? '' : ' disabled'} data-tooltip="${deps.escapeHtml(title)}" aria-label="Auto: suggest PEQ filters">${auto.busy ? 'Auto…' : 'Auto'}</button>`;
+    }
+
     function renderMeasurementPanelEditorsSection({ measurementState, current, measurements, graphEntries, assistMode, activeEditor, graphView, frequencyView, peq, conv, activePeqFilter }) {
         const elements = deps.getElements();
         if (elements.measurementPeqPanel) {
-            elements.measurementPeqPanel.classList.toggle('hidden', !frequencyView || activeEditor !== 'peq' || (!peq.enabled && !peq.filters.length));
+            elements.measurementPeqPanel.classList.toggle('hidden', !frequencyView || assistMode !== 'peq' || activeEditor === 'houseCurve');
         }
         const customHouseCurve = deps.ensureCustomHouseCurveState();
         const activeCustomPoint = customHouseCurve.points.find((point) => point.id === customHouseCurve.activePointId) || null;
@@ -116,7 +126,7 @@
             elements.measurementCustomHouseCurveCreateBtn.textContent = customHouseCurve.saving ? 'Creating…' : 'Create Target Curve';
         }
         if (elements.measurementConvolverPanel) {
-            elements.measurementConvolverPanel.classList.toggle('hidden', !frequencyView || assistMode !== 'convolver');
+            elements.measurementConvolverPanel.classList.toggle('hidden', !frequencyView || assistMode !== 'convolver' || activeEditor === 'houseCurve');
         }
         if (elements.measurementPeqChips) {
             elements.measurementPeqChips.innerHTML = Array.from({ length: 12 }, (_, index) => {
@@ -130,11 +140,11 @@
                     occupied: !!filter,
                     attributes: `data-measurement-peq-slot="${index}" data-measurement-peq-chip="${filter ? deps.escapeHtml(filter.id) : ''}"`,
                 });
-            }).join('');
+            }).join('') + renderMeasurementPeqAutoChip();
         }
         if (elements.measurementPeqEditor) {
             if (!activePeqFilter) {
-                elements.measurementPeqEditor.innerHTML = '<div class="measurement-peq-editor-empty">Use F1-F12 or the graph near the fixed 0 dB line to add up to 12 temporary filters.</div>';
+                elements.measurementPeqEditor.innerHTML = '<div class="measurement-peq-editor-empty">Use F1-F12 or the graph near the fixed 0 dB line to add up to 12 temporary filters, or let Auto suggest them.</div>';
             } else {
                 const hideFreqQ = activePeqFilter.type === 'gain';
                 elements.measurementPeqEditor.innerHTML = `
@@ -392,7 +402,6 @@
             if (input) input.value = nextValue.toFixed(2);
         }
         deps.scheduleMeasurementGraphRender();
-        deps.focusMeasurementPeqPanelContext();
     }
 
     let editorDelegationBound = false;
@@ -403,6 +412,10 @@
         editorDelegationBound = true;
         const elements = deps.getElements();
         elements.measurementPeqChips?.addEventListener('click', (event) => {
+            if (event.target.closest('[data-measurement-peq-auto]')) {
+                deps.runMeasurementPeqAuto();
+                return;
+            }
             const button = event.target.closest('[data-measurement-peq-slot]');
             if (!button) return;
             const filterId = button.dataset.measurementPeqChip;

@@ -90,9 +90,9 @@
         if (!settings) return [];
         const bass = modeConfig.bass_management || {};
         const subRoles = modeConfig.topology?.sub_roles || [];
-        const applicable = mod.applicableFilters(active, { bass, subRoles });
+        const applicable = mod.applicableFilters(active, { bass, subRoles, mode: catalog.active_mode });
         const derived = !settings.highpass && mod.derivedHighpassForRole
-            ? mod.derivedHighpassForRole(active, bass, subRoles) : null;
+            ? mod.derivedHighpassForRole(active, bass, subRoles, catalog.active_mode) : null;
         const kinds = [];
         if (applicable.includes('highpass') && !derived && settings.highpass) kinds.push('highpass');
         if (applicable.includes('lowpass') && settings.lowpass) kinds.push('lowpass');
@@ -133,7 +133,7 @@
         const busy = deps.getState().crossover.busy || deps.getState().outputSystem.busy;
         const bass = modeConfig.bass_management || {};
         const subRoles = modeConfig.topology?.sub_roles || [];
-        const bassContext = { bass, subRoles };
+        const bassContext = { bass, subRoles, mode: catalog.active_mode };
         // Derived sub high-pass for the Low way: owned by the Subwoofer tile,
         // displayed read-only here. Falls back to the response payload when the
         // catalog is momentarily stale after a sub save. The response carries the
@@ -145,13 +145,13 @@
         const responseDerived = mod.isLowWayRole && mod.isLowWayRole(active)
             ? (response.ways?.[active]?.derived_highpass || null) : null;
         const catalogDerived = mod.derivedHighpassForRole
-            ? mod.derivedHighpassForRole(active, bass, subRoles) : null;
+            ? mod.derivedHighpassForRole(active, bass, subRoles, catalog.active_mode) : null;
         const derivedHighpass = (!settings.highpass && (catalogDerived || responseDerived)) || null;
         // Linked pairs share one tab per way ("L/R · Low"); unlinked pairs go
         // back to separate L/R tabs. The checkbox keeps its place regardless.
         // Link is off by default and couples only the crossover filters; Trim
         // (Level/Align/Polarity) stays per-way and is hidden while linked.
-        const linkedCrossover = deps.getState().crossover.linkLR === true;
+        const linkedCrossover = deps.getState().crossover.linkLR === true && !!mod.mirrorRole(active);
         mod.renderWayTabs(deps.getElements().effectsCrossoverTabs, roles, active, (role) => {
             // A linked pair shares one tab carrying the canonical left role:
             // re-picking the visible pair keeps the current side, otherwise the
@@ -159,7 +159,7 @@
             const mate = mod.mirrorRole ? mod.mirrorRole(deps.getState().crossover.activeWay) : null;
             deps.getState().crossover.activeWay = (linkedCrossover && mate === role) ? deps.getState().crossover.activeWay : role;
             renderCrossoverTile();
-        }, linkedCrossover);
+        }, deps.getState().crossover.linkLR === true);
         if (deps.getElements().effectsCrossoverGraph) {
             const view = (root && root.FXRouteCrossoverView) || null;
             if (view) view.drawCrossoverResponse(deps.getElements().effectsCrossoverGraph, response.ways, active,
@@ -182,23 +182,31 @@
         // pointer never holds) until the save settles.
         const preview = crossoverGraphPreview();
         const activeElement = (typeof document !== 'undefined' && document.activeElement) || null;
+        const fieldHasFocus = (field) => activeElement === field
+            || field?.closest?.('.stepper-control')?.contains(activeElement) === true;
         const draggedValue = (kind) => (preview && preview.kind === kind
             ? String(preview.frequency_hz) : null);
         const draggedHighpass = draggedValue('highpass');
         const draggedLowpass = draggedValue('lowpass');
         if (deps.getElements().effectsCrossoverFrequencyHighpass
-            && (draggedHighpass !== null || activeElement !== deps.getElements().effectsCrossoverFrequencyHighpass)) {
+            && (draggedHighpass !== null || !fieldHasFocus(deps.getElements().effectsCrossoverFrequencyHighpass))) {
             deps.getElements().effectsCrossoverFrequencyHighpass.value = draggedHighpass
                 ?? (settings.highpass?.frequency_hz ?? derivedHighpass?.frequency_hz ?? '');
-            deps.getElements().effectsCrossoverFrequencyHighpass.disabled = !showHighpass || busy || !!derivedHighpass;
+        }
+        if (deps.getElements().effectsCrossoverFrequencyHighpass) {
+            deps.getElements().effectsCrossoverFrequencyHighpass.disabled = !showHighpass || !!derivedHighpass
+                || (busy && !fieldHasFocus(deps.getElements().effectsCrossoverFrequencyHighpass));
             deps.getElements().effectsCrossoverFrequencyHighpass.title = derivedHighpass
                 ? `Set by the Subwoofer tile (${derivedHighpass.frequency_hz} Hz)` : '';
         }
         if (deps.getElements().effectsCrossoverFrequencyLowpass
-            && (draggedLowpass !== null || activeElement !== deps.getElements().effectsCrossoverFrequencyLowpass)) {
+            && (draggedLowpass !== null || !fieldHasFocus(deps.getElements().effectsCrossoverFrequencyLowpass))) {
             deps.getElements().effectsCrossoverFrequencyLowpass.value = draggedLowpass
                 ?? (settings.lowpass?.frequency_hz ?? '');
-            deps.getElements().effectsCrossoverFrequencyLowpass.disabled = !showLowpass || busy;
+        }
+        if (deps.getElements().effectsCrossoverFrequencyLowpass) {
+            deps.getElements().effectsCrossoverFrequencyLowpass.disabled = !showLowpass
+                || (busy && !fieldHasFocus(deps.getElements().effectsCrossoverFrequencyLowpass));
         }
         const families = ['off', ...Object.keys(catalog.capabilities?.filter_families || {})];
         for (const kind of ['highpass', 'lowpass']) {
@@ -251,25 +259,30 @@
             if (freqGroup) freqGroup.style.display = kindOff ? 'none' : '';
             if (slopeGroup) slopeGroup.style.display = kindOff ? 'none' : '';
         }
-        if (deps.getElements().effectsCrossoverLevel && ((typeof document !== 'undefined' && document.activeElement) || null) !== deps.getElements().effectsCrossoverLevel) {
+        if (deps.getElements().effectsCrossoverLevel && !fieldHasFocus(deps.getElements().effectsCrossoverLevel)) {
             showTrimValue(deps.getElements().effectsCrossoverLevel, settings.level_db ?? 0);
-            deps.getElements().effectsCrossoverLevel.disabled = busy;
         }
-        if (deps.getElements().effectsCrossoverDelay && ((typeof document !== 'undefined' && document.activeElement) || null) !== deps.getElements().effectsCrossoverDelay) {
+        if (deps.getElements().effectsCrossoverLevel) {
+            deps.getElements().effectsCrossoverLevel.disabled = busy && !fieldHasFocus(deps.getElements().effectsCrossoverLevel);
+        }
+        if (deps.getElements().effectsCrossoverDelay && !fieldHasFocus(deps.getElements().effectsCrossoverDelay)) {
             showTrimValue(deps.getElements().effectsCrossoverDelay, settings.alignment_ms ?? 0);
-            deps.getElements().effectsCrossoverDelay.disabled = busy;
+        }
+        if (deps.getElements().effectsCrossoverDelay) {
+            deps.getElements().effectsCrossoverDelay.disabled = busy && !fieldHasFocus(deps.getElements().effectsCrossoverDelay);
         }
         if (deps.getElements().effectsCrossoverPolarity) {
             deps.getElements().effectsCrossoverPolarity.value = settings.polarity || 'normal';
             deps.getElements().effectsCrossoverPolarity.disabled = busy;
         }
-        const wayCount = modeConfig.topology?.way_count || 0;
+        const centerWay = active.startsWith('center_');
+        const wayCount = (centerWay ? modeConfig.topology?.center_way_count : modeConfig.topology?.way_count) || 0;
         // The bass high-pass is per side for an unlinked stereo sub pair, so the
         // active way decides which side's crossover the header shows.
-        const summaryBass = mod.bassHighpass ? mod.bassHighpass(bass, subRoles, active) : null;
+        const summaryBass = mod.bassHighpass ? mod.bassHighpass(bass, subRoles, active, catalog.active_mode) : null;
         if (deps.getElements().effectsCrossoverSummary) {
             const base = wayCount
-                ? `${wayCount}-Way Stereo System`
+                ? centerWay ? `${wayCount}-Way Center` : `${wayCount}-Way Stereo System`
                 : 'Configure speaker ways in Output Routing first.';
             const parts = [base];
             if (summaryBass && wayCount) parts.push(`Sub HPF ${summaryBass.frequency_hz} Hz`);
@@ -383,7 +396,7 @@
         if (!mod || !catalog || !active) return null;
         const modeConfig = catalog.modes[catalog.active_mode] || {};
         const bassContext = { bass: modeConfig.bass_management || {},
-            subRoles: modeConfig.topology?.sub_roles || [] };
+            subRoles: modeConfig.topology?.sub_roles || [], mode: catalog.active_mode };
         const applicable = mod.applicableFilters(active, bassContext);
         const readFreq = (el, fallback) => {
             if (!el || el.value === '' || el.value === null) return fallback;
@@ -393,9 +406,10 @@
         // The sub-owned Low high-pass is display-only: never persist it as a
         // stored way filter, even though the input shows its frequency.
         const derivedHighpass = !current.highpass && mod.derivedHighpassForRole
-            ? mod.derivedHighpassForRole(active, bassContext.bass, bassContext.subRoles) : null;
+            ? mod.derivedHighpassForRole(active, bassContext.bass, bassContext.subRoles, catalog.active_mode) : null;
         const highpassEnabled = applicable.includes('highpass') && !derivedHighpass;
-        const wayCount = modeConfig.topology?.way_count || 0;
+        const wayCount = (active.startsWith('center_')
+            ? modeConfig.topology?.center_way_count : modeConfig.topology?.way_count) || 0;
         const build = (kind, previous, enabled, freqEl, familyEl, slopeEl) => {
             if (!enabled) return previous ?? null;
             // Off clears the filter; the way then runs open in that direction.
@@ -417,7 +431,7 @@
         // Linked L/R maintains only the shared crossover filters. Trim
         // (Level/Align/Polarity) stays per-way and hidden while linked, so it
         // is omitted from the mutation and the backend keeps stored values.
-        const linked = deps.getState().crossover.linkLR === true;
+        const linked = deps.getState().crossover.linkLR === true && !!mod.mirrorRole(active);
         const mutation = {
             kind: 'set_processing',
             mode: catalog.active_mode,
@@ -441,32 +455,40 @@
         return mutation;
     }
 
-    async function saveCrossoverWay() {
+    let crossoverSavePromise = Promise.resolve();
+
+    function saveCrossoverWay() {
         const fields = collectCrossoverWayMutation();
-        if (!fields) return;
-        // The L/R link shares only the crossover filter values with the mirror
-        // way. Trim (level/align/polarity) stays per-way physical tuning and is
-        // hidden while linked, so a linked save never touches it.
-        const mod = (root && root.FXRouteCrossover) || null;
-        const catalog = deps.getState().outputSystem.catalog;
-        const mirror = mod?.mirrorRole ? mod.mirrorRole(fields.role) : null;
-        const mirrorProcessing = catalog?.modes?.[catalog.active_mode]?.processing || {};
-        const linked = deps.getState().crossover.linkLR === true && mirror && mirror !== fields.role
-            && Object.prototype.hasOwnProperty.call(mirrorProcessing, mirror);
-        deps.getState().crossover.busy = true;
-        renderCrossoverTile();
-        try {
-            const { kind, ...rest } = fields;
-            await deps.applyMutation(kind, rest, false, { quiet: true });
-            if (linked) {
-                const { role: _role, level_db: _level, alignment_ms: _align, polarity: _polarity, ...mirrorShared } = rest;
-                await deps.applyMutation(kind, { ...mirrorShared, role: mirror }, false, { quiet: true });
-            }
-            await fetchCrossoverResponse();
-        } finally {
-            deps.getState().crossover.busy = false;
+        if (!fields) return Promise.resolve();
+        // Capture each press now and serialize its mutation. The shared output
+        // controller rejects concurrent writes instead of queuing them.
+        crossoverSavePromise = crossoverSavePromise.catch(() => {}).then(async () => {
+            // The L/R link shares only the crossover filter values with the mirror
+            // way. Trim (level/align/polarity) stays per-way physical tuning and is
+            // hidden while linked, so a linked save never touches it.
+            const mod = (root && root.FXRouteCrossover) || null;
+            const catalog = deps.getState().outputSystem.catalog;
+            if (catalog?.active_mode !== fields.mode) return;
+            const mirror = mod?.mirrorRole ? mod.mirrorRole(fields.role) : null;
+            const mirrorProcessing = catalog?.modes?.[catalog.active_mode]?.processing || {};
+            const linked = deps.getState().crossover.linkLR === true && mirror && mirror !== fields.role
+                && Object.prototype.hasOwnProperty.call(mirrorProcessing, mirror);
+            deps.getState().crossover.busy = true;
             renderCrossoverTile();
-        }
+            try {
+                const { kind, ...rest } = fields;
+                await deps.applyMutation(kind, rest, false, { quiet: true });
+                if (linked) {
+                    const { role: _role, level_db: _level, alignment_ms: _align, polarity: _polarity, ...mirrorShared } = rest;
+                    await deps.applyMutation(kind, { ...mirrorShared, role: mirror }, false, { quiet: true });
+                }
+                await fetchCrossoverResponse();
+            } finally {
+                deps.getState().crossover.busy = false;
+                renderCrossoverTile();
+            }
+        });
+        return crossoverSavePromise;
     }
 
     async function maybeApplyCrossoverStarters() {
@@ -479,19 +501,22 @@
         const modeConfig = catalog.modes[catalog.active_mode] || {};
         const wayCount = modeConfig.topology?.way_count || 0;
         if (![2, 3, 4].includes(wayCount)) return false;
-        let starters;
+        let starterGroups;
         try {
-            starters = mod.starterValues(wayCount);
+            starterGroups = [mod.starterValues(wayCount)];
+            if ([2, 3, 4].includes(modeConfig.topology?.center_way_count)) {
+                starterGroups.push(mod.starterValues(modeConfig.topology.center_way_count, ['center']));
+            }
         } catch (e) {
             return false;
         }
         const processing = modeConfig.processing || {};
-        const roles = Object.keys(starters);
-        const allEmpty = roles.length > 0 && roles.every((role) => {
+        const starters = Object.assign({}, ...starterGroups.filter(group => Object.keys(group).every(role => {
             const current = processing[role] || {};
             return !current.highpass && !current.lowpass;
-        });
-        if (!allEmpty) return false;
+        })));
+        const roles = Object.keys(starters);
+        if (!roles.length) return false;
         deps.getState().crossover.busy = true;
         renderCrossoverTile();
         try {
@@ -501,7 +526,7 @@
                     { mode: catalog.active_mode, role, highpass: wanted.highpass ?? null, lowpass: wanted.lowpass ?? null },
                     false, { quiet: true });
             }
-            deps.showToast(`Starter values applied (${wayCount}-way).`, 'success');
+            deps.showToast('Starter values applied.', 'success');
             await fetchCrossoverResponse();
         } finally {
             deps.getState().crossover.busy = false;

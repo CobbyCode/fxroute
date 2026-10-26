@@ -414,6 +414,8 @@
     // not simulated here.
     const speakerWays = ['left_low', 'left_low_mid', 'left_mid', 'left_high', 'right_low',
         'right_low_mid', 'right_mid', 'right_high'];
+    const centerWays = ['center_low', 'center_low_mid', 'center_mid', 'center_high'];
+    const crossoverWaySets = [['low', 'high'], ['low', 'mid', 'high'], ['low', 'low_mid', 'mid', 'high']];
     const subRoles = ['sub_l', 'sub_r', 'sub1', 'sub2'];
     // Surround roles beyond the front pair, in routing order (mirrors
     // audio/output_topology.py SURROUND_SPEAKERS). Sub L / Sub R are not
@@ -425,7 +427,8 @@
     const SURROUND_GROUPS = ['front', 'center', 'side', 'rear'];
     function outputStateRoles(mode) {
         const fronts = outputStateStore.modes[mode].crossover_enabled ? speakerWays : ['main_l', 'main_r'];
-        if (mode === 'surround') return [...fronts, ...surroundSpeakers, 'sub1', 'sub2'];
+        if (mode === 'surround') return [...fronts,
+            ...(outputStateStore.modes[mode].crossover_enabled ? centerWays : []), ...surroundSpeakers, 'sub1', 'sub2'];
         return [...fronts, ...(mode === 'stereo-sub' ? subRoles : [])];
     }
     const neutralBank = () => ({ preset: 'Neutral', preset_a: 'Neutral', preset_b: 'Neutral', active_side: 'A' });
@@ -445,7 +448,7 @@
     }
     function demoSurroundGroup(role) {
         if (/^(main_[lr]|left_|right_)/.test(role)) return 'front';
-        return role === 'center' ? 'center' : String(role).replace(/_[lr]$/, '');
+        return role === 'center' || centerWays.includes(role) ? 'center' : String(role).replace(/_[lr]$/, '');
     }
     // Mirror of output_state._group_slot.
     function demoGroupSlot(slot, group, name) {
@@ -478,6 +481,7 @@
     const BANK_PAIR_LABELS = { main: 'Main L/R', low: 'Low L/R', low_mid: 'Low-Mid L/R',
         mid: 'Mid L/R', high: 'High L/R', sub: 'Sub L/R', side: 'Side L/R', rear: 'Rear L/R' };
     function bankLabel(bankId) {
+        if (bankId.startsWith('center_')) return `${bankId.slice(7).split('_').map(word => word.charAt(0).toUpperCase() + word.slice(1)).join('-')} C`;
         if (/^sub\d+$/.test(bankId)) return `Sub ${bankId.slice(3)}`;
         return String(bankId).split('_').map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(' ');
     }
@@ -736,6 +740,14 @@
             : subs.length === 2 ? 'dual-mono' : 'unsupported';
         const issues = [];
         let wayCount = null;
+        const center = roles.filter(role => centerWays.includes(role));
+        let centerWayCount = null;
+        if (center.length) {
+            if (roles.includes('center')) issues.push('Center routing cannot mix full-range and crossover ways');
+            else if (!crossoverWaySets.some(set => JSON.stringify(set.map(way => `center_${way}`)) === JSON.stringify(center))) {
+                issues.push('Center crossover requires complete Low/High, Low/Mid/High, or Low/Low-Mid/Mid/High ways');
+            } else centerWayCount = center.length;
+        }
         // Surround checks first, like derive_topology: the summary line
         // reports the first problem, so the order decides what the user reads.
         if (mode === 'surround' && subs.includes('sub2') && !subs.includes('sub1')) {
@@ -752,10 +764,9 @@
         if (!enabled) {
             if (!roles.includes('main_l') || !roles.includes('main_r')) issues.push('Stereo routing requires Main L and Main R');
         } else {
-            const ways = ['low', 'low_mid', 'mid', 'high'];
             const left = roles.filter(r => r.startsWith('left_')).map(r => r.slice(5));
             const right = roles.filter(r => r.startsWith('right_')).map(r => r.slice(6));
-            const complete = [['low', 'high'], ['low', 'mid', 'high'], ways];
+            const complete = crossoverWaySets;
             const leftOk = complete.some(set => JSON.stringify(set) === JSON.stringify(left));
             const rightOk = complete.some(set => JSON.stringify(set) === JSON.stringify(right));
             if (!leftOk || !rightOk) {
@@ -768,7 +779,8 @@
         }
         return { mode, crossover_enabled: enabled, roles, sub_roles: subs, sub_mode: subMode,
             left_ways: roles.filter(role => role.startsWith('left_')),
-            right_ways: roles.filter(role => role.startsWith('right_')), way_count: wayCount, issues };
+            right_ways: roles.filter(role => role.startsWith('right_')), way_count: wayCount,
+            center_ways: center, center_way_count: centerWayCount, issues };
     }
     // Routed layout of the active output mode on the selected device: what the
     // footer's multichannel meter follows (roles in engine output order).
@@ -795,7 +807,8 @@
             const config = outputStateStore.modes[mode];
             const surround = mode === 'surround';
             const routing = fixedStereo ? ['main_l', 'main_r']
-                : (config.routing[key] || (config.crossover_enabled ? [] : ['main_l', 'main_r'])).slice();
+                : (config.routing[key] || (config.crossover_enabled ? [] : ['main_l', 'main_r']))
+                    .map(role => !config.crossover_enabled && centerWays.includes(role) ? 'off' : role);
             const effectiveCrossover = fixedStereo ? false : config.crossover_enabled;
             const topology = outputStateTopology(mode, routing.slice(0, channels || routing.length), effectiveCrossover);
             const banks = {};
@@ -825,7 +838,8 @@
         for (const mode of OUTPUT_STATE_MODES) {
             deviceRouting[mode] = fixedStereo ? ['main_l', 'main_r']
                 : (outputStateStore.modes[mode].routing[key]
-                || (outputStateStore.modes[mode].crossover_enabled ? [] : ['main_l', 'main_r'])).slice();
+                || (outputStateStore.modes[mode].crossover_enabled ? [] : ['main_l', 'main_r']))
+                    .map(role => !outputStateStore.modes[mode].crossover_enabled && centerWays.includes(role) ? 'off' : role);
         }
         return {
             status: 'ok', revision: outputStateStore.revision, active_mode: outputStateStore.active_mode,
@@ -1784,19 +1798,69 @@
     }
 
     // ── Music libraries ─────────────────────────────────────────────────
-    // The demo presents "SMB_Demo_Library-1" (the first demo share) as its
+    // The demo presents "SMB_Demo_Library-1" (the first SMB demo share) as its
     // active library, like a box with that share selected; Local and
     // "SMB_Demo_Library-2" stay selectable under Settings. Each share serves
     // its own catalog (local main, demo-library-2 SMB-1, demo-nas SMB-2).
+    //
+    // NFS is presented the way a NAS publishes the same folders over both
+    // protocols: /export/Music-Demo is the SMB-1 folder and /export/Archive
+    // the SMB-2 folder, so picking either protocol shows the same music. Both
+    // exports come from automatic discovery and start unmounted; selecting
+    // one mounts it and keeps the SMB mount alongside.
     const musicLibraries = {
         active_id: 'demo-library-2',
         active_type: 'smb',
         libraries: [
             { id: 'local', label: 'Local', type: 'local' },
-            { id: 'demo-library-2', label: 'SMB_Demo_Library-1', type: 'smb' },
-            { id: 'demo-nas', label: 'SMB_Demo_Library-2', type: 'smb' },
+            { id: 'demo-library-2', label: 'SMB_Demo_Library-1', type: 'smb', server: '192.168.178.100', share: 'Music-Demo', mounted: true },
+            { id: 'demo-nas', label: 'SMB_Demo_Library-2', type: 'smb', server: '192.168.178.100', share: 'Music-Demo-2', mounted: true },
+            { id: 'demo-nfs', label: 'NFS — 192.168.178.100:/export/Music-Demo', type: 'nfs', server: '192.168.178.100', share: '/export/Music-Demo', mounted: false },
+            { id: 'demo-nfs-archive', label: 'NFS — 192.168.178.100:/export/Archive', type: 'nfs', server: '192.168.178.100', share: '/export/Archive', mounted: false },
+            { id: 'manual', type: 'action', label: 'Add network share manually…' },
         ],
     };
+
+    // Manual entry accepts both protocol spellings the real backend accepts:
+    // smb://server/share and server:/export/path (IPv6 servers bracketed).
+    // New shares stay unmounted until they are selected, like a real box.
+    function manualShareEntry(rawUrl) {
+        const value = String(rawUrl || '').trim();
+        const smb = value.match(/^smb:\/\/([A-Za-z0-9][A-Za-z0-9._-]*)\/([^/]+)\/?$/i);
+        if (smb) {
+            return {
+                id: `smb:${smb[1]}:${smb[2]}`,
+                type: 'smb',
+                label: `SMB — ${smb[1]} / ${smb[2]}`,
+                server: smb[1],
+                share: smb[2],
+                mounted: false,
+            };
+        }
+        // A single leading slash: "ftp://host/path" is a scheme, not an export.
+        const nfs = value.match(/^(\[[0-9A-Fa-f:]+\]|[A-Za-z0-9][A-Za-z0-9._-]*):(\/(?!\/).*)$/);
+        if (nfs) {
+            const share = nfs[2].replace(/\/+/g, '/').replace(/\/+$/, '') || '/';
+            return {
+                id: `nfs:${nfs[1]}:${share}`,
+                type: 'nfs',
+                label: `NFS — ${nfs[1]}:${share}`,
+                server: nfs[1],
+                share,
+                mounted: false,
+            };
+        }
+        throw new Error('Enter smb://server/share or server:/export/path');
+    }
+    // New shares go in front of the manual-entry action, keeping it last.
+    function addNetworkEntry(entry) {
+        const existing = musicLibraries.libraries.find(item => item.id === entry.id);
+        if (existing) return existing;
+        const actionIndex = musicLibraries.libraries.findIndex(item => item.type === 'action');
+        const index = actionIndex < 0 ? musicLibraries.libraries.length : actionIndex;
+        musicLibraries.libraries.splice(index, 0, entry);
+        return entry;
+    }
 
     // ── Library scan / share-discovery simulation ───────────────────────
     // A real box rescans after boot and on refresh; the frontend polls
@@ -1858,9 +1922,11 @@
     // serves the browse surfaces; manually added shares fall back to local.
     const lib2 = window.FXROUTE_DEMO_LIBRARY2 || { tracks: [], albums: [] };
     const lib3 = window.FXROUTE_DEMO_LIBRARY3 || { tracks: [], albums: [] };
+    // The NAS publishes each folder over SMB and NFS, so both protocol
+    // entries of one folder serve the same catalog.
     function activeLib() {
-        if (musicLibraries.active_id === 'demo-library-2') return lib2;
-        if (musicLibraries.active_id === 'demo-nas') return lib3;
+        if (musicLibraries.active_id === 'demo-library-2' || musicLibraries.active_id === 'demo-nfs') return lib2;
+        if (musicLibraries.active_id === 'demo-nas' || musicLibraries.active_id === 'demo-nfs-archive') return lib3;
         return lib;
     }
     // Cross-catalog lookup: the active catalog wins, the others are
@@ -1899,7 +1965,17 @@
     // Tracks resolve cross-catalog, like the cover endpoints.
     function demoPlaylistM3u(playlist) {
         const lines = ['#EXTM3U'];
+        const tidalRefs = (playlist.track_ids || []).filter(ref => String(ref).startsWith('tidal:'));
+        if (tidalRefs.length) {
+            lines.push(`# FXRoute: ${tidalRefs.length} TIDAL track(s) not exported (streaming only)`);
+            tidalRefs.forEach(ref => {
+                const meta = (playlist.track_meta || {})[ref] || {};
+                const label = [meta.artist, meta.title || ref].filter(Boolean).join(' - ');
+                lines.push(`# not exported (TIDAL): ${label.replace(/\s+/g, ' ')}`);
+            });
+        }
         for (const trackId of (playlist.track_ids || [])) {
+            if (String(trackId).startsWith('tidal:')) continue;
             const track = findTrack(trackId)?.track;
             if (!track) continue;
             const duration = Number(track.duration) > 0 ? Math.round(Number(track.duration)) : -1;
@@ -2090,7 +2166,8 @@
     const levelMatchEntries = {};
     const levelMatchJobs = {};
     let levelMatchSeq = 0;
-    const levelMatchRoleRaw = (role) => levelMatchRaw[role] ?? (role.startsWith('left_') ? -20.0 : -21.8);
+    const levelMatchRoleRaw = (role) => levelMatchRaw[role]
+        ?? (role.startsWith('center_') ? -22.5 : role.startsWith('left_') ? -20.0 : -21.8);
     function levelMatchScope(bankId) {
         const catalog = outputStateCatalog();
         const mode = catalog.active_mode;
@@ -2106,6 +2183,10 @@
         if (!members.length) return { error: 'Level Matching needs a routed speaker' };
         const isFront = members.every(front);
         if (surround && isFront) members = roles.filter(front);
+        else if (surround && !wholeMode) {
+            const group = demoSurroundGroup(members[0]);
+            members = roles.filter(role => demoSurroundGroup(role) === group);
+        }
         const slot = surround && !isFront && !wholeMode ? 'bank' : 'global';
         const slotForRole = (role) => surround && !front(role) ? 'bank' : 'global';
         const groups = surround ? ['front', 'center', 'side', 'rear'].map(group =>
@@ -2162,7 +2243,8 @@
             const roles = members.filter(role => side(role) === label);
             if (roles.length) units.push({ label, roles });
         }
-        for (const role of members.filter(role => side(role) === 'mono')) units.push({ label: role, roles: [role] });
+        const mono = members.filter(role => side(role) === 'mono');
+        if (mono.length) units.push({ label: mono[0], roles: mono });
         return units;
     }
     function polarityCheckStatus(bankId) {
@@ -2177,8 +2259,9 @@
         const bank = config.banks[bankId];
         if (!bank) return { error: `Bank ${bankId} is not an active speaker bank` };
         const scope = { mode: catalog.active_mode, members: bankId === 'global' ? roles : bank.roles };
-        if (scope.mode === 'surround' && scope.members.every(role => /^(main_[lr]|left_|right_)/.test(role))) {
-            scope.members = roles.filter(role => /^(main_[lr]|left_|right_)/.test(role));
+        if (scope.mode === 'surround' && scope.members.length) {
+            const group = demoSurroundGroup(scope.members[0]);
+            scope.members = roles.filter(role => !subRoles.includes(role) && demoSurroundGroup(role) === group);
         }
         return { scope, units: polarityCheckUnits(scope.members) };
     }
@@ -2785,6 +2868,13 @@
 
         // ── playback / status ───────────────────────────────────────────
         if (p === '/api/status') return j(S.getPlayback());
+        if (p === '/api/play' && post && Array.isArray(body.queue_refs) && body.queue_refs.length) {
+            // Mixed queue of local ids and tidal:<id> references.
+            const connected = !!demoProviderAccount().tidal;
+            const result = S.playRefs(body.queue_refs, String(body.source || 'local'), String(body.track_id || ''), connected);
+            if (!result.track) return err(result.unauthorized ? 'TIDAL is not authenticated' : 'Track not found', result.unauthorized ? 401 : 404);
+            return j({ status: 'playing', url: result.track.url || '', track: result.track, playback: S.getPlayback(), queue_summary: result.summary });
+        }
         if (p === '/api/play' && post) {
             const src = String(body.source || 'local');
             if (src === 'radio') {
@@ -2919,6 +3009,13 @@
         if (p === '/api/tracks') return j(activeLib().tracks);
         if (p === '/api/albums') {
             const catalog = activeLib().albums;
+            // Enriched backends serve the artist MusicBrainz id the Library
+            // seeds Discover Similar with; the demo derives a stable stand-in.
+            catalog.forEach(a => {
+                if (!a.mb_artist_id && a.artist && !/^various/i.test(a.artist)) {
+                    a.mb_artist_id = 'demo-mbid-' + String(a.artist).toLowerCase().replace(/[^a-z0-9]+/g, '-');
+                }
+            });
             const q = String(query.get('query') || '').toLowerCase();
             return j(q ? catalog.filter(a => (a.name + ' ' + a.artist + ' ' + (a.genres || []).join(' ')).toLowerCase().includes(q)) : catalog);
         }
@@ -2931,8 +3028,14 @@
                 const trackIds = Array.isArray(body.track_ids) ? body.track_ids : [];
                 if (!name) return err('Playlist name required', 400);
                 const id = 'playlist_' + Date.now();
-                catalogPlaylists.push({ id, name, track_ids: trackIds, track_count: trackIds.length });
-                return j({ status: 'ok', playlist: { id, name, track_ids: trackIds, track_count: trackIds.length } });
+                // Display data of TIDAL entries (tidal:<id>) travels with the playlist.
+                const refSet = new Set(trackIds.filter(ref => String(ref).startsWith('tidal:')));
+                const trackMeta = {};
+                Object.keys(body.track_meta || {}).forEach(ref => { if (refSet.has(ref)) trackMeta[ref] = body.track_meta[ref]; });
+                const saved = { id, name, track_ids: trackIds, track_count: trackIds.length };
+                if (Object.keys(trackMeta).length) saved.track_meta = trackMeta;
+                catalogPlaylists.push(saved);
+                return j({ status: 'ok', playlist: { ...saved } });
             }
             return j(catalogPlaylists);
         }
@@ -2946,10 +3049,16 @@
             const playlist = catalogPlaylists.find(pl => pl.id === id);
             if (!playlist) return err('Playlist not found', 404);
             const safeName = String(playlist.name || 'playlist').replace(/["\r\n]/g, '');
-            return j(demoPlaylistM3u(playlist), 200, {
+            const skippedTidal = (playlist.track_ids || []).filter(ref => String(ref).startsWith('tidal:')).length;
+            if (skippedTidal && skippedTidal === (playlist.track_ids || []).length) {
+                return err({ error: 'playlist_has_no_local_tracks', message: `Playlist export failed: all ${skippedTidal} track(s) are on TIDAL and cannot be exported`, tidal_track_count: skippedTidal }, 409);
+            }
+            const headers = {
                 'Content-Type': 'audio/x-mpegurl; charset=utf-8',
                 'Content-Disposition': `attachment; filename="${safeName}.m3u8"`,
-            });
+            };
+            if (skippedTidal) headers['X-FXRoute-Skipped-Tidal'] = String(skippedTidal);
+            return j(demoPlaylistM3u(playlist), 200, headers);
         }
         const playlistCrud = p.match(/^\/api\/playlists\/([^/]+)$/);
         if (playlistCrud) {
@@ -3005,17 +3114,18 @@
         const albumDiscover = p.match(/^\/api\/albums\/([^/]+)\/discover$/);
         if (albumDiscover) {
             // Same contract as the backend (ListenBrainz artist-seeded
-            // suggestions, max 6): reuse the active demo catalog — same
-            // genre first, then same decade, then the rest in catalog
-            // order. Returns full album entries so the real UI renders
-            // identical tiles, no demo-only recommendation logic.
+            // similar artists, max 6): other artists of the active demo
+            // catalog — same genre first, then same decade, then catalog
+            // order. With ?provider=tidal an artist that also exists in the
+            // demo TIDAL catalog carries its stored id and art, like the
+            // real mapping lookup.
             const catalog = activeLib().albums;
             const album = catalog.find(a => a.id === albumDiscover[1]);
             if (!album) return err('Album not found');
             const genre = (album.genres || [])[0] || '';
             const decade = Math.floor(Number(album.year || 0) / 10);
             const scored = catalog
-                .filter(a => a.id !== album.id)
+                .filter(a => a.artist !== album.artist && !/^various/i.test(a.artist || ''))
                 .map(a => {
                     const sameGenre = genre && (a.genres || []).includes(genre) ? 0 : 1;
                     const sameDecade = Number.isFinite(decade) && decade > 0
@@ -3023,7 +3133,35 @@
                     return { album: a, score: sameGenre * 10 + sameDecade };
                 })
                 .sort((x, y) => x.score - y.score);
-            return j({ album_id: album.id, items: scored.slice(0, 6).map(s => s.album), source: 'demo', cached: true, error: '' });
+            const seen = new Set();
+            const items = [];
+            for (const entry of scored) {
+                const artist = entry.album.artist;
+                if (seen.has(artist)) continue;
+                seen.add(artist);
+                const item = { type: 'artist', artist, artist_mbid: 'demo-mbid-' + artist.toLowerCase().replace(/[^a-z0-9]+/g, '-'), listen_count: 0 };
+                if (query.get('provider') === 'tidal') {
+                    const mapped = tidalArtists().find(t => t.name.toLowerCase() === artist.toLowerCase());
+                    if (mapped) {
+                        item.provider_artist_id = mapped.id;
+                        item.art_url = mapped.art_url || '';
+                    }
+                }
+                items.push(item);
+                if (items.length >= 6) break;
+            }
+            return j({ album_id: album.id, items, source: 'demo', cached: true, error: '' });
+        }
+        if (p === '/api/artists/provider-matches' && post) {
+            // Stored-mapping lookup: a demo artist matches the TIDAL demo
+            // artist of the same name.
+            const artists = Array.isArray(body.artists) ? body.artists : [];
+            const matches = artists.map(entry => {
+                const name = String((entry && entry.name) || '').toLowerCase();
+                const mapped = name ? tidalArtists().find(t => t.name.toLowerCase() === name) : null;
+                return mapped ? { provider_artist_id: mapped.id, name: mapped.name, art_url: mapped.art_url || '' } : null;
+            });
+            return j({ provider: String(body.provider || ''), matches });
         }
         if (p === '/api/smart/top-tracks') return j(activeLib().tracks.slice(0, 40));
         if (p === '/api/library/status') {
@@ -3359,11 +3497,6 @@
             else tidalFavs[type].delete(id);
             return j({ favorite: !!body.favorite });
         }
-        if (p === '/api/streaming/tidal/auth/device' && post) return j({ device_code: 'DEMO42', user_code: 'DEMO-AUTH', verification_uri: 'https://link.tidal.com', verification_uri_complete: 'https://link.tidal.com/demo-auth' });
-        if (p === '/api/streaming/tidal/auth/device/finish' && post) {
-            demoProviderAccount().tidal = true;
-            return j({ success: true });
-        }
         if (p === '/api/streaming/tidal/auth/pkce' && post) return j({ url: 'https://link.tidal.com/demo-auth' });
         if (p === '/api/streaming/tidal/auth/pkce/finish' && post) {
             demoProviderAccount().tidal = true;
@@ -3477,7 +3610,13 @@
                     : { left_low: 'main_l', right_low: 'main_r' };
                 const allowed = outputStateRoles(mode);
                 for (const [key, assignments] of Object.entries(config.routing)) {
-                    config.routing[key] = assignments.map(role => mapping[role] || (allowed.includes(role) ? role : 'off'));
+                    const deviceMapping = { ...mapping };
+                    if (mode === 'surround' && assignments.some(role => centerWays.slice(1).includes(role))) {
+                        if (mutation.enabled && !assignments.includes('center_low')) deviceMapping.center = 'center_low';
+                        else if (!mutation.enabled && !assignments.includes('center')) deviceMapping.center_low = 'center';
+                    }
+                    config.routing[key] = assignments.map(role => deviceMapping[role]
+                        || (allowed.includes(role) || (mode === 'surround' && centerWays.includes(role)) ? role : 'off'));
                     for (const role of config.routing[key]) {
                         if (role !== 'off' && !config.banks[role]) {
                             config.banks[role] = neutralBank();
@@ -3498,7 +3637,9 @@
                 const allowed = new Set([...outputStateRoles(mode), 'off']);
                 if (assignments.some(role => !allowed.has(role))) return fail('Routing contains an invalid role');
                 const key = outputEntry(selectedOutput()).key;
-                config.routing[key] = [...assignments, ...(config.routing[key] || []).slice(assignments.length)];
+                const stored = config.routing[key] || [];
+                config.routing[key] = [...assignments.map((role, index) => role === 'off' && !config.crossover_enabled
+                    && centerWays.includes(stored[index]) ? stored[index] : role), ...stored.slice(assignments.length)];
                 for (const role of assignments) {
                     if (role !== 'off' && !config.banks[role]) {
                         config.banks[role] = neutralBank();
@@ -3556,13 +3697,13 @@
                 }
             } else if (mutation.kind === 'set_level_calibration') {
                 if (!Number.isInteger(mutation.state_revision) || mutation.state_revision !== outputStateStore.revision) {
-                    return { error: 'Level Matching configuration changed; measure again', status: 409 };
+                    return err('Level Matching configuration changed; measure again', 409);
                 }
                 if (mutation.measurement_job_id) {
                     const job = levelMatchJobs[mutation.measurement_job_id];
                     if (!job || job.cancel_requested || job.result.state_revision !== mutation.state_revision
                         || job.result.mode !== mode || JSON.stringify(job.result.values) !== JSON.stringify(mutation.values)) {
-                        return { error: 'Level Matching configuration changed; measure again', status: 409 };
+                        return err('Level Matching configuration changed; measure again', 409);
                     }
                 }
                 if (!mutation.values || typeof mutation.values !== 'object' || !Object.keys(mutation.values).length) {
@@ -3630,15 +3771,18 @@
             const hasSubs = (config.topology.sub_roles || []).length > 0;
             const stereoPair = config.topology.sub_mode === 'stereo';
             const derivedHighpassFor = (role) => {
-                if (!hasSubs || bass.main_highpass_enabled !== true) return null;
-                const shape = bassCrossoverForSide(bass, subSideForRole(role), stereoPair);
+                if (!hasSubs) return null;
+                const groupShape = catalog.active_mode === 'surround' && bass.sub_link === false
+                    ? bass.sub_filters?.[demoSurroundGroup(role)] : null;
+                if (groupShape ? !groupShape.highpass_enabled : bass.main_highpass_enabled !== true) return null;
+                const shape = groupShape || bassCrossoverForSide(bass, subSideForRole(role), stereoPair);
                 const frequency = Number(shape.frequency_hz);
                 if (!Number.isFinite(frequency) || frequency < 40 || frequency > 200) return null;
                 return { family: shape.family, slope_db_oct: shape.slope_db_oct, frequency_hz: Math.round(frequency) };
             };
             for (const [role, settings] of Object.entries(catalog.modes[catalog.active_mode].processing)) {
                 if (!config.crossover_enabled || !config.topology.roles.includes(role)) continue;
-                if (!role.startsWith('left_') && !role.startsWith('right_')) continue;
+                if (!speakerWays.includes(role) && !centerWays.includes(role)) continue;
                 const points = [];
                 const derivedHighpass = derivedHighpassFor(role);
                 const way = role.split('_').slice(1).join('_');
@@ -3770,10 +3914,22 @@
         }
         if (p === '/api/music-libraries') return j(musicLibrariesPayload());
         if (p === '/api/music-libraries/manual' && post) {
-            const url = String(body.url || '');
-            const entry = { id: 'demo-nas-' + Date.now(), label: url.split('/').filter(Boolean).pop() || 'NAS', type: 'smb' };
-            if (!musicLibraries.libraries.find(l => l.id === entry.id)) musicLibraries.libraries.push(entry);
+            let entry;
+            try {
+                entry = manualShareEntry(body.url);
+            } catch (error) {
+                return err(error.message || 'Invalid network share', 400);
+            }
+            addNetworkEntry(entry);
             return j({ ...musicLibraries, entry });
+        }
+        if (p === '/api/music-libraries/remove' && post) {
+            const id = String(body.id || '');
+            const entry = musicLibraries.libraries.find(l => l.id === id);
+            if (!entry || !['smb', 'nfs'].includes(entry.type)) return err('Unknown network share', 404);
+            if (id === musicLibraries.active_id) return err('Select the local library before removing this share', 409);
+            musicLibraries.libraries = musicLibraries.libraries.filter(item => item.id !== id);
+            return j(musicLibraries);
         }
         if (p === '/api/music-libraries/select' && post) {
             const id = String(body.id || '');
@@ -3782,6 +3938,9 @@
                 const changed = entry.id !== musicLibraries.active_id;
                 musicLibraries.active_id = entry.id;
                 musicLibraries.active_type = entry.type;
+                // Selecting a shared folder mounts it; the mount then stays
+                // for the session, so the other protocol stays available.
+                if (entry.type === 'smb' || entry.type === 'nfs') entry.mounted = true;
                 // Local playback + queue fallbacks in state.js resolve
                 // against the active catalog.
                 if (typeof S.setActiveLibraryId === 'function') S.setActiveLibraryId(entry.id);
@@ -4294,7 +4453,7 @@
         if (p === '/api/measurements/spl-calibration/noise' && post) {
             if (body.enabled) {
                 S.spl.noiseActive = true;
-                return j({ status: 'playing', settle_seconds: 1.0, average_seconds: 3.0 });
+                return j({ status: 'playing', settle_seconds: 1.0, average_seconds: 3.0, output_profile: { ...S.SPL_OUTPUT_PROFILE } });
             }
             S.spl.noiseActive = false;
             return j({ status: 'stopped' });
@@ -4304,10 +4463,20 @@
             return j(result);
         }
         if (p === '/api/measurements/spl-calibration/apply' && post) {
+            // Like the backend: the reading must belong to the output that renders now.
+            const measuredFor = String(body.output_profile_id || '').trim();
+            if (!measuredFor) return err('output_profile_id is required', 400);
+            if (measuredFor !== S.SPL_OUTPUT_PROFILE.id) {
+                return err('The output changed since the measurement. Measure again for the current output.', 409);
+            }
             const result = S.splApplyCalibration(body.measured_spl_db);
             if (result.error) return err(result.error, 400);
-            // Like the backend, the applied calibration lives in the loudness extras.
+            // Like the backend, the applied calibration lives in the loudness extras, per output.
             dspExtras.loudness.params.calibration = result.calibration;
+            dspExtras.loudness.params.calibrationProfiles = {
+                ...(dspExtras.loudness.params.calibrationProfiles || {}),
+                [S.SPL_OUTPUT_PROFILE.id]: result.calibration,
+            };
             syncDspToState();
             return j(result);
         }
@@ -4373,7 +4542,8 @@
             const rows = status.units.map(unit => ({
                 label: unit.label, roles: unit.roles.slice(),
                 verdict: unit.roles.some(role => polarityCheckReversed.has(role)) ? 'reversed' : 'correct',
-                reason: '', phase_cos: unit.roles.some(role => polarityCheckReversed.has(role)) ? -0.97 : 0.97, snr_db: 41.0, inverted: false }));
+                reason: '', phase_cos: unit.roles.some(role => polarityCheckReversed.has(role)) ? -0.97 : 0.97, snr_db: 41.0,
+                guard: { state: 'ok', dsp_cos: 1.0, stage: '' }, inverted: false }));
             polarityCheckJobs[id] = { id, status: 'completed', mode: status.scope.mode, bank_id: String(body.bank_id),
                 progress: { step: rows.length, total: rows.length, label: rows[rows.length - 1].label },
                 result: { mode: status.scope.mode, rows, all_reversed: rows.length > 1 && rows.every(row => row.verdict === 'reversed') },

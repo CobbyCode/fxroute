@@ -56,6 +56,8 @@
     let _subwooferSavePromise = null;
     let _subwooferPendingSave = null;
     let _subwooferLastRequestedSignature = '';
+    let _subwooferDraft = null;
+    let _subwooferCommittedDraft = null;
     const SUBWOOFER_COMMIT_DEBOUNCE_MS = 600;
 
     function defaultSubCrossoverSlope(family) {
@@ -304,7 +306,27 @@
     }
 
     function routedSubwooferView() {
-        return outputSystem()?.subwooferView(deps.getState().outputSystem?.catalog) || { mode: 'stereo', roles: [] };
+        let catalog = deps.getState().outputSystem?.catalog;
+        if (!catalog?.modes?.[catalog.active_mode]) return { mode: 'stereo', roles: [] };
+        if (_subwooferCommittedDraft && _subwooferCommittedDraft.settings.mode === catalog.active_mode
+                && catalog.revision >= _subwooferCommittedDraft.revision) {
+            _subwooferCommittedDraft = null;
+        }
+        const draft = _subwooferDraft?.mode === catalog?.active_mode ? _subwooferDraft
+            : _subwooferCommittedDraft?.settings;
+        if (catalog && draft?.mode === catalog.active_mode) {
+            // Save echoes describe an earlier commit while later steps may
+            // already be queued, including controls that no longer own focus.
+            const { mode, processing, ...bass } = draft;
+            const config = catalog.modes[mode];
+            const bassManagement = config.bass_management || {};
+            catalog = { ...catalog, modes: { ...catalog.modes, [mode]: { ...config,
+                processing: { ...config.processing, ...processing },
+                bass_management: { ...bassManagement, ...bass,
+                    sub_filters: { ...bassManagement.sub_filters, ...bass.sub_filters } },
+            } } };
+        }
+        return outputSystem()?.subwooferView(catalog) || { mode: 'stereo', roles: [] };
     }
 
     function getSubwooferPreviewSettingsFromState() {
@@ -783,15 +805,32 @@
         // older run can never overwrite a newer run's error feedback. Success
         // stays silent; only failures report into the tile.
         run.then(
-            () => {
-                if (_subwooferSavePromise === run) _subwooferSavePromise = null;
+            (result) => {
+                if (_subwooferDraft && Number.isInteger(result.revision)) {
+                    _subwooferCommittedDraft = { settings: pending.settings, revision: result.revision };
+                }
+                if (_subwooferSavePromise === run) {
+                    _subwooferSavePromise = null;
+                    if (_subwooferDraft) {
+                        // A successful POST is not proof that its follow-up
+                        // GET succeeded. Keep the acknowledged values until
+                        // the catalog reaches that commit's revision.
+                        if (!_subwooferPendingSave) _subwooferDraft = null;
+                        renderSubwooferPanel();
+                    }
+                }
                 releaseSubwooferLinkGuard();
                 // Success stays silent, but clears a previous error so the tile
                 // never reports a failure the latest commit already fixed.
                 setSubwooferFeedback('');
             },
             (error) => {
-                if (_subwooferSavePromise === run) _subwooferSavePromise = null;
+                if (_subwooferSavePromise === run) {
+                    _subwooferSavePromise = null;
+                    if (!_subwooferPendingSave) {
+                        _subwooferDraft = null;
+                    }
+                }
                 releaseSubwooferLinkGuard();
                 // A failed payload must stay retryable: clear the dedup
                 // signature so requesting the same values again really saves.
@@ -820,11 +859,25 @@
             signature,
             promise,
             started: false,
+            waiting: false,
             reject: rejectPending,
             start: null,
         };
         pending.start = () => {
             if (pending.started) return pending.promise;
+            if (_subwooferSaveTimer !== null) window.clearTimeout(_subwooferSaveTimer);
+            _subwooferSaveTimer = null;
+            if (_subwooferSavePromise) {
+                if (!pending.waiting) {
+                    pending.waiting = true;
+                    const resume = () => {
+                        pending.waiting = false;
+                        if (_subwooferPendingSave === pending) pending.start();
+                    };
+                    _subwooferSavePromise.then(resume, resume);
+                }
+                return pending.promise;
+            }
             pending.started = true;
             if (_subwooferPendingSave === pending) _subwooferPendingSave = null;
             _subwooferSaveTimer = null;
@@ -866,12 +919,17 @@
             // Both side overrides always travel along: a coupled save mirrors the
             // shared shape so a later unlink starts from the audible values.
             sub_filters: { left: bass.left_crossover, right: bass.right_crossover },
-            main_highpass_enabled: bass.main_highpass_enabled,
-            processing };
+             main_highpass_enabled: bass.main_highpass_enabled,
+             processing };
+        const committed = _subwooferCommittedDraft?.settings;
+        settings.sub_filters = { ...(committed?.mode === mode ? committed.sub_filters : {}),
+            ...(_subwooferDraft?.mode === mode ? _subwooferDraft.sub_filters : {}), ...settings.sub_filters };
         const signature = JSON.stringify(settings);
         if (signature === _subwooferLastRequestedSignature) {
+            _subwooferDraft = _subwooferSavePromise ? settings : null;
             return _subwooferSavePromise || Promise.resolve(null);
         }
+        _subwooferDraft = settings;
         const pending = createPendingSubwooferSave(mode, settings, signature);
         _subwooferPendingSave = pending;
         _subwooferSaveTimer = window.setTimeout(() => pending.start(), delayMs);
@@ -880,6 +938,7 @@
 
         function wireSubwooferControls() {
             const _activeEditing = deps.getActiveEditing();
+            const uncommittedInputs = new Set();
             const levelInputs = [deps.getElements().effectsSubwooferLevel, deps.getElements().effectsSubwooferSub2Level];
             const delayInputs = [deps.getElements().effectsSubwooferDelay, deps.getElements().effectsSubwooferSub2Delay];
             const showCommittedTrim = (el) => {
@@ -909,15 +968,17 @@
                 if (!el) return;
                 el.addEventListener('focus', () => _activeEditing.add(el));
                 el.addEventListener('input', () => {
+                    uncommittedInputs.add(el);
                     updateSubwooferDraftFromControls();
                 });
                 el.addEventListener('change', () => {
+                    uncommittedInputs.delete(el);
                     saveSubwooferDebounced(0);
                     showCommittedTrim(el);
                 });
                 el.addEventListener('blur', () => {
                     _activeEditing.delete(el);
-                    saveSubwooferDebounced(0);
+                    if (uncommittedInputs.delete(el)) saveSubwooferDebounced(0);
                     showCommittedTrim(el);
                 });
             });

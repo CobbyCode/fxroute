@@ -1488,11 +1488,14 @@ input[type="number"]::-webkit-outer-spin-button {
 }
 
 .effects-effect-line .effects-inline-control {
+    flex: 0 0 auto;
     flex-wrap: nowrap;
 }
 
 .effects-effect-line .effects-inline-control-label {
     flex: 0 0 var(--effects-label-w);
+    /* Intrinsic flex sizing in Firefox needs the actual label width too. */
+    width: var(--effects-label-w);
 }
 
 .effects-effect-line .stepper-control {
@@ -1508,7 +1511,8 @@ input[type="number"]::-webkit-outer-spin-button {
 }
 
 #tab-effects .effects-effect-line select.url-input {
-    width: auto;
+    flex: none;
+    width: var(--effects-control-w);
     min-width: var(--effects-control-w);
 }
 
@@ -1521,6 +1525,7 @@ input[type="number"]::-webkit-outer-spin-button {
 
     .effects-effect-line .effects-inline-control-label {
         flex: 0 0 auto;
+        width: auto;
     }
 }
 

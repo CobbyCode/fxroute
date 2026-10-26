@@ -53,7 +53,7 @@ function surroundGroups(topology) {
     const roles = Array.isArray(topology?.roles) ? topology.roles : [];
     const present = {
         front: roles.some(role => /^(main_[lr]|left_|right_)/.test(role)),
-        center: roles.includes('center'),
+        center: roles.some(role => role === 'center' || role.startsWith('center_')),
         side: roles.includes('side_l') || roles.includes('side_r'),
         rear: roles.includes('rear_l') || roles.includes('rear_r'),
     };
@@ -87,9 +87,9 @@ function roleLabel(roleId, mode) {
         return `${roleId.split('_').map(word => word.charAt(0).toUpperCase() + word.slice(1)).join('-')} L/R`;
     }
     if (roleId === 'off') return 'Off';
-    if (/^(left|right)_/.test(roleId)) {
+    if (/^(left|right|center)_/.test(roleId)) {
         const [side, ...way] = roleId.split('_');
-        return `${way.map(word => word.charAt(0).toUpperCase() + word.slice(1)).join('-')} ${side === 'left' ? 'L' : 'R'}`;
+        return `${way.map(word => word.charAt(0).toUpperCase() + word.slice(1)).join('-')} ${{ left: 'L', right: 'R', center: 'C' }[side]}`;
     }
     const raw = String(roleId || '').split('_').filter(Boolean);
     if (!raw.length) return String(roleId || '');
@@ -208,6 +208,7 @@ function topologySummary(topology) {
         bits.push(topo.mode === 'surround' ? 'Surround' : 'Stereo');
     }
     const sub = subModeLabel(topo.sub_mode);
+    if (topo.center_way_count) bits.push(`Center ${topo.center_way_count}-Way`);
     if (sub) bits.push(sub);
     let text = bits.join(' · ');
     if (issues.length) text += ` — ${issues[0]}`;
@@ -504,6 +505,12 @@ async function fetchCatalog(fetchImpl) {
     const resp = await fetchImpl('/api/audio/output-state');
     const data = await resp.json().catch(() => ({}));
     if (!resp.ok) throw new Error((data && data.detail) || 'Output state catalog failed');
+    if (!Number.isInteger(data?.revision) || data.revision < 0
+            || !OUTPUT_MODES.includes(data.active_mode)
+            || !data.modes?.[data.active_mode] || typeof data.modes[data.active_mode] !== 'object'
+            || Array.isArray(data.modes[data.active_mode])) {
+        throw new Error('Output state catalog is incomplete');
+    }
     return data;
 }
 
@@ -557,16 +564,24 @@ function renderModeSelect(select, catalog, activeMode) {
     if (select.value !== activeMode) select.value = activeMode;
 }
 
+// "Out 5 · Center": the receiver channel of an HDMI output, from its real port.
+function routingOutputLabel(index, channelLabels) {
+    const position = Array.isArray(channelLabels) ? channelLabels[index] : null;
+    return position ? `Out ${index + 1} · ${position}` : `Out ${index + 1}`;
+}
+
 function renderRoutingGrid(grid, catalog, mode, assignments, channelCount, disabled) {
     if (!grid) return;
     const roles = ['off', ...rolesForMode(mode, catalog && catalog.capabilities)];
+    const channelLabels = catalog && catalog.device && catalog.device.channel_labels;
     const cells = [];
     for (let index = 0; index < channelCount; index += 1) {
         const current = assignments[index] || 'off';
+        const label = routingOutputLabel(index, channelLabels);
         const options = roles.map((role) =>
             `<option value="${esc(role)}"${role === current ? ' selected' : ''}>${esc(roleLabel(role, mode))}</option>`).join('');
-        cells.push(`<div class="settings-routing-cell"><label for="settings-routing-out-${index + 1}">Out ${index + 1}</label>`
-            + `<select id="settings-routing-out-${index + 1}" class="url-input" data-routing-output="${index}" aria-label="Output ${index + 1} role"${disabled ? ' disabled' : ''}>${options}</select></div>`);
+        cells.push(`<div class="settings-routing-cell"><label for="settings-routing-out-${index + 1}">${esc(label)}</label>`
+            + `<select id="settings-routing-out-${index + 1}" class="url-input" data-routing-output="${index}" aria-label="${esc(label.replace(/^Out /, 'Output '))} role"${disabled ? ' disabled' : ''}>${options}</select></div>`);
     }
     const html = cells.join('');
     const signature = [html, assignments.join(','), disabled ? 'busy' : 'idle'].join('|');
@@ -642,6 +657,7 @@ function renderBankSelector(select, catalog, mode, expert) {
         fetchCatalog,
         applyMutation,
         renderModeSelect,
+        routingOutputLabel,
         renderRoutingGrid,
         renderBankSelector,
     };

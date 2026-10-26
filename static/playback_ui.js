@@ -818,6 +818,17 @@ function coverQueuePlayTarget(playback, index) {
     if (index === queue.index) return null;
     const track = tracks[index];
     if (!track || !track.id) return null;
+    // A queue with TIDAL entries (alone or mixed with local ones) is replayed
+    // by reference, so every entry keeps its own source.
+    if (tracks.some(item => item && item.source === 'tidal')) {
+        return {
+            source: track.source === 'tidal' ? 'tidal' : 'local',
+            track_id: track.id,
+            queue_refs: tracks.map(item => (item.source === 'tidal' ? 'tidal:' : '') + item.id),
+            shuffle: !!queue.shuffle,
+            loop: !!queue.loop,
+        };
+    }
     return {
         source: 'local',
         track_id: track.id,
@@ -983,10 +994,27 @@ function streamingArtworkItem(data, source = 'spotify') {
     };
 }
 
+// The footer cover opens the now-playing details, also for a source without
+// artwork: the placeholder then is the control, so the remote can always reach it.
+const PLAYBACK_COVER_PLACEHOLDER = '/fxroute/static/artwork-placeholder.svg?v=2';
+
+function showPlaybackCoverPlaceholder() {
+    const cover = deps.getElements().playbackCover;
+    cover.onerror = null;
+    cover.onload = null;
+    if (cover.getAttribute('src') !== PLAYBACK_COVER_PLACEHOLDER) cover.src = PLAYBACK_COVER_PLACEHOLDER;
+    cover.classList.remove('hidden', 'is-ready');
+    deps.getElements().playbackBar?.classList.remove('has-cover');
+}
+
 function updatePlaybackCover(track) {
     if (!deps.getElements().playbackCover) return;
     const coverUrl = playbackArtworkKnownAvailable(track) ? playbackArtworkUrl(track) : '';
     if (!coverUrl) {
+        if (track) {
+            showPlaybackCoverPlaceholder();
+            return;
+        }
         deps.getElements().playbackCover.removeAttribute('src');
         deps.getElements().playbackCover.classList.add('hidden');
         deps.getElements().playbackCover.classList.remove('is-ready');
@@ -999,11 +1027,7 @@ function updatePlaybackCover(track) {
             this.src = fallbackUrl;
             return;
         }
-        this.onerror = null;
-        this.removeAttribute('src');
-        this.classList.add('hidden');
-        this.classList.remove('is-ready');
-        deps.getElements().playbackBar?.classList.remove('has-cover');
+        showPlaybackCoverPlaceholder();
     };
     deps.getElements().playbackCover.onload = function() {
         this.classList.remove('hidden');
@@ -1601,7 +1625,7 @@ function updateFooterForStreamingOwner(data) {
 function renderFooterFavoriteFromTidalChange() {
     // The footer heart mirrors the current TIDAL track favorite. Called on
     // every canonical favorites change so the footer never drifts from the
-    // state the TIDAL tab/detail rows use.
+    // state the Library TIDAL rows and details use.
     deps.renderTrackFavoriteButton(deps.getState().playback.current_track);
 }
 

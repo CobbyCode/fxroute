@@ -14,7 +14,7 @@
     'use strict';
 
 const WAY_ORDER = ['left_low', 'left_low_mid', 'left_mid', 'left_high',
-    'right_low', 'right_low_mid', 'right_mid', 'right_high'];
+    'right_low', 'right_low_mid', 'right_mid', 'right_high', 'center_low', 'center_low_mid', 'center_mid', 'center_high'];
 const SUB_ROLES = ['sub_l', 'sub_r', 'sub1', 'sub2'];
 const FAMILY_PREFIXES = { 'linkwitz-riley': 'LR', butterworth: 'BW', bessel: 'BS' };
 
@@ -33,7 +33,7 @@ function orderedWays(ways) {
 }
 
 function isLowWayRole(role) {
-    return role === 'left_low' || role === 'right_low';
+    return role === 'left_low' || role === 'right_low' || role === 'center_low';
 }
 
 // Mirror a speaker way across sides for the L/R link: only the crossover
@@ -58,7 +58,7 @@ function wayKey(role) {
 
 function wayLabel(way) {
     return String(way || '').split('_').map((word) =>
-        (word === 'low_mid' ? 'Low-Mid' : word.charAt(0).toUpperCase() + word.slice(1))).join(' ');
+        word.charAt(0).toUpperCase() + word.slice(1)).join('-');
 }
 
 // Linked view: one entry per way, pairing left/right roles. Order follows
@@ -68,6 +68,7 @@ function pairedWays(roles) {
     const pairs = [];
     const index = new Map();
     for (const role of roles || []) {
+        if (!/^(left|right)_/.test(role)) continue;
         const way = wayKey(role);
         if (!way) continue;
         let pair = index.get(way);
@@ -115,28 +116,31 @@ function bassCrossoverForSide(bass, side) {
 // highpass on, the DSP runs every speaker way through the sub crossover
 // (type and slope included) as a high-pass. Only the Low way has no stored
 // high-pass of its own, so only there is the derived filter displayed.
-function bassHighpass(bass, subRoles, role) {
+function bassHighpass(bass, subRoles, role, mode) {
     const subs = Array.isArray(subRoles) ? subRoles.filter(Boolean) : [];
     if (!subs.length) return null;
-    if (!bass || bass.main_highpass_enabled !== true) return null;
-    const crossover = isStereoSubPair(subs)
+    if (!bass) return null;
+    const group = String(role || '').startsWith('center_') ? 'center' : 'front';
+    const override = mode === 'surround' && bass.sub_link === false ? bass.sub_filters?.[group] : null;
+    if (override ? override.highpass_enabled !== true : bass.main_highpass_enabled !== true) return null;
+    const crossover = override || (isStereoSubPair(subs)
         ? bassCrossoverForSide(bass, sideForRole(role))
-        : sharedBassCrossover(bass);
+        : sharedBassCrossover(bass));
     const frequency = Math.round(Number(crossover.frequency_hz));
     if (!Number.isFinite(frequency) || frequency < 40 || frequency > 200) return null;
     return { family: crossover.family, slope_db_oct: crossover.slope_db_oct,
         frequency_hz: frequency };
 }
 
-function derivedHighpassForRole(role, bass, subRoles) {
+function derivedHighpassForRole(role, bass, subRoles, mode) {
     if (!isLowWayRole(role)) return null;
-    return bassHighpass(bass, subRoles, role);
+    return bassHighpass(bass, subRoles, role, mode);
 }
 
 function applicableFilters(role, context) {
     const way = String(role || '').split('_').slice(1).join('_');
     if (way === 'low') {
-        if (context && derivedHighpassForRole(role, context.bass, context.subRoles)) {
+        if (context && derivedHighpassForRole(role, context.bass, context.subRoles, context.mode)) {
             return ['highpass', 'lowpass'];
         }
         return ['lowpass'];
@@ -150,9 +154,9 @@ function slopesForFamily(family, capabilities) {
     return Array.isArray(slopes) ? slopes.slice() : [];
 }
 
-function starterValues(wayCount) {
+function starterValues(wayCount, speakers = ['left', 'right']) {
     const lr24 = (frequency_hz) => ({ family: 'linkwitz-riley', slope_db_oct: 24, frequency_hz });
-    const sides = ['left', 'right'];
+    const sides = speakers;
     const build = (ways) => {
         const result = {};
         for (const side of sides) {
@@ -209,7 +213,7 @@ function clampFrequencyHz(value) {
 // enough to bring the filter back instead of leaving it off.
 function starterFrequency(wayCount, role, kind) {
     try {
-        const wanted = starterValues(wayCount)?.[role]?.[kind];
+        const wanted = starterValues(wayCount, String(role).startsWith('center_') ? ['center'] : undefined)?.[role]?.[kind];
         const frequency = Number(wanted?.frequency_hz);
         if (Number.isFinite(frequency)) return clampFrequencyHz(frequency);
     } catch (e) {
@@ -253,12 +257,13 @@ function renderWayTabs(tabs, roles, activeRole, onSelect, linked) {
             const role = pair.left || pair.right;
             const side = String(role).startsWith('left_') ? 'L' : 'R';
             return wayTabButton(role, `${side} · ${esc(wayLabel(pair.way))}`, role === activeRole);
-        }).join('');
+        }).join('') + roles.filter(role => role.startsWith('center_')).map(role =>
+            wayTabButton(role, `${esc(wayLabel(wayKey(role)))} C`, role === activeRole)).join('');
     } else {
         html = roles.map((role) => {
-            const label = role.split('_').slice(1).map((w) => (w === 'low_mid' ? 'Low-Mid' : w.charAt(0).toUpperCase() + w.slice(1))).join(' ');
+            const label = esc(wayLabel(wayKey(role)));
             const side = role.startsWith('left_') ? 'L' : 'R';
-            return wayTabButton(role, `${side} · ${esc(label)}`, role === activeRole);
+            return wayTabButton(role, role.startsWith('center_') ? `${label} C` : `${side} · ${label}`, role === activeRole);
         }).join('');
     }
     if (tabs.innerHTML !== html) tabs.innerHTML = html;

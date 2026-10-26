@@ -43,15 +43,24 @@
             ? mod.viewCatalog(catalog, !!deps.getState().outputSystem.expert) : catalog;
     }
 
+    function acceptCatalog(catalog) {
+        const current = deps.getState().outputSystem.catalog;
+        if (!current || catalog.revision >= current.revision) {
+            deps.getState().outputSystem.catalog = viewOf(catalog);
+        }
+        return deps.getState().outputSystem.catalog;
+    }
+
     async function fetchOutputSystemCatalog(force = false) {
         deps.ensureOutputBoxes();
         const mod = deps.outputSystemModule();
         if (!mod) return null;
         if (deps.getState().outputSystem.catalog && !force) return deps.getState().outputSystem.catalog;
         try {
-            deps.getState().outputSystem.catalog = viewOf(await mod.fetchCatalog(fetch));
+            acceptCatalog(await mod.fetchCatalog(fetch));
         } catch (e) {
-            deps.getState().outputSystem.catalog = null;
+            // Retain the last known revision through failed refreshes, or
+            // another outstanding older response could become current again.
         }
         deps.renderOutputSection();
         deps.renderCompare();
@@ -78,13 +87,11 @@
         try {
             const mutation = mod.buildMutation(kind, fields);
             const getCatalog = async () => {
-                const fresh = viewOf(await mod.fetchCatalog(fetch));
-                deps.getState().outputSystem.catalog = fresh;
-                return fresh;
+                return acceptCatalog(await mod.fetchCatalog(fetch));
             };
             const { data, catalog } = await mod.applyMutation(
                 fetch, deps.getState().outputSystem.catalog, getCatalog, mutation);
-            deps.getState().outputSystem.catalog = catalog;
+            acceptCatalog(catalog);
             // The apply response carries no catalog: refetch so renders use
             // the committed revision instead of the pre-apply snapshot. A
             // failed refetch must not mask the successful apply.

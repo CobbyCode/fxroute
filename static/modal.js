@@ -122,6 +122,7 @@
                 initialFocus: options.initialFocus || null,
                 siblingRoots: options.siblingRoots || [],
                 onEscape: options.onEscape,
+                onCollapse: options.onCollapse,
             };
             stack.push(entry);
             applyBackgroundInert(entry);
@@ -150,6 +151,35 @@
 
         function isOpen(root) {
             return stack.some(entry => entry.root === root);
+        }
+
+        function topRoot() {
+            const entry = stack[stack.length - 1];
+            return entry ? entry.root : null;
+        }
+
+        // Remote/keyboard back: close the top entry through the same escape
+        // path its owner registered, so the module and the focus restore stay
+        // in charge. Returns false when no entry has a handler.
+        function closeTop() {
+            const entry = stack[stack.length - 1];
+            if (!entry || typeof entry.onEscape !== 'function') return false;
+            void entry.onEscape();
+            return true;
+        }
+
+        // Remote Home: step the top entry back to its main view without
+        // closing it (menus, sub-views). The owner returns true when it
+        // collapsed something; false means the entry is already at its main
+        // view and the caller closes it instead.
+        function collapseTop() {
+            const entry = stack[stack.length - 1];
+            if (!entry || typeof entry.onCollapse !== 'function') return false;
+            return entry.onCollapse() === true;
+        }
+
+        function depth() {
+            return stack.length;
         }
 
         document.addEventListener('keydown', event => {
@@ -189,7 +219,7 @@
             }
         }, true);
 
-        return { open, close, isOpen };
+        return { open, close, isOpen, topRoot, closeTop, collapseTop, depth };
     }
 
     function open(root, options) {
@@ -210,10 +240,38 @@
         return isOpen.shared.isOpen(root);
     }
 
+    function topRoot() {
+        if (typeof document === 'undefined') return null;
+        if (!topRoot.shared) topRoot.shared = createFxrouteModalManager();
+        return topRoot.shared.topRoot();
+    }
+
+    function closeTop() {
+        if (typeof document === 'undefined') return false;
+        if (!closeTop.shared) closeTop.shared = createFxrouteModalManager();
+        return closeTop.shared.closeTop();
+    }
+
+    function collapseTop() {
+        if (typeof document === 'undefined') return false;
+        if (!collapseTop.shared) collapseTop.shared = createFxrouteModalManager();
+        return collapseTop.shared.collapseTop();
+    }
+
+    function depth() {
+        if (typeof document === 'undefined') return 0;
+        if (!depth.shared) depth.shared = createFxrouteModalManager();
+        return depth.shared.depth();
+    }
+
     return {
         createFxrouteModalManager,
         open,
         close,
         isOpen,
+        topRoot,
+        closeTop,
+        collapseTop,
+        depth,
     };
 });

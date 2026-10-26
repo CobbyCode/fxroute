@@ -163,6 +163,31 @@ body {
     }
 }
 .hidden { display: none !important; }
+/* TIDAL marks (official white artwork, see ui_helpers.js sourceGlyphHtml).
+   The height follows --tidal-mark-h; the marks never sit on cover art. */
+.source-glyph {
+    display: inline-flex;
+    align-items: center;
+    flex: 0 0 auto;
+    height: var(--tidal-mark-h);
+}
+.tidal-mark { display: block; height: 100%; width: auto; }
+.tidal-mark--logo { aspect-ratio: 69 / 9; }
+.tidal-mark--diamond { aspect-ratio: 16 / 10.6667; }
+.tidal-brand-link { text-decoration: none; }
+/* Row marker: the diamond leads the sub line, one diamond of room after it. */
+.track-sub .source-glyph {
+    margin-right: calc(var(--tidal-mark-h) / 2);
+    vertical-align: -0.2em;
+}
+/* Card brand row: its own line under the artist, full logo; list view swaps
+   to the diamond (see _library.css). */
+.source-glyph--card {
+    align-self: flex-start;
+    margin-top: -0.3rem;
+}
+.source-glyph--card .tidal-mark--diamond { display: none; }
+.source-glyph--heading { height: max(16px, 1rem); }
 @keyframes bannerSlide {
     from { transform: translateY(-100%); }
     to   { transform: translateY(0); }
@@ -200,8 +225,7 @@ body {
 .is-active>.fav-heart{fill:currentColor}
 /* Search-clear chip shared by the Library, Radio and TIDAL search fields. */
 .library-search-clear,
-.station-search-clear,
-.streaming-search-clear {
+.station-search-clear {
     position: absolute;
     right: 0.32rem;
     top: 50%;
@@ -222,24 +246,20 @@ body {
     -webkit-tap-highlight-color: transparent;
 }
 .library-search-clear:not(:disabled),
-.station-search-clear:not(:disabled),
-.streaming-search-clear:not(:disabled) {
+.station-search-clear:not(:disabled) {
     opacity: 1;
 }
 .library-search-clear:not(:disabled):hover,
-.station-search-clear:not(:disabled):hover,
-.streaming-search-clear:not(:disabled):hover {
+.station-search-clear:not(:disabled):hover {
     background: var(--border-strong);
     color: var(--text-primary);
 }
 .library-search-clear:disabled,
-.station-search-clear:disabled,
-.streaming-search-clear:disabled {
+.station-search-clear:disabled {
     cursor: default;
 }
 .library-search-clear:focus-visible,
-.station-search-clear:focus-visible,
-.streaming-search-clear:focus-visible {
+.station-search-clear:focus-visible {
     outline: 2px solid var(--accent);
     outline-offset: 2px;
 }
@@ -304,9 +324,8 @@ body {
 .track-play{flex:0 0 auto;width:34px;height:34px;border-radius:50%;border:1px solid var(--border);background:transparent;color:var(--text-secondary);cursor:pointer;font-size:0.85rem;display:inline-flex;align-items:center;justify-content:center;transition:color 0.12s,border-color 0.12s,background 0.12s}
 .track-play:hover{color:var(--accent);border-color:var(--accent)}
 .track-play:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
-/* Inline SVG icons in generated markup (playlist/folder delete, compact
-   labels, streaming transport) inherit currentColor. */
-.playlist-delete-btn svg,
+/* Inline SVG icons in generated markup (folder delete, compact labels,
+   streaming transport) inherit currentColor. */
 .folder-action-btn svg,
 .label-compact svg,
 .streaming-btn-sm-icon svg {
@@ -433,4 +452,33 @@ select.url-input {
     clip: rect(0 0 0 0);
     clip-path: inset(50%);
     white-space: nowrap;
+}
+
+/* Remote/keyboard navigation ring (tv_nav.js). The class is applied only
+   when focus moved by a navigation key, so pointer users see no change.
+   Two classes + the focused state make the ring win over the per-widget
+   :focus-visible rules (tabs, cards, buttons) without !important. */
+.tv-nav-focus.tv-nav-focus:focus {
+    outline: 2px solid var(--text-primary);
+    outline-offset: -2px;
+    box-shadow: inset 0 0 0 4px var(--accent-ink);
+    scroll-margin: 6px;
+}
+
+/* A slider armed with OK (tv_nav.js): Left/Right now change the value, so
+   the ring turns accent and the thumb gets a halo. */
+input[type="range"].tv-nav-editing.tv-nav-focus:focus {
+    outline-color: var(--accent);
+}
+input[type="range"].tv-nav-editing::-webkit-slider-thumb {
+    box-shadow: 0 0 0 6px rgba(110, 231, 183, 0.5);
+}
+input[type="range"].tv-nav-editing::-moz-range-thumb {
+    box-shadow: 0 0 0 6px rgba(110, 231, 183, 0.5);
+}
+
+/* The unpadded wordmark needs its frame outside the lettering. */
+.brand-lockup-button.tv-nav-focus:focus {
+    outline-offset: 3px;
+    box-shadow: 0 0 0 3px var(--accent-ink);
 }

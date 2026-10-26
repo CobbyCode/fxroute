@@ -152,6 +152,14 @@
     font-size: 0.95rem;
 }
 .albums-grid.is-list .playlist-collage-cell.is-fallback { padding: 8%; }
+/* List rows are too narrow for the full logo: the diamond sits before the heart. */
+.albums-grid.is-list .source-glyph--card {
+    order: 4;
+    align-self: center;
+    margin: 0;
+}
+.albums-grid.is-list .source-glyph--card .tidal-mark--logo { display: none; }
+.albums-grid.is-list .source-glyph--card .tidal-mark--diamond { display: block; }
 .albums-grid.is-list .album-smart-badge {
     top: 0.3rem;
     left: 0.3rem;
@@ -606,6 +614,49 @@
     backdrop-filter: blur(10px);
     -webkit-backdrop-filter: blur(10px);
 }
+/* Header actions beside Back (playlist export). The group takes the back
+   cell and Back stays its outer item, so Back keeps its lone position. */
+.album-detail--hero .detail-hero-header .detail-hero-actions {
+    grid-area: back;
+    align-self: start;
+    justify-self: end;
+    display: flex;
+    align-items: flex-start;
+    gap: 0.5rem;
+}
+.album-detail--hero .detail-hero-header .detail-hero-action {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 38px;
+    height: 38px;
+    padding: 0;
+    border: 1px solid rgba(255, 255, 255, 0.13);
+    border-radius: 7px;
+    background: rgba(7, 10, 13, 0.34);
+    color: var(--text-secondary);
+    cursor: pointer;
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    transition: color 0.15s var(--ease), border-color 0.15s var(--ease), background 0.15s var(--ease), transform 0.1s var(--ease);
+    -webkit-tap-highlight-color: transparent;
+}
+.album-detail--hero .detail-hero-header .detail-hero-action svg {
+    width: 18px;
+    height: 18px;
+}
+.album-detail--hero .detail-hero-header .detail-hero-action:hover {
+    color: var(--text-primary);
+    border-color: rgba(255, 255, 255, 0.16);
+    background: rgba(255, 255, 255, 0.04);
+}
+.album-detail--hero .detail-hero-header .detail-hero-action:active {
+    transform: translateY(1px);
+}
+.album-detail--hero .detail-hero-header .detail-hero-action:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}
 .streaming-detail--hero #tidal-detail-play {
     min-height: 42px;
     margin-top: 0.25rem;
@@ -632,68 +683,34 @@
 .album-discover {
     margin-top: 0.55rem;
 }
-.album-discover-panel {
-    color: var(--text-secondary);
-    font-size: 0.86rem;
-}
-.album-discover-panel summary {
-    position: relative;
-    display: inline-flex;
-    align-items: baseline;
-    gap: 0.45rem;
-    padding-left: 1.8rem;
-    width: fit-content;
-    color: var(--text-primary);
-    cursor: pointer;
-    font-weight: 650;
-    list-style: none;
-}
-.album-discover-panel summary::-webkit-details-marker {
-    display: none;
-}
-.album-discover-panel summary::before {
-    content: "▸";
-    position: absolute;
-    left: 0.9rem;
-    margin-left: 0;
-    top: 0.34rem;
-    font-size: 0.78rem;
-    line-height: 1;
-    color: var(--text-secondary);
-}
-.album-discover-panel[open] summary::before {
-    content: "▾";
-}
-.album-discover-panel summary small {
+.album-discover-note {
+    margin: 0 1rem;
     color: var(--text-muted);
-    font-size: 0.78rem;
-    font-weight: 500;
+    font-size: 0.82rem;
 }
-.album-discover-list {
-    display: grid;
-    gap: 0.28rem;
-    margin: 0.5rem 0 0;
-    padding: 0;
-    list-style: none;
+/* Artist page sections (albums, TIDAL part) sit between the hero and the
+   track list inside the shared album detail. */
+.artist-detail-section.streaming-results-heading {
+    margin-left: 1rem;
+    margin-right: 1rem;
 }
-.album-discover-item {
+.artist-detail-albums .streaming-results-heading {
+    margin-left: 1rem;
+}
+.artist-detail-albums .albums-grid {
+    margin-top: 0.4rem;
+}
+.artist-detail-tidal {
+    margin-top: 1.1rem;
+}
+.artist-detail-source {
     display: flex;
-    align-items: baseline;
-    justify-content: space-between;
-    gap: 0.7rem;
-    min-height: 2.1rem;
-    padding: 0.42rem 0.56rem;
-    border: 1px solid var(--border);
-    border-radius: 7px;
-    background: var(--slate-900-a22);
-}
-.album-discover-title {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    align-items: center;
+    gap: 0.5rem;
+    margin: 0 1rem;
     color: var(--text-primary);
-    font-weight: 600;
+    font-size: 1rem;
+    font-weight: 700;
 }
 .track-item-empty {
     justify-content: center;
@@ -722,14 +739,6 @@
     --control-gap: 12px;
     padding-top: 0.55rem;
 }
-/* TIDAL shares the library panel top rhythm (0.55rem) so both views start
-   at the same height; the provider shell keeps only its bottom spacing. */
-#tab-tidal {
-    padding-top: 0.55rem;
-}
-#tab-tidal .streaming-shell {
-    padding-top: 0;
-}
 .library-header {
     display: flex;
     justify-content: space-between;
@@ -744,6 +753,69 @@
     gap: var(--action-gap);
     flex-wrap: wrap;
 }
+/* Compact TIDAL connect/status button next to Import: the glyph plus
+   "Connect TIDAL" while signed out, glyph + mint dot + "TIDAL" when
+   connected (click refreshes the TIDAL favorites). */
+.library-tidal-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    white-space: nowrap;
+}
+.library-tidal-status-dot {
+    display: none;
+    width: 0.42rem;
+    height: 0.42rem;
+    border-radius: 50%;
+    background: var(--accent);
+}
+.library-tidal-status.is-connected .library-tidal-status-dot { display: inline-block; }
+/* Search results: "In your library" and "TIDAL" sections under the result
+   type tabs. Favorites uses the same sections (Albums, Tracks, Artists).
+   The grids inside keep the regular tile rhythm. */
+.albums-grid.is-search-results,
+#tracks-list.is-search-results,
+#tracks-list.is-favorites {
+    display: block;
+}
+.library-search-section + .library-search-section {
+    margin-top: 1.1rem;
+}
+.library-search-heading {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    margin-top: 0.2rem;
+}
+.library-search-grid {
+    margin-top: 0.4rem;
+}
+.library-search-rows {
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+}
+/* Playlist entries that cannot play right now: TIDAL tracks of a saved
+   playlist while TIDAL is not connected, or not installed at all. */
+.streaming-result.is-offline,
+.track-item.is-unavailable {
+    opacity: 0.55;
+}
+.track-item.is-unavailable .track-play {
+    pointer-events: none;
+}
+.library-search-empty {
+    margin: 0.2rem 0 0.6rem;
+    color: var(--text-muted);
+    font-size: 0.86rem;
+}
+.library-search-action {
+    margin-bottom: 0.4rem;
+}
+/* TIDAL album/playlist/artist details opened from the Library. */
+.library-tidal-detail {
+    margin-top: 0.9rem;
+}
 .library-actions-row {
     display: flex;
     align-items: center;
@@ -756,7 +828,8 @@
     border-bottom: 1px solid var(--border-strong);
     padding-bottom: 0.5rem;
 }
-.library-view-toggle {
+.library-view-toggle,
+.library-search-types {
     display: flex;
     align-items: center;
     /* Shrinkable like the TIDAL tabs row so the four tabs wrap instead of
@@ -796,12 +869,10 @@
    pinned while unfocused: during :focus the accent border must win, or the
    ID specificity would suppress it. */
 #station-search,
-#tidal-search-input,
 .library-search-field .library-search-input {
     background: var(--bg-input);
 }
 #station-search:not(:focus),
-#tidal-search-input:not(:focus),
 .library-search-field .library-search-input:not(:focus) {
     border-color: var(--border);
 }
@@ -856,16 +927,12 @@
     margin-top: calc(0.9rem - var(--detail-hero-gap));
     margin-bottom: calc(0.9rem - var(--detail-hero-gap) - 0.2rem);
 }
-/* Same logic for the TIDAL hosts. Browse keeps its own gap and the row
-   adds the small difference to reach the reference standoff on both
-   sides. The detail pulls against the very token that sets its container
-   gap (--tidal-detail-gap, declared in .streaming-detail), so the gap and
-   both flanking margins express one value and stay drift-proof: the row
-   adds the difference above, the results margin below, and together with
-   the gap each side lands on the reference exactly. */
-.streaming-browse > .playlist-save-row {
-    margin: 0.15rem 0;
-}
+/* Same logic for the TIDAL detail host. The detail pulls against the very
+   token that sets its container gap (--tidal-detail-gap, declared in
+   .streaming-detail), so the gap and both flanking margins express one value
+   and stay drift-proof: the row adds the difference above, the results
+   margin below, and together with the gap each side lands on the reference
+   exactly. */
 .streaming-detail > .playlist-save-row {
     margin-top: calc(0.9rem - var(--tidal-detail-gap));
     margin-bottom: 0;
@@ -899,68 +966,22 @@
     flex: 0 0 auto;
     white-space: nowrap;
 }
-/* TIDAL save row: the library save concept extended with the "add to
-   existing playlist" target, so the row wraps instead of clipping. */
-.tidal-playlist-save-row {
-    flex-wrap: wrap;
-    overflow: visible;
-    gap: var(--action-gap);
-}
-/* Compact and left-aligned like the library save row: the controls sit at
-   the row start with a uniform 12px gap (--action-gap). Single line on
-   roomy viewports; the responsive rules switch to wrapping when the tab
-   runs out of width. --control-gap is scoped to the library tab, so the
-   TIDAL row pins its own spacing instead of silently collapsing. */
-.tidal-playlist-save-row .playlist-save-controls {
-    flex: 0 1 auto;
-    flex-wrap: nowrap;
-    justify-content: flex-start;
-    gap: var(--action-gap);
-}
-.tidal-playlist-save-row .url-input[type="text"] {
-    flex: 0 1 160px;
-}
-.tidal-playlist-save-row select.url-input {
-    flex: 0 1 200px;
-}
-/* Album detail: the playlist action row uses the full content width. The two
-   text/select fields absorb the extra space (existing target slightly wider);
-   Save as new, Add and Cancel keep their compact natural button widths. */
-.playlist-save-row.tidal-playlist-save-row--album {
-    width: 100%;
-    max-width: none;
-    flex: 1 1 auto;
-}
-.tidal-playlist-save-row--album .playlist-save-controls {
-    flex: 1 1 auto;
-    width: 100%;
-    max-width: none;
-    flex-wrap: nowrap;
-    align-items: center;
-}
-.tidal-playlist-save-row--album #tidal-playlist-name {
-    flex: 1 1 0;
-    min-width: 140px;
-}
-.tidal-playlist-save-row--album #tidal-playlist-target {
+/* TIDAL selection: the existing-playlist target is a little wider than the
+   name field, like the TIDAL album row. A mixed selection explains below
+   the controls why it cannot be saved. */
+.playlist-save-row #playlist-tidal-target {
     flex: 1.25 1 0;
     min-width: 170px;
 }
-.tidal-playlist-save-row--album .btn-secondary {
-    flex: 0 0 auto;
-    white-space: nowrap;
+.playlist-save-row[data-save-mode="mixed"] {
+    flex-wrap: wrap;
 }
-.tidal-playlist-save-error {
+.playlist-save-hint {
     flex: 0 0 100%;
-    color: var(--danger);
+    margin: 0;
+    color: var(--text-muted);
     font-size: 0.84rem;
-    margin-top: 0.15rem;
 }
-.playlist-item {
-    position: relative;
-}
-.playlist-download-btn,
-.playlist-delete-btn,
 .folder-action-btn--delete {
     flex: 0 0 auto;
     align-self: center;
@@ -979,19 +1000,11 @@
     padding: 0;
     transition: color .12s var(--ease), border-color .12s var(--ease), background .12s var(--ease);
 }
-.playlist-download-btn:hover {
-    color: var(--accent);
-    border-color: var(--accent);
-    background: var(--accent-dim);
-}
-.playlist-delete-btn:hover,
 .folder-action-btn--delete:hover {
     color: var(--danger);
     border-color: var(--danger);
     background: var(--danger-dim);
 }
-.playlist-download-btn:focus-visible,
-.playlist-delete-btn:focus-visible,
 .folder-action-btn--delete:focus-visible {
     outline: 2px solid var(--accent);
     outline-offset: 2px;
@@ -1169,8 +1182,7 @@
     font-size: 0.78rem;
     color: var(--text-muted);
 }
-#tracks-list .folder-item,
-#tracks-list .playlist-item {
+#tracks-list .folder-item {
     align-items: center;
 }
 #tracks-list .folder-actions {

@@ -670,6 +670,10 @@
             grid-template-areas: "transport transport" "volume volume";
         }
         .playback-meter { display: none; }
+        /* The multichannel meter sets display: flex at higher specificity;
+           without this it falls out of the areas above into implicit
+           grid tracks (extra column and row, content squeezed left). */
+        .playback-meter.is-multichannel { display: none; }
     }
 }
 
@@ -692,7 +696,8 @@
     .stepper-btn,
     .measurement-chip,
     .measurement-slot-chip,
-    .measurement-peq-chip {
+    .measurement-peq-chip,
+    .measurement-peq-auto-chip {
         position: relative;
     }
     /* Cover favorites are already absolutely positioned. Keep that anchor:
@@ -708,7 +713,8 @@
     .stepper-btn::before,
     .measurement-chip::before,
     .measurement-slot-chip::before,
-    .measurement-peq-chip::before {
+    .measurement-peq-chip::before,
+    .measurement-peq-auto-chip::before {
         content: '';
         position: absolute;
         inset: -8px;
@@ -1194,7 +1200,7 @@
     }
     /* TIDAL save row: with the full-width controls container the five
        controls wrap left-aligned instead of overflowing. */
-    .tidal-playlist-save-row .playlist-save-controls {
+    .playlist-save-row[data-save-mode="tidal"] .playlist-save-controls {
         flex-wrap: wrap;
     }
 }
@@ -1203,24 +1209,7 @@
     .library-actions-row {
         margin-bottom: var(--action-gap);
     }
-    /* Album detail keeps a single continuous action line on tablet: the row
-       stays horizontal and the fields shrink before anything wraps. Only the
-       phone layout below switches to a stacked grid. */
-    .playlist-save-row.tidal-playlist-save-row--album {
-        flex-direction: row;
-        align-items: center;
-        width: 100%;
-    }
-    .tidal-playlist-save-row--album .playlist-save-controls {
-        flex-wrap: nowrap;
-        width: 100%;
-    }
-    .tidal-playlist-save-row--album #tidal-playlist-name {
-        min-width: 120px;
-    }
-    .tidal-playlist-save-row--album #tidal-playlist-target {
-        min-width: 140px;
-    }
+
 }
 
 @media (max-width: 600px) {
@@ -1460,12 +1449,12 @@
     .measurement-chip { min-height: 44px; }
     .measurement-view-toggle .measurement-chip { min-height: 44px; }
     .measurement-slot-chip,
-    .measurement-peq-chip { min-height: 44px; }
+    .measurement-peq-chip,
+    .measurement-peq-auto-chip { min-height: 44px; }
 
     /* iOS auto-zoom guard: text inputs stay at 16px on phones. */
     .station-search-input,
     .library-search-field .library-search-input,
-    .streaming-search-input,
     .playlist-save-row .url-input {
         font-size: 16px;
     }
@@ -1481,7 +1470,6 @@
        streaming, settings, measurement). Desktop keeps the compact sizes. */
     .station-search-input,
         .library-search-field .library-search-input,
-        .streaming-search-input,
         .url-input,
         select.url-input,
         .manage-dialog input,
@@ -1559,12 +1547,7 @@
         gap: 0.75rem;
     }
     .streaming-cover { width: 180px; height: 180px; }
-    .tidal-toolbar { gap: 0.35rem; }
-    .tidal-subbar { gap: 0.35rem; }
-    .tidal-subbar .streaming-search { width: 100%; }
-    .streaming-search-row { flex-wrap: nowrap; }
-    .streaming-search-row .streaming-search-field { flex: 1 1 0; width: 100%; }
-    .streaming-search-row .streaming-search-field .streaming-search-input { width: 100%; }
+
         .album-detail-header,
     .streaming-detail-header {
         grid-template-columns: auto minmax(0, 1fr);
@@ -1667,19 +1650,6 @@
 }
 
 @media (min-width: 761px) and (max-width: 1100px) {
-    /* Keep the TIDAL navigation and direct-search field on one tablet row.
-       The relative basis gives the tabs the remaining space without making
-       the search field carry its desktop width. */
-    .tidal-subbar {
-        flex-wrap: nowrap;
-    }
-    .tidal-subbar .view-tabs {
-        flex: 1 1 auto;
-    }
-    .tidal-subbar .streaming-search {
-        flex: 0 1 34vw;
-        width: auto;
-    }
 
     /* Tablet subwoofer layout: Global across the full width, Sub 1 and
        Sub 2 sharing the row below (merged with the TIDAL tablet block
@@ -2119,6 +2089,11 @@
     .album-detail--hero .detail-hero-header .album-detail-back,
     .streaming-detail--hero .detail-hero-header .album-detail-back {
         justify-self: start;
+    }
+    /* Back sits at the left edge here, so the actions follow on its right. */
+    .album-detail--hero .detail-hero-header .detail-hero-actions {
+        justify-self: start;
+        flex-direction: row-reverse;
     }
     .streaming-detail--hero #tidal-detail-play {
         width: 100%;

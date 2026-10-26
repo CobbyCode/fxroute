@@ -6,8 +6,10 @@
 const CONFIG = {
     wsUrl: null, // will be set dynamically
     reconnectInterval: 3000,
+    maxReconnectInterval: 30000,
+    wsConnectTimeout: 15000,
+    wsHeartbeatInterval: 25000,
     offlineIndicatorDelay: 1500,
-    maxReconnectAttempts: 10,
 };
 const MeasurementDsp = window.FXRouteMeasurementDsp || {};
 const HybridMeasurement = window.FXRouteHybridMeasurement || {};
@@ -171,12 +173,15 @@ window.FXRouteLibraryUI?.init({
     isPageHidden: () => PlaybackCore.isPageHidden(),
     mergePlaybackState: (...args) => PlaybackCore.mergePlaybackState(...args),
     playLocal: (...args) => PlaybackCore.playLocal(...args),
+    playRefs: (...args) => PlaybackCore.playLibraryRefs(...args),
     renderFooterModeButtons: () => PlaybackUI.renderFooterModeButtons(),
     syncLibraryStateFromPlaybackContext: (...args) => PlaybackCore.syncLibraryStateFromPlaybackContext(...args),
     updatePlaybackUI: (...args) => PlaybackUI.updatePlaybackUI(...args),
     favoriteHeartSvg: () => favoriteHeartSvg(),
     artworkPlaceholderUrl: () => artworkPlaceholderUrl(),
     albumArtFallbackSvg: () => albumArtFallbackSvg(),
+    sourceGlyphHtml: (...args) => window.FXRouteUiHelpers.sourceGlyphHtml(...args),
+    nameKey: (...args) => window.FXRouteUiHelpers.nameKey(...args),
     isLibraryModeRequestInFlight: () => libraryModeRequestInFlight,
     setLibraryModeRequestInFlight: (active) => { libraryModeRequestInFlight = active; },
     isTidalFavoriteRequestInFlight: () => tidalFavoriteRequestInFlight,
@@ -469,6 +474,8 @@ window.FXRouteMeasurementEditorsUI?.init({
     deleteMeasurementPeqFilter: (id) => window.FXRouteMeasurementPeqEditor.deleteMeasurementPeqFilter(id),
     handleMeasurementPeqNumberInputArrowKey: (event) => window.FXRouteMeasurementPeqEditor.handleMeasurementPeqNumberInputArrowKey(event),
     focusMeasurementPeqPanelContext: () => window.FXRouteMeasurementPeqEditor.focusMeasurementPeqPanelContext(),
+    getMeasurementPeqAutoAvailability: () => window.FXRouteMeasurementPeqEditor.getMeasurementPeqAutoAvailability(),
+    runMeasurementPeqAuto: () => window.FXRouteMeasurementPeqEditor.runMeasurementPeqAuto(),
     renderMeasurementPanel: () => renderMeasurementPanel(),
     scheduleMeasurementGraphRender: () => MeasurementGraph.scheduleMeasurementGraphRender(),
 });
@@ -522,6 +529,10 @@ window.FXRouteMeasurementPeqEditor?.init({
     getPeqHandleHitRadiusPx: () => MEASUREMENT_PEQ_HANDLE_HIT_RADIUS_PX,
     getPeqTouchHandleHitRadiusPx: () => MEASUREMENT_PEQ_TOUCH_HANDLE_HIT_RADIUS_PX,
     getPeqTouchCreateCooldownMs: () => MEASUREMENT_PEQ_TOUCH_CREATE_COOLDOWN_MS,
+    getMeasurementSourceEntries: () => window.FXRouteMeasurementConvolverEditor.getMeasurementConvolverSelectedSourceEntries(),
+    getMeasurementDisplayTraces: (measurement) => getMeasurementDisplayTraces(measurement),
+    getMeasurementTargetCurve: () => getMeasurementTargetCurvePreview(),
+    confirm: (message) => window.confirm(message),
 });
 window.FXRouteMeasurementConvolverEditor?.init({
     getState: () => state,
@@ -616,6 +627,9 @@ window.FXRouteCalibrationOverview?.init({
     getState: () => state,
     fetch: (...args) => fetch(...args),
     isVisible: () => window.__visibleTab === 'effects',
+});
+window.FXRouteFrontendFreshness?.init({
+    isBusy: isFrontendReloadBlocked,
 });
 window.FXRouteAvSync?.init({
     getElements: () => elements,
@@ -717,9 +731,10 @@ let state = {
         albums: [],
         albumsLoaded: false,
         albumLayout: LibraryUI.readStoredViewMode('library-albums'),
-        showFavoriteAlbums: false,
         albumDetail: null,
         playlistDetail: null,
+        // A TIDAL album/playlist/artist detail is open in the Library.
+        tidalDetailOpen: false,
     },
     playlists: [],
     stations: [],
@@ -801,7 +816,7 @@ let state = {
         houseCurveUpdating: false,
         houseCurveDeleting: false,
         houseCurveExporting: false,
-        activeEditor: 'none',
+        activeEditor: 'peq',
         customHouseCurve: {
             open: false,
             displayTarget: 'actual',
@@ -865,7 +880,7 @@ let state = {
             profile: null,
         },
         peqAssistant: {
-            enabled: false,
+            enabled: true,
             filters: [],
             activeFilterId: null,
             dragFilterId: null,
@@ -996,6 +1011,7 @@ let reconnectTimer = null;
 let offlineIndicatorTimer = null;
 let wsConnectSerial = 0;
 let wsReconnectSyncGeneration = 0;
+let wsOutageSeen = false;
 let tidalFavoriteRequestInFlight = false;
 let peqCreateInFlight = false;
 let convolverCreateInFlight = false;
@@ -1064,6 +1080,11 @@ const elements = {
     settingsStdinStatus: document.getElementById('settings-stdin-status'),
     settingsMusicLibrarySelect: document.getElementById('settings-music-library-select'),
     settingsMusicLibraryHint: document.getElementById('settings-music-library-hint'),
+    settingsMusicLibraryRemove: document.getElementById('settings-music-library-remove'),
+    settingsMusicLibraryRemovePanel: document.getElementById('settings-music-library-remove-panel'),
+    settingsMusicLibraryRemoveSelect: document.getElementById('settings-music-library-remove-select'),
+    settingsMusicLibraryRemoveConfirm: document.getElementById('settings-music-library-remove-confirm'),
+    settingsMusicLibraryRemoveCancel: document.getElementById('settings-music-library-remove-cancel'),
     settingsProvidersList: document.getElementById('settings-providers-list'),
     settingsProvidersSummary: document.getElementById('settings-providers-summary'),
     settingsProviderOperation: document.getElementById('settings-provider-operation'),
@@ -1115,10 +1136,14 @@ const elements = {
     libraryImportPanel: document.getElementById('library-import-panel'),
     refreshLibraryBtn: document.getElementById('refresh-library'),
     libraryViewTracksBtn: document.getElementById('library-view-tracks'),
-    libraryViewFoldersBtn: document.getElementById('library-view-folders'),
+    libraryViewArtistsBtn: document.getElementById('library-view-artists'),
+    libraryViewPlaylistsBtn: document.getElementById('library-view-playlists'),
     libraryViewFavoritesBtn: document.getElementById('library-view-favorites'),
+    libraryViewFoldersBtn: document.getElementById('library-view-folders'),
     libraryViewAlbumsBtn: document.getElementById('library-view-albums'),
     libraryFolderPath: document.getElementById('library-folder-path'),
+    libraryViewToggle: document.querySelector('.library-view-toggle'),
+    librarySearchTypes: document.getElementById('library-search-types'),
     librarySearchInput: document.getElementById('library-search'),
     librarySearchClear: document.getElementById('library-search-clear'),
     albumsGrid: document.getElementById('albums-grid'),
@@ -1137,6 +1162,8 @@ const elements = {
     albumDiscover: document.getElementById('album-discover'),
     playlistDetail: document.getElementById('playlist-detail'),
     playlistDetailBack: document.getElementById('playlist-detail-back'),
+    playlistDetailDownload: document.getElementById('playlist-detail-download'),
+    playlistFavoriteToggle: document.getElementById('playlist-favorite-toggle'),
     playlistDetailCover: document.getElementById('playlist-detail-cover'),
     playlistDetailBackdrop: document.getElementById('playlist-detail-backdrop'),
     playlistDetailName: document.getElementById('playlist-detail-name'),
@@ -1149,6 +1176,11 @@ const elements = {
     cancelPlaylistSelectionBtn: document.getElementById('cancel-playlist-selection'),
     playlistSaveRow: document.getElementById('playlist-save-row'),
     playlistSaveControls: document.querySelector('.playlist-save-controls'),
+    playlistTidalTarget: document.getElementById('playlist-tidal-target'),
+    playlistTidalAddBtn: document.getElementById('playlist-tidal-add'),
+    playlistSaveHint: document.getElementById('playlist-save-hint'),
+    libraryTidalDetail: document.getElementById('library-tidal-detail'),
+    libraryTidalButton: document.getElementById('library-tidal-status'),
     libraryInfo: document.getElementById('library-info'),
     downloadSelectedTracksBtn: document.getElementById('download-selected-tracks'),
     deleteSelectedTracksBtn: document.getElementById('delete-selected-tracks'),
@@ -1517,6 +1549,7 @@ document.addEventListener('DOMContentLoaded', () => {
     try { SettingsSystem.updatePowerButtonConnectionState(); } catch(e) { console.error('updatePowerButtonConnectionState crashed:', e); }
     try { SettingsSystem.setupPowerMenu(); } catch(e) { console.error('setupPowerMenu crashed:', e); }
     try { setupWebSocket(); } catch(e) { console.error('setupWebSocket crashed:', e); }
+    try { window.FXRouteFrontendFreshness?.start(); } catch(e) { console.error('frontend freshness crashed:', e); }
     try { setupTabNavigation(); } catch(e) { console.error('setupTabNavigation crashed:', e); }
     try {
         handleTabsResize();
@@ -1595,26 +1628,75 @@ function setMeasurementSweepMenuOpen(shouldOpen) {
 function setupWebSocket() {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     CONFIG.wsUrl = `${protocol}//${window.location.host}/ws`;
+    window.addEventListener('online', connectWebSocket);
+    document.addEventListener('visibilitychange', () => {
+        if (!document.hidden) {
+            if (state.wsConnected) void resyncAfterReconnect();
+            connectWebSocket();
+            void window.FXRouteFrontendFreshness?.check('visible');
+        }
+    });
     connectWebSocket();
 }
 function connectWebSocket() {
-    if (reconnectAttempts >= CONFIG.maxReconnectAttempts) {
-        showToast('WebSocket reconnection failed. Please refresh.', 'error');
+    if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
         return;
     }
     if (reconnectTimer) {
         clearTimeout(reconnectTimer);
         reconnectTimer = null;
     }
-    if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
+    const serial = ++wsConnectSerial;
+    let socket;
+    try {
+        socket = new WebSocket(CONFIG.wsUrl);
+    } catch (err) {
+        console.error('WebSocket connection failed:', err);
+        scheduleOfflineIndicator();
+        PlaybackCore.startMetadataPolling();
+        scheduleReconnect();
         return;
     }
-    const serial = ++wsConnectSerial;
-    const socket = new WebSocket(CONFIG.wsUrl);
     ws = socket;
+    let awaitingPong = false;
+    const isCurrent = () => serial === wsConnectSerial && ws === socket;
+    const disconnect = () => {
+        if (!isCurrent()) return;
+        clearTimeout(watchdogTimer);
+        ws = null;
+        state.wsConnected = false;
+        wsOutageSeen = true;
+        scheduleOfflineIndicator();
+        PlaybackCore.stopPeakStatusPolling();
+        PlaybackCore.startMetadataPolling();
+        scheduleReconnect();
+    };
+    const closeUnresponsiveSocket = () => {
+        if (!isCurrent()) return;
+        // Do not wait for onclose: a half-open transport can delay it indefinitely.
+        disconnect();
+        socket.close();
+    };
+    const heartbeat = () => {
+        if (!isCurrent()) return;
+        if (awaitingPong) {
+            closeUnresponsiveSocket();
+            return;
+        }
+        awaitingPong = true;
+        try {
+            socket.send('ping'); // The existing server replies with {type: 'pong'}.
+            watchdogTimer = setTimeout(heartbeat, CONFIG.wsHeartbeatInterval);
+        } catch (err) {
+            closeUnresponsiveSocket();
+        }
+    };
+    let watchdogTimer = setTimeout(closeUnresponsiveSocket, CONFIG.wsConnectTimeout);
     socket.onopen = () => {
-        if (serial !== wsConnectSerial || ws !== socket) return;
+        if (!isCurrent()) return;
         console.log('WebSocket connected');
+        clearTimeout(watchdogTimer);
+        watchdogTimer = setTimeout(heartbeat, CONFIG.wsHeartbeatInterval);
         state.wsConnected = true;
         reconnectAttempts = 0;
         if (offlineIndicatorTimer) {
@@ -1625,30 +1707,30 @@ function connectWebSocket() {
         elements.offlineIndicator.classList.add('hidden');
         PlaybackCore.stopMetadataPolling();
         PlaybackCore.startPeakStatusPolling();
-        void PlaybackCore.resyncPlaybackAfterReconnect();
-        // Source pushes sent while the socket was down or not yet ready are
-        // lost; the revision check keeps a newer push that lands first.
-        void fetchAudioSourceOverview();
         if (isMeasurementPanelOpen()) void MeasurementFlows.recoverAutoSubJob();
+        // A restarted server is the usual deploy: see whether this page predates it.
+        if (wsOutageSeen) {
+            wsOutageSeen = false;
+            void window.FXRouteFrontendFreshness?.check('reconnect');
+        }
     };
     socket.onclose = (event) => {
-        if (ws === socket) ws = null;
         console.log('WebSocket disconnected', { code: event.code, reason: event.reason, wasClean: event.wasClean, serial });
-        if (serial !== wsConnectSerial) return;
-        state.wsConnected = false;
-        scheduleOfflineIndicator();
-        PlaybackCore.stopPeakStatusPolling();
-        PlaybackCore.startMetadataPolling();
-        scheduleReconnect();
+        disconnect();
     };
     socket.onerror = (err) => {
-        if (serial !== wsConnectSerial) return;
+        if (!isCurrent()) return;
         console.error('WebSocket error:', err);
+        closeUnresponsiveSocket();
     };
     socket.onmessage = (event) => {
-        if (serial !== wsConnectSerial) return;
+        if (!isCurrent()) return;
         try {
             const message = JSON.parse(event.data);
+            if (message.type === 'pong') {
+                awaitingPong = false;
+                return;
+            }
             handleWebSocketMessage(message);
         } catch (e) {
             console.error('Failed to parse WS message:', e);
@@ -1657,13 +1739,32 @@ function connectWebSocket() {
 }
 function scheduleReconnect() {
     if (reconnectTimer) return;
-    const delay = reconnectAttempts === 0 ? 0 : CONFIG.reconnectInterval;
+    const delay = Math.min(CONFIG.reconnectInterval * (2 ** reconnectAttempts), CONFIG.maxReconnectInterval);
     reconnectAttempts++;
     console.log(`Reconnecting in ${delay}ms (attempt ${reconnectAttempts})`);
     reconnectTimer = setTimeout(() => {
         reconnectTimer = null;
         connectWebSocket();
     }, delay);
+}
+async function resyncAfterReconnect() {
+    // The server init only includes playback/providers; recover pushes missed
+    // during downtime through the same read APIs used by initial loading.
+    // Isolate failures so one unavailable subsystem cannot block the others.
+    const refreshes = [
+        () => PlaybackCore.resyncPlaybackAfterReconnect(),
+        () => fetchAudioSourceOverview(),
+        () => EffectsUI.fetchEffects(),
+        () => LibraryUI.fetchTracks(), // Also reloads scan status.
+        () => LibraryUI.fetchAlbums(true), // Recover changes hidden by a populated cache.
+        () => LibraryUI.fetchPlaylists(),
+        () => LibraryUI.fetchDownloadStatus(),
+        () => radioModule.fetchStations(),
+        () => fetchAudioOutputOverview(),
+        () => fetchOutputSystemCatalog(true),
+        () => window.FXRouteSrcSettings.refresh(),
+    ];
+    await Promise.allSettled(refreshes.map(refresh => Promise.resolve().then(refresh)));
 }
 function scheduleOfflineIndicator() {
     if (offlineIndicatorTimer) return;
@@ -1761,34 +1862,10 @@ function handleWebSocketMessage(msg) {
                 StreamingRuntime.handleIncomingQobuzState(data.qobuz, { renderFooter: true });
             }
             if (data.player && data.player.state && data.player.state.dsp) {
-                state.dsp = data.player.state.dsp;
-                if (state.dsp?.global_extras) {
-                    EffectsUI.applyEffectsExtras({
-                        limiterEnabled: !!state.dsp.global_extras?.limiter?.enabled,
-                        headroomEnabled: !!state.dsp.global_extras?.headroom?.enabled,
-                        headroomGainDb: Number(state.dsp.global_extras?.headroom?.params?.gainDb ?? -3),
-                        autogainEnabled: !!state.dsp.global_extras?.autogain?.enabled,
-                        autogainTargetDb: Number(state.dsp.global_extras?.autogain?.params?.targetDb ?? -12),
-                        loudnessEnabled: !!state.dsp.global_extras?.loudness?.enabled,
-                        loudnessStrength: state.dsp.global_extras?.loudness?.params?.strength ?? 10,
-                        loudnessFftSize: Number(state.dsp.global_extras?.loudness?.params?.fftSize ?? 4096),
-                        loudnessVolumeDb: Number(state.dsp.global_extras?.loudness?.params?.volumeDb ?? 0),
-                        delayEnabled: !!state.dsp.global_extras?.delay?.enabled,
-                        delayLeftMs: Number(state.dsp.global_extras?.delay?.params?.leftMs || 0),
-                        delayRightMs: Number(state.dsp.global_extras?.delay?.params?.rightMs || 0),
-                        bassEnabled: !!state.dsp.global_extras?.bass_enhancer?.enabled,
-                        bassAmount: Number(state.dsp.global_extras?.bass_enhancer?.params?.amount || 0),
-                        toneEffectEnabled: !!state.dsp.global_extras?.tone_effect?.enabled,
-                        toneEffectMode: String(state.dsp.global_extras?.tone_effect?.mode || 'crystalizer'),
-                        upmixerEnabled: !!state.dsp.global_extras?.upmixer?.enabled,
-                        upmixerMode: String(state.dsp.global_extras?.upmixer?.params?.mode || 'fast'),
-                        upmixerCenter: state.dsp.global_extras?.upmixer?.params?.center ?? 6,
-                        upmixerSurround: state.dsp.global_extras?.upmixer?.params?.surround ?? 6,
-                        upmixerFftSize: Number(state.dsp.global_extras?.upmixer?.params?.fftSize ?? 2048),
-                    });
-                }
-                EffectsUI.renderEffects();
+                EffectsUI.acceptDspState(data.player.state.dsp);
             }
+            // Broadcasts are enabled only after the server queues init.
+            void resyncAfterReconnect();
             break;
         case 'playback': {
             const nextTrackId = data?.current_track?.id || null;
@@ -1874,6 +1951,10 @@ function handleWebSocketMessage(msg) {
         case 'src':
             window.FXRouteSrcSettings.update(data);
             break;
+        case 'output_state':
+            void fetchOutputSystemCatalog(true);
+            void EffectsUI.fetchEffects();
+            break;
         case 'download':
             state.download = data;
             LibraryUI.updateDownloadUI();
@@ -1885,14 +1966,9 @@ function handleWebSocketMessage(msg) {
             }
             break;
         case 'dsp':
-            const presetNames = (data.presets || []).map(p => p.name);
-            state.dsp = {
-                ...data,
-                combineDraft: state.dsp?.combineDraft || window.FXRouteBankUI.getDefaultEffectsCombineDraft(),
-                peqDraft: state.dsp?.peqDraft || { presetName: '', eqMode: 'IIR', leftBands: [EffectsUI.defaultPeqBand()], rightBands: [EffectsUI.defaultPeqBand()] },
-            };
-            state.dsp.combineDraft = window.FXRouteBankUI.normalizeEffectsCombineDraft(state.dsp.combineDraft, presetNames);
-            EffectsUI.renderEffects();
+            EffectsUI.acceptDspState(data);
+            // Preset creation/import may also assign a shared output bank.
+            void fetchOutputSystemCatalog(true);
             break;
         case 'download_complete':
             showToast(`Download complete: ${data.filename}`, 'success');
@@ -1910,6 +1986,8 @@ function handleWebSocketMessage(msg) {
 }
 // Tab navigation
 function setupTabNavigation() {
+    // The strip handles Left/Right itself; tv_nav.js must not move the focus too.
+    elements.tabs[0]?.closest('[role="tablist"]')?.setAttribute('data-own-arrows', '');
     elements.tabs.forEach(tab => {
         tab.addEventListener('click', () => {
             const tabId = tab.dataset.tab;
@@ -2056,6 +2134,8 @@ function setupSettingsActions() {
         refreshSources: () => fetchAudioSourceOverview(),
     });
     window.FXRouteCustomMapping.bind();
+    window.FXRouteUsbGadget.init({refreshSources: () => fetchAudioSourceOverview()});
+    window.FXRouteUsbGadget.bind();
     window.FXRouteSrcSettings.init({
         select: document.getElementById('settings-src-select'),
         hint: document.getElementById('settings-src-hint'),
@@ -2114,6 +2194,9 @@ function setupSettingsActions() {
                 // Configuration entry, not a source: restore the shown selection first.
                 renderSourceSection();
                 void window.FXRouteCustomMapping.open();
+            } else if (value === 'usb-gadget') {
+                renderSourceSection();
+                void window.FXRouteUsbGadget.open();
             }
         });
     }
@@ -2134,7 +2217,7 @@ function setupSettingsActions() {
         elements.settingsMusicLibrarySelect.addEventListener('change', (event) => {
             const libraryId = event.target.value;
             if (libraryId === 'manual') {
-                const url = prompt('SMB share URL', 'smb://server/share');
+                const url = prompt('Network share: smb://server/share or server:/export/path', '');
                 if (url) void SettingsSystem.addManualMusicLibrary(url);
                 else renderSettingsPanel();
             } else if (libraryId) {
@@ -2142,6 +2225,18 @@ function setupSettingsActions() {
             }
         });
     }
+    elements.settingsMusicLibraryRemove?.addEventListener('click', () => {
+        elements.settingsMusicLibraryRemovePanel?.classList.remove('hidden');
+        elements.settingsMusicLibraryRemoveSelect?.focus();
+    });
+    elements.settingsMusicLibraryRemoveCancel?.addEventListener('click', () => {
+        elements.settingsMusicLibraryRemovePanel?.classList.add('hidden');
+    });
+    elements.settingsMusicLibraryRemoveConfirm?.addEventListener('click', () => {
+        const libraryId = elements.settingsMusicLibraryRemoveSelect?.value;
+        if (libraryId) void SettingsSystem.removeMusicLibrary(libraryId);
+        elements.settingsMusicLibraryRemovePanel?.classList.add('hidden');
+    });
     elements.settingsHardwareRcaBtn?.addEventListener('click', () => SettingsSystem.runHardwareCommand('/api/hardware/input/rca', 'RCA selected'));
     elements.settingsHardwareXlrBtn?.addEventListener('click', () => SettingsSystem.runHardwareCommand('/api/hardware/input/xlr', 'XLR selected'));
     elements.settingsHardwarePressBtn?.addEventListener('click', () => SettingsSystem.runHardwareCommand('/api/hardware/input/press', 'Input button pressed'));
@@ -2801,8 +2896,22 @@ function renderSettingsPanel() {
     }
     if (elements.settingsMusicLibraryHint) {
         const cachedCount = Array.isArray(musicLibrary.libraries) ? musicLibrary.libraries.length : 0;
-        elements.settingsMusicLibraryHint.textContent =
-            musicLibrary.scanning && cachedCount > 0 ? 'Scanning…' : '';
+        const active = musicLibrary.libraries?.find((entry) => entry.id === musicLibrary.active_id);
+        const networkStatus = active && ['smb', 'nfs'].includes(active.type)
+            ? `${active.type.toUpperCase()} ${active.mounted ? 'mounted (automatic reconnect).' : 'not mounted; select again to reconnect.'}` : '';
+        elements.settingsMusicLibraryHint.textContent = [
+            musicLibrary.scanning && cachedCount > 0 ? 'Scanning…' : '',
+            musicLibrary.restore_error ? `Saved share unavailable; retrying. ${musicLibrary.restore_error}` : networkStatus,
+        ].filter(Boolean).join(' ');
+    }
+    if (elements.settingsMusicLibraryRemove) {
+        const model = SettingsSystem.musicLibraryRemovalModel(musicLibrary, elements.settingsMusicLibraryRemoveSelect?.value);
+        elements.settingsMusicLibraryRemove.disabled = model.disabled;
+        if (elements.settingsMusicLibraryRemoveConfirm) elements.settingsMusicLibraryRemoveConfirm.disabled = model.disabled;
+        if (elements.settingsMusicLibraryRemoveSelect && !isSelectFocused(elements.settingsMusicLibraryRemoveSelect)) {
+            elements.settingsMusicLibraryRemoveSelect.innerHTML = model.html;
+            elements.settingsMusicLibraryRemoveSelect.value = model.value;
+        }
     }
     renderProviderSettings();
     SettingsSystem.renderDeviceNameSettings();
@@ -2843,9 +2952,11 @@ function renderSourceSection() {
             ...(missingSelection
                 ? [`<option value="external-input::${escapeHtml(selectedSourceInput.key)}" disabled>${escapeHtml(missingLabel)}</option>`]
                 : []),
-            ...sourceInputs.map((input) => `<option value="external-input::${escapeHtml(input.key || '')}">External input: ${escapeHtml(input.label || input.name || 'Unknown input')}</option>`),
+            window.FXRouteUsbGadget?.inputOptions(sourceInputs)
+                ?? sourceInputs.map((input) => `<option value="external-input::${escapeHtml(input.key || '')}">External input: ${escapeHtml(input.label || input.name || 'Unknown input')}</option>`).join(''),
             `<option value="bluetooth-input"${bluetoothSelectable || currentMode === 'bluetooth-input' ? '' : ' disabled'}>Bluetooth input</option>`,
             `<option value="stdin-input"${stdinSelectable || currentMode === 'stdin-input' ? '' : ' disabled'}>STDIN</option>`,
+            window.FXRouteUsbGadget?.configurationOption(sourceOverview.usb_gadget) || '',
             '<option value="custom-mapping">Custom Mapping…</option>',
         ];
         elements.settingsSourceSelect.innerHTML = inputOptions.join('');
@@ -3153,7 +3264,7 @@ function renderSourceModeFooter() {
 
 function applySourceModeUiState() {
     const nonAppSourceActive = nonAppSourceModeActive();
-    ['radio', 'spotify', 'qobuz', 'tidal', 'library'].forEach((tabId) => {
+    ['radio', 'spotify', 'qobuz', 'library'].forEach((tabId) => {
         const tabButton = document.querySelector(`.tab-btn[data-tab="${tabId}"]`);
         const tabPanel = document.getElementById(`tab-${tabId}`);
         if (tabButton) tabButton.classList.toggle('hidden', nonAppSourceActive);
@@ -3163,9 +3274,23 @@ function applySourceModeUiState() {
         elements.playbackBar.classList.remove('hidden');
     }
     renderSourceModeFooter();
-    if (nonAppSourceActive && ['radio', 'spotify', 'qobuz', 'tidal', 'library'].includes(window.__visibleTab)) {
+    if (nonAppSourceActive && ['radio', 'spotify', 'qobuz', 'library'].includes(window.__visibleTab)) {
         switchTab('effects');
     }
+}
+
+function audioOutputsState(data) {
+    return {
+        loaded: true,
+        available: !!data.available,
+        default_output: data.default_output || null,
+        selected_output: data.selected_output || null,
+        current_output: data.current_output || null,
+        outputs: Array.isArray(data.outputs) ? data.outputs : [],
+        notes: Array.isArray(data.notes) ? data.notes : [],
+        pendingSelectionKey: null,
+        output_mode: data.output_mode || state.settings.audioOutputs.output_mode,
+    };
 }
 
 async function saveAudioOutputSelection(key) {
@@ -3180,20 +3305,12 @@ async function saveAudioOutputSelection(key) {
         });
         const data = await resp.json().catch(() => ({}));
         if (!resp.ok) throw new Error(data.detail || 'Failed to save audio output');
-        state.settings.audioOutputs = {
-            loaded: true,
-            available: !!data.available,
-            default_output: data.default_output || null,
-            selected_output: data.selected_output || null,
-            current_output: data.current_output || null,
-            outputs: Array.isArray(data.outputs) ? data.outputs : [],
-            notes: Array.isArray(data.notes) ? data.notes : [],
-            pendingSelectionKey: null,
-            output_mode: data.output_mode || state.settings.audioOutputs.output_mode,
-        };
+        state.settings.audioOutputs = audioOutputsState(data);
         renderSettingsPanel();
         const modeAdjustment = data.output_mode?.mode_adjustment;
         await fetchOutputSystemCatalog(true);
+        // The Loudness calibration belongs to the output: read the extras of the new one.
+        await EffectsUI.fetchEffects().catch(() => null);
         if (modeAdjustment?.message) {
             showToast(modeAdjustment.message, 'info');
         } else {
@@ -3212,18 +3329,12 @@ async function fetchAudioOutputOverview() {
         if (!resp.ok) throw new Error('Failed to fetch audio outputs');
         const data = await resp.json();
         if (state.settings.audioOutputs.pendingSelectionKey) return;
-        state.settings.audioOutputs = {
-            loaded: true,
-            available: !!data.available,
-            default_output: data.default_output || null,
-            selected_output: data.selected_output || null,
-            current_output: data.current_output || null,
-            outputs: Array.isArray(data.outputs) ? data.outputs : [],
-            notes: Array.isArray(data.notes) ? data.notes : [],
-            pendingSelectionKey: null,
-            output_mode: data.output_mode || state.settings.audioOutputs.output_mode,
-        };
+        const previousOutput = state.settings.audioOutputs.output_mode?.effective_output_key;
+        state.settings.audioOutputs = audioOutputsState(data);
         renderSettingsPanel();
+        const currentOutput = state.settings.audioOutputs.output_mode?.effective_output_key;
+        // An output that changed on its own (unplugged, fallen back) brings its own calibration.
+        if (previousOutput && currentOutput && previousOutput !== currentOutput) void EffectsUI.fetchEffects();
         renderSubwooferPanel();
         MeasurementFlows.syncAutoSubButton();
         MeasurementFlows.syncSpeakerAlignButton();
@@ -3497,7 +3608,10 @@ function renderOutputSystemSection() {
         elements.settingsOutputModeHint.textContent = mod.modeHint(mode, topology, channelCount);
     }
     if (elements.settingsRoutingHint) {
-        elements.settingsRoutingHint.textContent = 'Assign a role to each hardware output. Off leaves an output silent.';
+        // HDMI has one LFE channel: a second sub role plays on a full-range channel.
+        elements.settingsRoutingHint.textContent = device.hdmi
+            ? 'Assign a role to each HDMI channel. Off leaves a channel silent. HDMI carries one LFE channel.'
+            : 'Assign a role to each hardware output. Off leaves an output silent.';
     }
 }
 
@@ -3849,8 +3963,9 @@ function getVisibleMeasurementColorById() {
 
 
 function getMeasurementActiveEditor() {
-    const editor = String(state.measurement?.activeEditor || 'none');
-    return ['none', 'peq', 'houseCurve'].includes(editor) ? editor : 'none';
+    const editor = String(state.measurement?.activeEditor || '');
+    if (editor === 'houseCurve') return 'houseCurve';
+    return state.measurement?.assistMode === 'convolver' ? 'none' : 'peq';
 }
 
 function getMeasurementRestorableTargetCurve() {
@@ -3862,13 +3977,15 @@ function getMeasurementRestorableTargetCurve() {
 }
 
 function setMeasurementActiveEditor(editor = 'none') {
-    const nextEditor = ['none', 'peq', 'houseCurve'].includes(editor) ? editor : 'none';
+    const nextEditor = editor === 'houseCurve' ? 'houseCurve' : (state.measurement?.assistMode === 'convolver' ? 'none' : 'peq');
     state.measurement.activeEditor = nextEditor;
     const custom = window.FXRouteMeasurementCalibration.ensureCustomHouseCurveState();
     custom.open = nextEditor === 'houseCurve';
     custom.displayTarget = nextEditor === 'houseCurve' ? 'editing-custom-house-curve' : 'actual';
-    if (nextEditor !== 'peq') {
-        const peq = window.FXRouteMeasurementPeqEditor.ensureMeasurementPeqState();
+    const peq = window.FXRouteMeasurementPeqEditor.ensureMeasurementPeqState();
+    if (nextEditor === 'peq') {
+        peq.enabled = true;
+    } else {
         peq.dragFilterId = null;
     }
     window.FXRouteMeasurementCalibration.ensureCustomHouseCurveState().dragPointId = null;
@@ -4623,6 +4740,16 @@ function isMeasurementPanelOpen() {
     return !!elements.measurementPanel && !elements.measurementPanel.classList.contains('hidden');
 }
 
+// A stale page reloads itself only while no work would be lost: an open
+// measurement, a running measurement job or a transfer in progress.
+function isFrontendReloadBlocked() {
+    const measurementBusy = isMeasurementPanelOpen() || !!state.measurement.startInFlight
+        || window.FXRouteMeasurementJob.hasActiveMeasurementJob();
+    const uploading = state.upload?.status === 'uploading';
+    const downloading = ['starting', 'downloading'].includes(state.download?.status);
+    return measurementBusy || uploading || downloading;
+}
+
 function sendMeasurementWindowHeartbeat(open, keepalive = false) {
     const payload = { open: !!open };
     if (measurementWindowSessionEpoch !== null && measurementWindowSessionEpoch !== undefined) {
@@ -4724,6 +4851,23 @@ function toggleMeasurementPanel(forceOpen = null) {
                     return;
                 }
                 toggleMeasurementPanel(false);
+            },
+            // Remote Home: back to the assistant's main screen, not out of it.
+            onCollapse: () => {
+                let collapsed = false;
+                if (elements.measurementCalibrationMenu && !elements.measurementCalibrationMenu.classList.contains('hidden')) {
+                    setMeasurementCalibrationMenuOpen(false);
+                    collapsed = true;
+                }
+                if (elements.measurementSweepMenu && !elements.measurementSweepMenu.classList.contains('hidden')) {
+                    setMeasurementSweepMenuOpen(false);
+                    collapsed = true;
+                }
+                if (state.measurement.setupOpen) {
+                    setMeasurementSetupOpen(false);
+                    collapsed = true;
+                }
+                return collapsed;
             },
         });
     } else {
@@ -4917,10 +5061,6 @@ function setupMeasurementActions() {
     }
     window.FXRouteMeasurementLevelMatch?.bindEvents();
     window.FXRouteMeasurementPolarityCheck?.bindEvents();
-    const smoothingChipsRow = document.getElementById('measurement-smoothing-chips');
-    if (smoothingChipsRow) window.FXRouteMeasurementPanelUI.bindChipArrowKeyNavigation(smoothingChipsRow, '[data-measurement-smoothing]');
-    const measurementViewToggle = document.querySelector('.measurement-view-toggle');
-    if (measurementViewToggle) window.FXRouteMeasurementPanelUI.bindChipArrowKeyNavigation(measurementViewToggle, '[data-measurement-view]');
     if (elements.measurementInputSelect) {
         const scanMeasurementInputsOnceForSelect = () => {
             if (measurementInputScanOnFocusDone) return;

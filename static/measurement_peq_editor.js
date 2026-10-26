@@ -9,6 +9,7 @@
 
     const ui = root.FXRouteMeasurementUI || {};
     const dsp = root.FXRouteMeasurementDsp || {};
+    const peqAuto = root.FXRouteMeasurementPeqAuto || {};
     let deps = {
         getState: () => ({ measurement: {}, dsp: {} }),
         getElements: () => ({}),
@@ -41,11 +42,18 @@
         getPeqHandleHitRadiusPx: () => 14,
         getPeqTouchHandleHitRadiusPx: () => 24,
         getPeqTouchCreateCooldownMs: () => 350,
+        // Auto: the measurements the assistant works on (shown saved ones,
+        // else the current result) and the selected target curve.
+        getMeasurementSourceEntries: () => [],
+        getMeasurementDisplayTraces: (measurement) => measurement?.traces || [],
+        getMeasurementTargetCurve: () => ({ label: 'Neutral', points: [[20, 0], [20000, 0]] }),
+        confirm: (message) => root.confirm(message),
         setTimeout: (...args) => root.setTimeout(...args),
         clearTimeout: (...args) => root.clearTimeout(...args),
     };
     let measurementPeqTakeFeedbackTimer = null;
     let measurementPeqLastTouchCreateAt = 0;
+    let measurementPeqAutoInFlight = false;
 
     function init(overrides) {
         deps = Object.assign(deps, overrides || {});
@@ -66,7 +74,7 @@
         }
         const peq = deps.getState().measurement.peqAssistant;
         if (!Array.isArray(peq.filters)) peq.filters = [];
-        if (typeof peq.enabled !== 'boolean') peq.enabled = peq.filters.length > 0;
+        if (typeof peq.enabled !== 'boolean') peq.enabled = true;
         if (!peq.draft || typeof peq.draft !== 'object') peq.draft = { leftBands: [], rightBands: [], presetName: '', nameTouched: false };
         if (!Array.isArray(peq.draft.leftBands)) peq.draft.leftBands = [];
         if (!Array.isArray(peq.draft.rightBands)) peq.draft.rightBands = [];
@@ -213,7 +221,7 @@
         const peq = ensureMeasurementPeqState();
         peq.filters = peq.filters.filter((filter) => filter.id !== filterId);
         peq.activeFilterId = peq.filters.some((filter) => filter.id === peq.activeFilterId) ? peq.activeFilterId : (peq.filters[0]?.id || null);
-        peq.enabled = peq.filters.length > 0;
+        peq.enabled = true;
         peq.dragFilterId = null;
     }
 
@@ -236,6 +244,108 @@
             deps.getElements().measurementPeqTakeFeedback?.classList.remove('is-visible');
             measurementPeqTakeFeedbackTimer = null;
         }, 2200);
+    }
+
+    function getMeasurementPeqAutoTracePoints(measurement) {
+        // The trusted trace first: a visible raw review trace adds the band
+        // edges the analysis did not trust.
+        const traces = [...(measurement?.traces || []), ...deps.getMeasurementDisplayTraces(measurement || {})];
+        return traces.find((trace) => (trace?.points || []).length >= 2)?.points || [];
+    }
+
+    // One measurement, or one L/R pair averaged into one proposal (Take Both
+    // stages it for both sides). More than that is ambiguous.
+    function getMeasurementPeqAutoSource() {
+        const entries = deps.getMeasurementSourceEntries()
+            .filter((measurement) => getMeasurementPeqAutoTracePoints(measurement).length >= 2);
+        if (!entries.length) {
+            return { sources: [], label: '', blockedReason: 'Auto needs a measurement: run a sweep or show a saved one.' };
+        }
+        const channels = entries.map((measurement) => String(measurement.channel || '').toLowerCase());
+        const lrPair = entries.length === 2 && channels.includes('left') && channels.includes('right');
+        if (entries.length > 1 && !lrPair) {
+            return { sources: [], label: '', blockedReason: 'Auto needs one measurement or one L/R pair: hide the others.' };
+        }
+        return {
+            sources: entries.map((measurement) => ({
+                points: getMeasurementPeqAutoTracePoints(measurement),
+                confidence: measurement.analysis?.hybrid_constraints || [],
+            })),
+            label: lrPair ? 'L+R average' : String(entries[0].name || 'the measurement'),
+            blockedReason: '',
+        };
+    }
+
+    function getMeasurementPeqAutoAvailability() {
+        if (measurementPeqAutoInFlight) return { available: false, busy: true, reason: 'Auto is fitting filters…' };
+        const { blockedReason } = getMeasurementPeqAutoSource();
+        return { available: !blockedReason, busy: false, reason: blockedReason };
+    }
+
+    function formatMeasurementPeqFilterCount(count) {
+        return `${count} filter${count === 1 ? '' : 's'}`;
+    }
+
+    // Fits a proposal into F1-F12 and nothing else: it is never staged,
+    // activated or saved, and an existing draft is only replaced after an
+    // explicit confirmation.
+    function runMeasurementPeqAuto() {
+        if (measurementPeqAutoInFlight || deps.getMeasurementActiveEditor() === 'houseCurve') return false;
+        const source = getMeasurementPeqAutoSource();
+        if (source.blockedReason) {
+            showMeasurementPeqTakeFeedback(source.blockedReason);
+            deps.showToast(source.blockedReason, 'warning');
+            return false;
+        }
+        measurementPeqAutoInFlight = true;
+        showMeasurementPeqTakeFeedback('Auto: fitting filters…');
+        deps.renderMeasurementPanel();
+        // Yield once so the busy chip paints before the synchronous fit.
+        deps.setTimeout(() => {
+            try {
+                completeMeasurementPeqAuto(source);
+            } finally {
+                measurementPeqAutoInFlight = false;
+                deps.renderMeasurementPanel();
+                deps.scheduleMeasurementGraphRender();
+            }
+        }, 30);
+        return true;
+    }
+
+    function completeMeasurementPeqAuto(source) {
+        const target = deps.getMeasurementTargetCurve() || {};
+        const targetLabel = target.shortLabel || target.label || 'the target';
+        const result = peqAuto.suggestMeasurementPeqFilters({ sources: source.sources, targetPoints: target.points });
+        if (result.reason === 'matching') {
+            const message = `Auto: ${source.label} already follows ${targetLabel} (${result.rmsBeforeDb.toFixed(1)} dB RMS); no filters needed.`;
+            showMeasurementPeqTakeFeedback(message);
+            deps.showToast(message, 'info');
+            return result;
+        }
+        if (result.reason) {
+            const message = 'Auto found no usable frequency range in this measurement.';
+            showMeasurementPeqTakeFeedback(message);
+            deps.showToast(message, 'warning');
+            return result;
+        }
+        const peq = ensureMeasurementPeqState();
+        if (peq.filters.length) {
+            const question = `Replace the current ${formatMeasurementPeqFilterCount(peq.filters.length)} with the Auto suggestion (${formatMeasurementPeqFilterCount(result.filters.length)})?`;
+            if (!deps.confirm(question)) {
+                showMeasurementPeqTakeFeedback('Auto cancelled; filters kept');
+                return null;
+            }
+        }
+        deps.setMeasurementActiveEditor('peq');
+        peq.filters = result.filters.map((filter, index) => ({ ...getDefaultMeasurementPeqFilter(index), ...filter }));
+        peq.activeFilterId = peq.filters[0]?.id || null;
+        peq.dragFilterId = null;
+        peq.enabled = true;
+        const message = `Auto: ${formatMeasurementPeqFilterCount(peq.filters.length)} for ${source.label} vs ${targetLabel} · deviation ${result.rmsBeforeDb.toFixed(1)} → ${result.rmsAfterDb.toFixed(1)} dB RMS`;
+        showMeasurementPeqTakeFeedback(message);
+        deps.showToast(message, 'success');
+        return result;
     }
 
     function getMeasurementPeqNameSuffix(date = new Date()) {
@@ -469,7 +579,8 @@
         createMeasurementPeqFilterFromPoint, updateMeasurementPeqFilter,
         stepMeasurementPeqQ, stepMeasurementPeqGain, stepMeasurementPeqFrequency,
         deleteMeasurementPeqFilter, measurementPeqFilterToBand,
-        showMeasurementPeqTakeFeedback, getMeasurementPeqNameSuffix,
+        showMeasurementPeqTakeFeedback, getMeasurementPeqAutoSource,
+        getMeasurementPeqAutoAvailability, runMeasurementPeqAuto, getMeasurementPeqNameSuffix,
         getMeasurementPeqDraftMode, getMeasurementPeqPresetName,
         takeMeasurementPeqToPreset, resolveMeasurementPeqPresetName,
         createMeasurementPeqPresetFromDraft, getMeasurementPeqHandlePosition,

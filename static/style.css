@@ -80,6 +80,8 @@
     --tile-min: 208px;
     --tile-min-radio: 164px;
     --tile-gap: clamp(0.85rem, 1.2vw, 1.1rem);
+    /* TIDAL marks: TIDAL's minimum height is 13 px; one step above it. */
+    --tidal-mark-h: max(14px, 0.875rem);
     /* Slate/Blue palette: every remaining raw slate/blue literal lives
        here once. The semantic Sub1/Sub2/info accents alias into it so the
        effects and measurement cards keep their role names at use sites. */
@@ -308,6 +310,31 @@ body {
     }
 }
 .hidden { display: none !important; }
+/* TIDAL marks (official white artwork, see ui_helpers.js sourceGlyphHtml).
+   The height follows --tidal-mark-h; the marks never sit on cover art. */
+.source-glyph {
+    display: inline-flex;
+    align-items: center;
+    flex: 0 0 auto;
+    height: var(--tidal-mark-h);
+}
+.tidal-mark { display: block; height: 100%; width: auto; }
+.tidal-mark--logo { aspect-ratio: 69 / 9; }
+.tidal-mark--diamond { aspect-ratio: 16 / 10.6667; }
+.tidal-brand-link { text-decoration: none; }
+/* Row marker: the diamond leads the sub line, one diamond of room after it. */
+.track-sub .source-glyph {
+    margin-right: calc(var(--tidal-mark-h) / 2);
+    vertical-align: -0.2em;
+}
+/* Card brand row: its own line under the artist, full logo; list view swaps
+   to the diamond (see _library.css). */
+.source-glyph--card {
+    align-self: flex-start;
+    margin-top: -0.3rem;
+}
+.source-glyph--card .tidal-mark--diamond { display: none; }
+.source-glyph--heading { height: max(16px, 1rem); }
 @keyframes bannerSlide {
     from { transform: translateY(-100%); }
     to   { transform: translateY(0); }
@@ -345,8 +372,7 @@ body {
 .is-active>.fav-heart{fill:currentColor}
 /* Search-clear chip shared by the Library, Radio and TIDAL search fields. */
 .library-search-clear,
-.station-search-clear,
-.streaming-search-clear {
+.station-search-clear {
     position: absolute;
     right: 0.32rem;
     top: 50%;
@@ -367,24 +393,20 @@ body {
     -webkit-tap-highlight-color: transparent;
 }
 .library-search-clear:not(:disabled),
-.station-search-clear:not(:disabled),
-.streaming-search-clear:not(:disabled) {
+.station-search-clear:not(:disabled) {
     opacity: 1;
 }
 .library-search-clear:not(:disabled):hover,
-.station-search-clear:not(:disabled):hover,
-.streaming-search-clear:not(:disabled):hover {
+.station-search-clear:not(:disabled):hover {
     background: var(--border-strong);
     color: var(--text-primary);
 }
 .library-search-clear:disabled,
-.station-search-clear:disabled,
-.streaming-search-clear:disabled {
+.station-search-clear:disabled {
     cursor: default;
 }
 .library-search-clear:focus-visible,
-.station-search-clear:focus-visible,
-.streaming-search-clear:focus-visible {
+.station-search-clear:focus-visible {
     outline: 2px solid var(--accent);
     outline-offset: 2px;
 }
@@ -449,9 +471,8 @@ body {
 .track-play{flex:0 0 auto;width:34px;height:34px;border-radius:50%;border:1px solid var(--border);background:transparent;color:var(--text-secondary);cursor:pointer;font-size:0.85rem;display:inline-flex;align-items:center;justify-content:center;transition:color 0.12s,border-color 0.12s,background 0.12s}
 .track-play:hover{color:var(--accent);border-color:var(--accent)}
 .track-play:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
-/* Inline SVG icons in generated markup (playlist/folder delete, compact
-   labels, streaming transport) inherit currentColor. */
-.playlist-delete-btn svg,
+/* Inline SVG icons in generated markup (folder delete, compact labels,
+   streaming transport) inherit currentColor. */
 .folder-action-btn svg,
 .label-compact svg,
 .streaming-btn-sm-icon svg {
@@ -578,6 +599,35 @@ select.url-input {
     clip: rect(0 0 0 0);
     clip-path: inset(50%);
     white-space: nowrap;
+}
+
+/* Remote/keyboard navigation ring (tv_nav.js). The class is applied only
+   when focus moved by a navigation key, so pointer users see no change.
+   Two classes + the focused state make the ring win over the per-widget
+   :focus-visible rules (tabs, cards, buttons) without !important. */
+.tv-nav-focus.tv-nav-focus:focus {
+    outline: 2px solid var(--text-primary);
+    outline-offset: -2px;
+    box-shadow: inset 0 0 0 4px var(--accent-ink);
+    scroll-margin: 6px;
+}
+
+/* A slider armed with OK (tv_nav.js): Left/Right now change the value, so
+   the ring turns accent and the thumb gets a halo. */
+input[type="range"].tv-nav-editing.tv-nav-focus:focus {
+    outline-color: var(--accent);
+}
+input[type="range"].tv-nav-editing::-webkit-slider-thumb {
+    box-shadow: 0 0 0 6px rgba(110, 231, 183, 0.5);
+}
+input[type="range"].tv-nav-editing::-moz-range-thumb {
+    box-shadow: 0 0 0 6px rgba(110, 231, 183, 0.5);
+}
+
+/* The unpadded wordmark needs its frame outside the lettering. */
+.brand-lockup-button.tv-nav-focus:focus {
+    outline-offset: 3px;
+    box-shadow: 0 0 0 3px var(--accent-ink);
 }
 .header {
     background: var(--bg-header);
@@ -1533,6 +1583,42 @@ label.effects-delete-item {
 @keyframes toastOut {
     to { opacity: 0; transform: translateX(30px); }
 }
+
+/* Audio input picker (ContextMenu key). The footer <select> remains the
+   single source of truth; this sheet only presents its options for remote
+   and keyboard use. */
+.source-picker-dialog {
+    width: min(420px, 100%);
+}
+.source-picker-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+    margin-top: 0.75rem;
+}
+.source-picker-option {
+    width: 100%;
+    min-height: 2.75rem;
+    padding: 0.6rem 0.8rem;
+    text-align: left;
+    font: inherit;
+    color: var(--text-primary);
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+}
+.source-picker-option:hover {
+    background: var(--bg-hover);
+}
+.source-picker-option[aria-selected="true"] {
+    color: var(--accent);
+    border-color: var(--accent);
+}
+.source-picker-option:disabled {
+    opacity: 0.45;
+    cursor: default;
+}
 /* ── Albums grid ─────────────────────────────────────────────── */
 /* Shared tile basis with TIDAL tiles and radio station cards
    (see --tile-* tokens); auto-fit keeps columns equal-width and
@@ -1687,6 +1773,14 @@ label.effects-delete-item {
     font-size: 0.95rem;
 }
 .albums-grid.is-list .playlist-collage-cell.is-fallback { padding: 8%; }
+/* List rows are too narrow for the full logo: the diamond sits before the heart. */
+.albums-grid.is-list .source-glyph--card {
+    order: 4;
+    align-self: center;
+    margin: 0;
+}
+.albums-grid.is-list .source-glyph--card .tidal-mark--logo { display: none; }
+.albums-grid.is-list .source-glyph--card .tidal-mark--diamond { display: block; }
 .albums-grid.is-list .album-smart-badge {
     top: 0.3rem;
     left: 0.3rem;
@@ -2141,6 +2235,49 @@ label.effects-delete-item {
     backdrop-filter: blur(10px);
     -webkit-backdrop-filter: blur(10px);
 }
+/* Header actions beside Back (playlist export). The group takes the back
+   cell and Back stays its outer item, so Back keeps its lone position. */
+.album-detail--hero .detail-hero-header .detail-hero-actions {
+    grid-area: back;
+    align-self: start;
+    justify-self: end;
+    display: flex;
+    align-items: flex-start;
+    gap: 0.5rem;
+}
+.album-detail--hero .detail-hero-header .detail-hero-action {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 38px;
+    height: 38px;
+    padding: 0;
+    border: 1px solid rgba(255, 255, 255, 0.13);
+    border-radius: 7px;
+    background: rgba(7, 10, 13, 0.34);
+    color: var(--text-secondary);
+    cursor: pointer;
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    transition: color 0.15s var(--ease), border-color 0.15s var(--ease), background 0.15s var(--ease), transform 0.1s var(--ease);
+    -webkit-tap-highlight-color: transparent;
+}
+.album-detail--hero .detail-hero-header .detail-hero-action svg {
+    width: 18px;
+    height: 18px;
+}
+.album-detail--hero .detail-hero-header .detail-hero-action:hover {
+    color: var(--text-primary);
+    border-color: rgba(255, 255, 255, 0.16);
+    background: rgba(255, 255, 255, 0.04);
+}
+.album-detail--hero .detail-hero-header .detail-hero-action:active {
+    transform: translateY(1px);
+}
+.album-detail--hero .detail-hero-header .detail-hero-action:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}
 .streaming-detail--hero #tidal-detail-play {
     min-height: 42px;
     margin-top: 0.25rem;
@@ -2167,68 +2304,34 @@ label.effects-delete-item {
 .album-discover {
     margin-top: 0.55rem;
 }
-.album-discover-panel {
-    color: var(--text-secondary);
-    font-size: 0.86rem;
-}
-.album-discover-panel summary {
-    position: relative;
-    display: inline-flex;
-    align-items: baseline;
-    gap: 0.45rem;
-    padding-left: 1.8rem;
-    width: fit-content;
-    color: var(--text-primary);
-    cursor: pointer;
-    font-weight: 650;
-    list-style: none;
-}
-.album-discover-panel summary::-webkit-details-marker {
-    display: none;
-}
-.album-discover-panel summary::before {
-    content: "▸";
-    position: absolute;
-    left: 0.9rem;
-    margin-left: 0;
-    top: 0.34rem;
-    font-size: 0.78rem;
-    line-height: 1;
-    color: var(--text-secondary);
-}
-.album-discover-panel[open] summary::before {
-    content: "▾";
-}
-.album-discover-panel summary small {
+.album-discover-note {
+    margin: 0 1rem;
     color: var(--text-muted);
-    font-size: 0.78rem;
-    font-weight: 500;
+    font-size: 0.82rem;
 }
-.album-discover-list {
-    display: grid;
-    gap: 0.28rem;
-    margin: 0.5rem 0 0;
-    padding: 0;
-    list-style: none;
+/* Artist page sections (albums, TIDAL part) sit between the hero and the
+   track list inside the shared album detail. */
+.artist-detail-section.streaming-results-heading {
+    margin-left: 1rem;
+    margin-right: 1rem;
 }
-.album-discover-item {
+.artist-detail-albums .streaming-results-heading {
+    margin-left: 1rem;
+}
+.artist-detail-albums .albums-grid {
+    margin-top: 0.4rem;
+}
+.artist-detail-tidal {
+    margin-top: 1.1rem;
+}
+.artist-detail-source {
     display: flex;
-    align-items: baseline;
-    justify-content: space-between;
-    gap: 0.7rem;
-    min-height: 2.1rem;
-    padding: 0.42rem 0.56rem;
-    border: 1px solid var(--border);
-    border-radius: 7px;
-    background: var(--slate-900-a22);
-}
-.album-discover-title {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    align-items: center;
+    gap: 0.5rem;
+    margin: 0 1rem;
     color: var(--text-primary);
-    font-weight: 600;
+    font-size: 1rem;
+    font-weight: 700;
 }
 .track-item-empty {
     justify-content: center;
@@ -2257,14 +2360,6 @@ label.effects-delete-item {
     --control-gap: 12px;
     padding-top: 0.55rem;
 }
-/* TIDAL shares the library panel top rhythm (0.55rem) so both views start
-   at the same height; the provider shell keeps only its bottom spacing. */
-#tab-tidal {
-    padding-top: 0.55rem;
-}
-#tab-tidal .streaming-shell {
-    padding-top: 0;
-}
 .library-header {
     display: flex;
     justify-content: space-between;
@@ -2279,6 +2374,69 @@ label.effects-delete-item {
     gap: var(--action-gap);
     flex-wrap: wrap;
 }
+/* Compact TIDAL connect/status button next to Import: the glyph plus
+   "Connect TIDAL" while signed out, glyph + mint dot + "TIDAL" when
+   connected (click refreshes the TIDAL favorites). */
+.library-tidal-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    white-space: nowrap;
+}
+.library-tidal-status-dot {
+    display: none;
+    width: 0.42rem;
+    height: 0.42rem;
+    border-radius: 50%;
+    background: var(--accent);
+}
+.library-tidal-status.is-connected .library-tidal-status-dot { display: inline-block; }
+/* Search results: "In your library" and "TIDAL" sections under the result
+   type tabs. Favorites uses the same sections (Albums, Tracks, Artists).
+   The grids inside keep the regular tile rhythm. */
+.albums-grid.is-search-results,
+#tracks-list.is-search-results,
+#tracks-list.is-favorites {
+    display: block;
+}
+.library-search-section + .library-search-section {
+    margin-top: 1.1rem;
+}
+.library-search-heading {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    margin-top: 0.2rem;
+}
+.library-search-grid {
+    margin-top: 0.4rem;
+}
+.library-search-rows {
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+}
+/* Playlist entries that cannot play right now: TIDAL tracks of a saved
+   playlist while TIDAL is not connected, or not installed at all. */
+.streaming-result.is-offline,
+.track-item.is-unavailable {
+    opacity: 0.55;
+}
+.track-item.is-unavailable .track-play {
+    pointer-events: none;
+}
+.library-search-empty {
+    margin: 0.2rem 0 0.6rem;
+    color: var(--text-muted);
+    font-size: 0.86rem;
+}
+.library-search-action {
+    margin-bottom: 0.4rem;
+}
+/* TIDAL album/playlist/artist details opened from the Library. */
+.library-tidal-detail {
+    margin-top: 0.9rem;
+}
 .library-actions-row {
     display: flex;
     align-items: center;
@@ -2291,7 +2449,8 @@ label.effects-delete-item {
     border-bottom: 1px solid var(--border-strong);
     padding-bottom: 0.5rem;
 }
-.library-view-toggle {
+.library-view-toggle,
+.library-search-types {
     display: flex;
     align-items: center;
     /* Shrinkable like the TIDAL tabs row so the four tabs wrap instead of
@@ -2331,12 +2490,10 @@ label.effects-delete-item {
    pinned while unfocused: during :focus the accent border must win, or the
    ID specificity would suppress it. */
 #station-search,
-#tidal-search-input,
 .library-search-field .library-search-input {
     background: var(--bg-input);
 }
 #station-search:not(:focus),
-#tidal-search-input:not(:focus),
 .library-search-field .library-search-input:not(:focus) {
     border-color: var(--border);
 }
@@ -2391,16 +2548,12 @@ label.effects-delete-item {
     margin-top: calc(0.9rem - var(--detail-hero-gap));
     margin-bottom: calc(0.9rem - var(--detail-hero-gap) - 0.2rem);
 }
-/* Same logic for the TIDAL hosts. Browse keeps its own gap and the row
-   adds the small difference to reach the reference standoff on both
-   sides. The detail pulls against the very token that sets its container
-   gap (--tidal-detail-gap, declared in .streaming-detail), so the gap and
-   both flanking margins express one value and stay drift-proof: the row
-   adds the difference above, the results margin below, and together with
-   the gap each side lands on the reference exactly. */
-.streaming-browse > .playlist-save-row {
-    margin: 0.15rem 0;
-}
+/* Same logic for the TIDAL detail host. The detail pulls against the very
+   token that sets its container gap (--tidal-detail-gap, declared in
+   .streaming-detail), so the gap and both flanking margins express one value
+   and stay drift-proof: the row adds the difference above, the results
+   margin below, and together with the gap each side lands on the reference
+   exactly. */
 .streaming-detail > .playlist-save-row {
     margin-top: calc(0.9rem - var(--tidal-detail-gap));
     margin-bottom: 0;
@@ -2434,68 +2587,22 @@ label.effects-delete-item {
     flex: 0 0 auto;
     white-space: nowrap;
 }
-/* TIDAL save row: the library save concept extended with the "add to
-   existing playlist" target, so the row wraps instead of clipping. */
-.tidal-playlist-save-row {
-    flex-wrap: wrap;
-    overflow: visible;
-    gap: var(--action-gap);
-}
-/* Compact and left-aligned like the library save row: the controls sit at
-   the row start with a uniform 12px gap (--action-gap). Single line on
-   roomy viewports; the responsive rules switch to wrapping when the tab
-   runs out of width. --control-gap is scoped to the library tab, so the
-   TIDAL row pins its own spacing instead of silently collapsing. */
-.tidal-playlist-save-row .playlist-save-controls {
-    flex: 0 1 auto;
-    flex-wrap: nowrap;
-    justify-content: flex-start;
-    gap: var(--action-gap);
-}
-.tidal-playlist-save-row .url-input[type="text"] {
-    flex: 0 1 160px;
-}
-.tidal-playlist-save-row select.url-input {
-    flex: 0 1 200px;
-}
-/* Album detail: the playlist action row uses the full content width. The two
-   text/select fields absorb the extra space (existing target slightly wider);
-   Save as new, Add and Cancel keep their compact natural button widths. */
-.playlist-save-row.tidal-playlist-save-row--album {
-    width: 100%;
-    max-width: none;
-    flex: 1 1 auto;
-}
-.tidal-playlist-save-row--album .playlist-save-controls {
-    flex: 1 1 auto;
-    width: 100%;
-    max-width: none;
-    flex-wrap: nowrap;
-    align-items: center;
-}
-.tidal-playlist-save-row--album #tidal-playlist-name {
-    flex: 1 1 0;
-    min-width: 140px;
-}
-.tidal-playlist-save-row--album #tidal-playlist-target {
+/* TIDAL selection: the existing-playlist target is a little wider than the
+   name field, like the TIDAL album row. A mixed selection explains below
+   the controls why it cannot be saved. */
+.playlist-save-row #playlist-tidal-target {
     flex: 1.25 1 0;
     min-width: 170px;
 }
-.tidal-playlist-save-row--album .btn-secondary {
-    flex: 0 0 auto;
-    white-space: nowrap;
+.playlist-save-row[data-save-mode="mixed"] {
+    flex-wrap: wrap;
 }
-.tidal-playlist-save-error {
+.playlist-save-hint {
     flex: 0 0 100%;
-    color: var(--danger);
+    margin: 0;
+    color: var(--text-muted);
     font-size: 0.84rem;
-    margin-top: 0.15rem;
 }
-.playlist-item {
-    position: relative;
-}
-.playlist-download-btn,
-.playlist-delete-btn,
 .folder-action-btn--delete {
     flex: 0 0 auto;
     align-self: center;
@@ -2514,19 +2621,11 @@ label.effects-delete-item {
     padding: 0;
     transition: color .12s var(--ease), border-color .12s var(--ease), background .12s var(--ease);
 }
-.playlist-download-btn:hover {
-    color: var(--accent);
-    border-color: var(--accent);
-    background: var(--accent-dim);
-}
-.playlist-delete-btn:hover,
 .folder-action-btn--delete:hover {
     color: var(--danger);
     border-color: var(--danger);
     background: var(--danger-dim);
 }
-.playlist-download-btn:focus-visible,
-.playlist-delete-btn:focus-visible,
 .folder-action-btn--delete:focus-visible {
     outline: 2px solid var(--accent);
     outline-offset: 2px;
@@ -2704,8 +2803,7 @@ label.effects-delete-item {
     font-size: 0.78rem;
     color: var(--text-muted);
 }
-#tracks-list .folder-item,
-#tracks-list .playlist-item {
+#tracks-list .folder-item {
     align-items: center;
 }
 #tracks-list .folder-actions {
@@ -3630,10 +3728,9 @@ label.effects-delete-item {
 }
 
 /* Empty / not-connected state — one shared disconnected card for
-   Spotify/Qobuz (.streaming-empty) and TIDAL (.streaming-auth--disconnected):
-   same width, padding, centering, heading/text sizes and primary button. */
-.streaming-empty,
-.streaming-auth--disconnected {
+   Spotify/Qobuz (.streaming-empty): same width, padding, centering,
+   heading/text sizes and primary button. */
+.streaming-empty {
     width: min(100%, 560px);
     margin: 0 auto;
     padding: 1.5rem 1.5rem 1.7rem;
@@ -3643,77 +3740,37 @@ label.effects-delete-item {
     /* Standby/disconnected is not an active state: neutral edge like the DSP cards. */
     border-top: 3px solid var(--border-strong);
     border-radius: var(--radius-lg);
-}
-.streaming-empty {
     display: flex;
     flex-direction: column;
     align-items: center;
     justify-content: center;
 }
-.streaming-auth--disconnected {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 0;
-}
+
 .streaming-empty-icon {
     font-size: 2.25rem;
     margin-bottom: 0.5rem;
     opacity: 0.4;
 }
-.streaming-empty-title,
-.streaming-auth--disconnected .streaming-auth-title {
+.streaming-empty-title {
     font-size: 1.15rem;
     font-weight: 700;
     color: var(--text-primary);
     margin: 0;
 }
-.streaming-empty-msg,
-.streaming-auth--disconnected .streaming-auth-hint {
+.streaming-empty-msg {
     color: var(--text-muted);
     font-size: 0.88rem;
     margin: 0.3rem 0 0;
     line-height: 1.45;
     max-width: 34rem;
 }
-.streaming-empty-actions,
-.streaming-auth--disconnected .streaming-auth-actions--primary {
+.streaming-empty-actions {
     margin-top: 1rem;
     display: flex;
     gap: 0.6rem;
     flex-wrap: wrap;
     justify-content: center;
     align-items: center;
-}
-/* Subordinate second login option: plain text action with a muted quality
-   note underneath — deliberately not a second equal-rank button. */
-.streaming-auth-alternative {
-    margin-top: 0.9rem;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 0.25rem;
-}
-.streaming-auth-secondary {
-    background: transparent;
-    border: 0;
-    padding: 0.25rem 0.5rem;
-    color: var(--text-muted);
-    font-family: inherit;
-    font-size: 0.82rem;
-    font-weight: 600;
-    text-decoration: underline;
-    text-underline-offset: 0.2em;
-    cursor: pointer;
-}
-.streaming-auth-secondary:hover { color: var(--text-secondary); }
-.streaming-auth-secondary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
-.streaming-auth-note {
-    color: var(--text-muted);
-    font-size: 0.78rem;
-    line-height: 1.45;
-    margin: 0;
-    max-width: 34rem;
 }
 
 /* Now-playing card — the shared player composition for Spotify/Qobuz. A
@@ -3986,153 +4043,8 @@ label.effects-delete-item {
     }
 }
 
-/* Provider content (TIDAL) */
-.streaming-content {
-    display: flex;
-    flex-direction: column;
-    gap: 0.9rem;
-    width: 100%;
-}
-
-/* Auth */
-.streaming-auth {
-    background: var(--bg-surface);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-lg);
-    padding: 1.25rem;
-    display: flex;
-    flex-direction: column;
-    gap: 0.7rem;
-    max-width: 42rem;
-}
-.streaming-auth-title { font-size: 1.05rem; font-weight: 700; color: var(--text-primary); margin: 0; }
-.streaming-auth-hint { color: var(--text-muted); font-size: 0.85rem; line-height: 1.45; margin: 0; }
-.streaming-auth-steps { margin: 0; padding-left: 1.25rem; color: var(--text-secondary); font-size: 0.85rem; line-height: 1.5; }
-.streaming-auth-actions { display: flex; gap: 0.6rem; flex-wrap: wrap; align-items: center; margin-top: 0.25rem; }
-.streaming-auth-url-row { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
-.streaming-auth-url {
-    flex: 1;
-    min-width: 0;
-    font-size: 0.76rem;
-    background: var(--bg-elevated);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    padding: 0.5rem 0.6rem;
-    color: var(--text-secondary);
-    word-break: break-all;
-    user-select: all;
-}
-.streaming-auth-input { width: 100%; }
-.streaming-auth-device-code {
-    font-size: 1.6rem;
-    font-weight: 700;
-    letter-spacing: 0.2em;
-    color: var(--text-primary);
-    text-align: center;
-    background: var(--bg-elevated);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    padding: 0.6rem;
-}
-.streaming-auth-error { color: var(--danger); font-size: 0.82rem; margin: 0; }
-
-/* Browse (categories / search). Spans the full content column — the same
-   width the album/playlist detail header uses — so the toolbar actions and
-   the search group (right-aligned in rows 1/2) share one right edge with
-   the detail Back button and browse <-> detail never shifts horizontally. */
-.streaming-browse {
-    display: flex;
-    flex-direction: column;
-    gap: 0.75rem;
-}
-
-.tidal-toolbar {
-    display: grid;
-    grid-template-columns: auto minmax(0, 1fr);
-    align-items: center;
-    gap: 0.4rem 0.8rem;
-}
-.tidal-toolbar-title {
-    margin: 0;
-    justify-self: start;
-}
-.tidal-toolbar-actions {
-    justify-self: end;
-    display: flex;
-    align-items: center;
-    /* Same control rhythm as the local library toolbar. */
-    gap: var(--action-gap);
-    min-width: 0;
-}
-/* Second row: the single Tracks/Albums/Artists/Playlists navigation left,
-   search group right — the library pattern. All four categories share the
-   compact .view-tab component (no separate Favorites level, no inner
-   category chips), and the subbar carries the underline. */
-.tidal-subbar {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 0.5rem 0.8rem;
-    flex-wrap: wrap;
-    border-bottom: 1px solid var(--border-strong);
-    padding-bottom: 0.5rem;
-}
-.tidal-subbar .view-tabs {
-    flex: 0 1 auto;
-    min-width: 0;
-}
-.tidal-subbar .streaming-search {
-    min-width: 0;
-    width: min(100%, 430px);
-    margin-left: auto;
-}
-.streaming-search { display: flex; flex-direction: column; gap: 0.7rem; }
-.streaming-search-row { display: flex; gap: 0.5rem; align-items: center; width: 100%; }
-.streaming-search-input {
-    flex: 1 1 auto;
-    min-width: 0;
-    width: 100%;
-    height: 44px;
-    padding: 0.55rem 2.1rem 0.55rem 0.8rem;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    background: var(--bg-input);
-    color: var(--text-primary);
-    font-size: 0.86rem;
-    font-family: inherit;
-    outline: none;
-    transition: border-color 0.15s var(--ease), box-shadow 0.15s var(--ease);
-}
-.streaming-search-input::placeholder { color: var(--text-muted); }
-.streaming-search-input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-dim); }
-.streaming-search-field {
-    position: relative;
-    flex: 1 1 auto;
-    min-width: 0;
-    display: flex;
-}
-.streaming-search-input::-webkit-search-cancel-button,
-.streaming-search-input::-webkit-search-decoration {
-    appearance: none;
-    -webkit-appearance: none;
-}
-
-
 .streaming-results { min-height: 2rem; }
-#tidal-fav-results,
-#tidal-playlists-results,
-#tidal-search-items { margin-top: 0.35rem; }
-/* While the playlist action row is visible it already holds the reference
-   standoff below itself, so a results container opening the body drops its
-   own top margin — the first tile/row then starts exactly like in the
-   Library overviews and switching tabs stops jumping. Hidden, the margin
-   still reserves the subtab-to-content gap. */
-.streaming-browse:has(> #tidal-playlist-save-row:not(.hidden)) > #tidal-browse-body > #tidal-fav-results:first-child,
-.streaming-browse:has(> #tidal-playlist-save-row:not(.hidden)) > #tidal-browse-body > #tidal-playlists-results:first-child {
-    margin-top: 0;
-}
-.tidal-search-results-header { display: flex; flex-direction: column; gap: 0.5rem; }
-.streaming-results-title { margin: 0; color: var(--text-primary); font-size: 1rem; font-weight: 700; }
+
 .streaming-results-heading {
     font-size: 0.78rem;
     text-transform: uppercase;
@@ -4170,7 +4082,6 @@ label.effects-delete-item {
     background-size: 100% 100%;
 }
 .streaming-result .track-info { flex: 1; min-width: 0; }
-
 
 .streaming-detail {
     display: flex;
@@ -4314,20 +4225,9 @@ label.effects-delete-item {
     list-style: none;
     padding: 0;
 }
-/* Browse results share one optical content start below the subbar divider:
-   the Tracks list (no tile margin) is the reference; the card grids drop
-   their library-inherited top margin so Albums/Artists/Playlists start at
-   the same height. Scoped to the browse containers so detail views keep
-   their own rhythm. */
-#tidal-fav-results > .tidal-tiles,
-#tidal-playlists-results > .tidal-tiles { margin-top: 0; }
-/* Search results share one optical gap below the result-type tabs: the card
-   grids stay the reference; the track list gains the same top margin so both
-   start at the same height. Scoped to search so the browse Tracks reference
-   stays untouched. */
-#tidal-search-items > .streaming-results-list,
-#tidal-search-items > .tidal-tiles { margin-top: 1.125rem; }
-.tidal-tiles .album-card .streaming-fav {
+
+.tidal-tiles .album-card .streaming-fav,
+.albums-grid .album-card .streaming-fav {
     position: absolute;
     /* Same cover inset as Library favorites on the shared album card. */
     top: 1.05rem;
@@ -4341,7 +4241,8 @@ label.effects-delete-item {
 }
 /* List view: the heart leaves the cover corner and joins the row end
    (same canonical favorite control, only repositioned). */
-.tidal-tiles.is-list .album-card .streaming-fav {
+.tidal-tiles.is-list .album-card .streaming-fav,
+.albums-grid.is-list .album-card .streaming-fav {
     position: static;
     order: 5;
     z-index: auto;
@@ -5421,6 +5322,37 @@ label.effects-delete-item {
 .measurement-peq-chip.is-empty {
     border-style: dashed;
     opacity: 0.72;
+}
+
+/* Auto is an action next to the slots, not a slot: accent outline, own width. */
+.measurement-peq-auto-chip {
+    flex: 0 0 auto;
+    min-height: 32px;
+    padding: 0.35rem 0.85rem;
+    border-radius: 999px;
+    border: 1px solid var(--accent);
+    background: var(--accent-dim);
+    color: var(--accent);
+    font-size: 0.8rem;
+    font-weight: 700;
+    line-height: 1.2;
+}
+
+.measurement-peq-auto-chip:hover:not(:disabled) {
+    background: var(--accent);
+    color: var(--accent-ink);
+}
+
+.measurement-peq-auto-chip:disabled {
+    border-color: rgba(255,255,255,0.12);
+    background: rgba(255,255,255,0.04);
+    color: var(--text-secondary);
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+.measurement-peq-auto-chip.is-busy {
+    cursor: progress;
 }
 
 .measurement-peq-editor {
@@ -7454,11 +7386,14 @@ input[type="number"]::-webkit-outer-spin-button {
 }
 
 .effects-effect-line .effects-inline-control {
+    flex: 0 0 auto;
     flex-wrap: nowrap;
 }
 
 .effects-effect-line .effects-inline-control-label {
     flex: 0 0 var(--effects-label-w);
+    /* Intrinsic flex sizing in Firefox needs the actual label width too. */
+    width: var(--effects-label-w);
 }
 
 .effects-effect-line .stepper-control {
@@ -7474,7 +7409,8 @@ input[type="number"]::-webkit-outer-spin-button {
 }
 
 #tab-effects .effects-effect-line select.url-input {
-    width: auto;
+    flex: none;
+    width: var(--effects-control-w);
     min-width: var(--effects-control-w);
 }
 
@@ -7487,6 +7423,7 @@ input[type="number"]::-webkit-outer-spin-button {
 
     .effects-effect-line .effects-inline-control-label {
         flex: 0 0 auto;
+        width: auto;
     }
 }
 
@@ -9345,6 +9282,10 @@ input[type="number"]::-webkit-outer-spin-button {
             grid-template-areas: "transport transport" "volume volume";
         }
         .playback-meter { display: none; }
+        /* The multichannel meter sets display: flex at higher specificity;
+           without this it falls out of the areas above into implicit
+           grid tracks (extra column and row, content squeezed left). */
+        .playback-meter.is-multichannel { display: none; }
     }
 }
 
@@ -9367,7 +9308,8 @@ input[type="number"]::-webkit-outer-spin-button {
     .stepper-btn,
     .measurement-chip,
     .measurement-slot-chip,
-    .measurement-peq-chip {
+    .measurement-peq-chip,
+    .measurement-peq-auto-chip {
         position: relative;
     }
     /* Cover favorites are already absolutely positioned. Keep that anchor:
@@ -9383,7 +9325,8 @@ input[type="number"]::-webkit-outer-spin-button {
     .stepper-btn::before,
     .measurement-chip::before,
     .measurement-slot-chip::before,
-    .measurement-peq-chip::before {
+    .measurement-peq-chip::before,
+    .measurement-peq-auto-chip::before {
         content: '';
         position: absolute;
         inset: -8px;
@@ -9869,7 +9812,7 @@ input[type="number"]::-webkit-outer-spin-button {
     }
     /* TIDAL save row: with the full-width controls container the five
        controls wrap left-aligned instead of overflowing. */
-    .tidal-playlist-save-row .playlist-save-controls {
+    .playlist-save-row[data-save-mode="tidal"] .playlist-save-controls {
         flex-wrap: wrap;
     }
 }
@@ -9878,24 +9821,7 @@ input[type="number"]::-webkit-outer-spin-button {
     .library-actions-row {
         margin-bottom: var(--action-gap);
     }
-    /* Album detail keeps a single continuous action line on tablet: the row
-       stays horizontal and the fields shrink before anything wraps. Only the
-       phone layout below switches to a stacked grid. */
-    .playlist-save-row.tidal-playlist-save-row--album {
-        flex-direction: row;
-        align-items: center;
-        width: 100%;
-    }
-    .tidal-playlist-save-row--album .playlist-save-controls {
-        flex-wrap: nowrap;
-        width: 100%;
-    }
-    .tidal-playlist-save-row--album #tidal-playlist-name {
-        min-width: 120px;
-    }
-    .tidal-playlist-save-row--album #tidal-playlist-target {
-        min-width: 140px;
-    }
+
 }
 
 @media (max-width: 600px) {
@@ -10135,12 +10061,12 @@ input[type="number"]::-webkit-outer-spin-button {
     .measurement-chip { min-height: 44px; }
     .measurement-view-toggle .measurement-chip { min-height: 44px; }
     .measurement-slot-chip,
-    .measurement-peq-chip { min-height: 44px; }
+    .measurement-peq-chip,
+    .measurement-peq-auto-chip { min-height: 44px; }
 
     /* iOS auto-zoom guard: text inputs stay at 16px on phones. */
     .station-search-input,
     .library-search-field .library-search-input,
-    .streaming-search-input,
     .playlist-save-row .url-input {
         font-size: 16px;
     }
@@ -10156,7 +10082,6 @@ input[type="number"]::-webkit-outer-spin-button {
        streaming, settings, measurement). Desktop keeps the compact sizes. */
     .station-search-input,
         .library-search-field .library-search-input,
-        .streaming-search-input,
         .url-input,
         select.url-input,
         .manage-dialog input,
@@ -10234,12 +10159,7 @@ input[type="number"]::-webkit-outer-spin-button {
         gap: 0.75rem;
     }
     .streaming-cover { width: 180px; height: 180px; }
-    .tidal-toolbar { gap: 0.35rem; }
-    .tidal-subbar { gap: 0.35rem; }
-    .tidal-subbar .streaming-search { width: 100%; }
-    .streaming-search-row { flex-wrap: nowrap; }
-    .streaming-search-row .streaming-search-field { flex: 1 1 0; width: 100%; }
-    .streaming-search-row .streaming-search-field .streaming-search-input { width: 100%; }
+
         .album-detail-header,
     .streaming-detail-header {
         grid-template-columns: auto minmax(0, 1fr);
@@ -10342,19 +10262,6 @@ input[type="number"]::-webkit-outer-spin-button {
 }
 
 @media (min-width: 761px) and (max-width: 1100px) {
-    /* Keep the TIDAL navigation and direct-search field on one tablet row.
-       The relative basis gives the tabs the remaining space without making
-       the search field carry its desktop width. */
-    .tidal-subbar {
-        flex-wrap: nowrap;
-    }
-    .tidal-subbar .view-tabs {
-        flex: 1 1 auto;
-    }
-    .tidal-subbar .streaming-search {
-        flex: 0 1 34vw;
-        width: auto;
-    }
 
     /* Tablet subwoofer layout: Global across the full width, Sub 1 and
        Sub 2 sharing the row below (merged with the TIDAL tablet block
@@ -10794,6 +10701,11 @@ input[type="number"]::-webkit-outer-spin-button {
     .album-detail--hero .detail-hero-header .album-detail-back,
     .streaming-detail--hero .detail-hero-header .album-detail-back {
         justify-self: start;
+    }
+    /* Back sits at the left edge here, so the actions follow on its right. */
+    .album-detail--hero .detail-hero-header .detail-hero-actions {
+        justify-self: start;
+        flex-direction: row-reverse;
     }
     .streaming-detail--hero #tidal-detail-play {
         width: 100%;
