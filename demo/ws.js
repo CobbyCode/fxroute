@@ -91,7 +91,15 @@
                 sendTo(this, initMessage());
             }, 40);
         }
-        send() { /* no client->server commands in the app */ }
+        send(data) {
+            // The product frontend runs a heartbeat: it sends "ping" and
+            // treats a missing {type: 'pong'} as a dead connection, closing
+            // the socket and showing the offline banner. The real backend
+            // answers every client text frame with a pong (main.py
+            // websocket_endpoint), so the simulation must do the same.
+            if (this.readyState !== OPEN) return;
+            if (typeof data === 'string') sendTo(this, { type: 'pong' });
+        }
         close(code, reason) {
             if (this.readyState === CLOSING || this.readyState === CLOSED) return;
             this.readyState = CLOSING;
