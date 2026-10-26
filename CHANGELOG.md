@@ -163,6 +163,8 @@ ISO via SourceForge. Khadas/VIM1S stays internal and gets no public image.
 
 - A long-running page that predates the served frontend assets reloads itself
   once instead of running stale JavaScript.
+- The Try FXRoute live session identifies itself as volatile, so the
+  documented Live Mode banner appears there.
 - Numeric fields keep their remote focus and persist repeated steps, subwoofer
   trims survive asynchronous saves, and measurement controls are navigated by
   rendered position.
