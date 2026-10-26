@@ -13,12 +13,36 @@ ISO via SourceForge. Khadas/VIM1S stays internal and gets no public image.
 
 ### Release provenance
 
-- Source stand: `main` @ `80fafdcb` plus the Beta 15 release-preparation
-  commits (version, changelog and documentation, repaired test contracts, ISO
-  build container fix). B1-B5 from the Beta 15 blocker list are included and
-  were verified on the `.104` test machine before this stand.
-- No Armbian image changes this cycle; the installer work is limited to the
-  NFS client package set, the USB gadget helper and fail-closed HTTP validation.
+- Source stand: the release commit on `main`, tagged `v1.0-beta15`; `VERSION`
+  is `1.0-beta15`. B1-B5 from the Beta 15 blocker list are included and were
+  verified on the `.104` test machine before this stand.
+- The published artifacts are the builds that were tested, not new ones. Each
+  records the commit it was built from, and both commits are ancestors of the
+  release commit:
+  - Ubuntu ISO: build commit `f99e7823c0927eb654663d68d9851ac5242a3e76`
+    (embedded as `build-commit`). Its `source.tar` content equals the
+    `f99e7823` tree file for file; the recorded SHA-256
+    `9865a210aa6e38dd563f5f824d5a21b5946305788414889fb37d49e82d310684`
+    additionally reflects the build checkout's file modes.
+  - Raspberry Pi 4/Pi 5 images: build commit
+    `212c2775b625e3040c8cf38088e7c46f08654d6d` (embedded as `build-commit`)
+    and the same `source.tar` in both images (content equal to the `212c2775`
+    tree, SHA-256
+    `103abaff95ba9c999590cbdfe29ab12d9aa2c3679443f64c62f1136d558be33a`).
+  - `f99e7823..v1.0-beta15` and `212c2775..v1.0-beta15` change only
+    documentation and host-side test tooling (`CHANGELOG.md`,
+    `docs/INSTALL-ARMBIAN.md`, `armbian/test-image.sh`,
+    `scripts/native_test_runner.py`, `scripts/test_armbian_images.py`,
+    `scripts/test_native_dsp_sos.py`). ISO and images therefore carry the same
+    product code as the tag; no rebuild was necessary.
+  - The artifacts may only be published together with the release push: both
+    build commits then resolve on `origin/main`, so first boot checks them out
+    exactly and continues with fast-forward updates. Without that push, first
+    boot falls back to a local snapshot commit.
+- No Armbian image recipe change this cycle; the installer work is limited to
+  the NFS client package set, the USB gadget helper and fail-closed HTTP
+  validation. `armbian/test-image.sh` only gained the QEMU watchdog workaround
+  for the local boot check.
 - The web demo snapshot follows this stand (`demo/dist` parity is green).
 
 ### Library and TIDAL
@@ -188,16 +212,35 @@ ISO via SourceForge. Khadas/VIM1S stays internal and gets no public image.
   the 17 native DSP Python suites and the five C wrappers that need the
   native build dependencies on the `.104` test machine; the runner records
   the missing `pkg-config` packages as the reason.
-- The product ISO and its test-seed build are built from `f99e7823`
-  (`source.tar` SHA-256
+- The 22 runner-skipped native tests were executed separately on `.104`:
+  21 passed. `scripts/test_native_dsp_sos.py` failed once in
+  `test_plan_render_end_to_end_matches_prediction` without a captured
+  assertion and did not reproduce (10/10 repeats of that test, module 5/5,
+  80 renders with one output hash per case, all levels far inside their
+  tolerance). No product code changed; the runner now repeats the failure
+  summary, and the suite names frequency and tolerance in its assertions.
+- Ubuntu ISO: built from `f99e7823c0927eb654663d68d9851ac5242a3e76`
+  (`build-commit` in the ISO; `source.tar` SHA-256
   `9865a210aa6e38dd563f5f824d5a21b5946305788414889fb37d49e82d310684`).
-  Both carry the three boot entries with isolated Desktop/Headless seeds
-  and an unchanged signed Ubuntu boot chain. SHA-256:
-  - `fxroute-1.0-beta15-x86_64-ubuntu26.04.iso` —
-    `233a78d4082430a0c9eb257450c4a7fd1597f1f33c1697a6f8ac5d7c0963c470`
-  - `fxroute-1.0-beta15-TESTSEED-DO-NOT-RELEASE-x86_64-ubuntu26.04.iso`
-    (test build, not for publication) —
-    `6be51e7607fbfc943fda5da837da2aa361d3b6b678afc6fbc114179d1a37625a`
+  It carries the three boot entries with isolated Desktop/Headless seeds and
+  an unchanged signed Ubuntu boot chain. SHA-256:
+  `233a78d4082430a0c9eb257450c4a7fd1597f1f33c1697a6f8ac5d7c0963c470`
+- Raspberry Pi 4/Pi 5 images: built from `212c2775` (8.0 GiB raw, Armbian
+  `rpi4b` configuration, kernel `6.18.48-current-bcm2711`, Debian 13.7).
+  `xz -t` and `sha256sum -c` pass on both compressed files; the uncompressed
+  images pass `e2fsck -fn`, embed the `1.0-beta15` `source.tar` and the
+  source tree was re-extracted from both images and compared with the
+  `212c2775` tree. SHA-256:
+  - `fxroute-1.0-beta15-rpi4-trixie-current.img.xz` —
+    `79619b9390d66cc3b5815ecabbd5f9f7a01c6abbffc60e8354f3c2355180093a`
+  - `fxroute-1.0-beta15-rpi5-trixie-current.img.xz` —
+    `d7ddacfa82e012a0c70879eafbf695287b67f253329cd6c9f535df49e757969b`
+  - Both images boot the QEMU `raspi4b` machine to `basic.target`
+    (emulation-only watchdog workaround on the QEMU command line); see the
+    known limitations for what that does not cover.
+- The test-seed ISO (`fxroute-1.0-beta15-TESTSEED-DO-NOT-RELEASE-x86_64-ubuntu26.04.iso`,
+  SHA-256 `6be51e7607fbfc943fda5da837da2aa361d3b6b678afc6fbc114179d1a37625a`)
+  documents the acceptance build and is excluded from publication.
 - QEMU acceptance (UEFI, Secure Boot off, 4 vCPU / 6 GB):
   - **Try FXRoute Live**: the live session starts, FXRoute answers as
     `1.0-beta15`, the Live Mode banner is visible, the PipeWire graph and the
@@ -209,25 +252,35 @@ ISO via SourceForge. Khadas/VIM1S stays internal and gets no public image.
   - **Install FXRoute Headless**: same install path without a desktop; no
     display manager, Firefox or GNOME, `multi-user.target`, SSH, services, web
     UI and radio playback.
-  - The final ISOs differ from the accepted install ISOs only in the live
-    autostart (never executed on installed systems) and documentation; all
-    three GRUB entries and both seeds are byte-identical.
+  - The published product ISO differs from the accepted install ISO only in
+    the live autostart (never executed on installed systems) and
+    documentation; all three GRUB entries and both seeds are byte-identical.
 - `.104`: deployed and verified with an active service, HTTP 200, version
   `1.0-beta15` and the current asset versions.
 
 ### Known limitations
 
+- **No Raspberry Pi 4/5 hardware acceptance for Beta 15.** Both images boot
+  to `basic.target` under QEMU's `raspi4b` machine only. Real firmware boot,
+  Ethernet/Wi-Fi, storage, USB, thermal, HDMI audio, the web onboarding, the
+  first-boot FXRoute installation, the target-user PipeWire/DSP session and
+  audio playback on ARM remain unverified; QEMU `raspi4b` has no usable
+  network device, so onboarding and the installed system cannot be exercised
+  there. The generic ARM64 `virt` path was not rebuilt for Beta 15.
 - Sustained High-quality conversion of 32 channels on a fully loaded 4-core
   host remains unqualified; the contention runs predate the startup-FIFO and
   shortfall-concealment fixes (see `docs/playback-src.md`).
 - Room correction is stereo/group based as documented; the Advanced wizard's
   listening-position workflow requires a host microphone.
 
-Public release artifact names (to be built from tag `v1.0-beta15`):
+Public release artifacts for Beta 15 (the verified builds listed above; no
+rebuild was performed):
 
 - `fxroute-1.0-beta15-rpi4-trixie-current.img.xz` (+ `.sha256`)
 - `fxroute-1.0-beta15-rpi5-trixie-current.img.xz` (+ `.sha256`)
 - `fxroute-1.0-beta15-x86_64-ubuntu26.04.iso` (SourceForge, + `.sha256`)
+
+The test-seed ISO is not part of this list.
 
 ## 1.0-beta14 (2026-10-17)
 
