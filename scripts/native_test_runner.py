@@ -28,6 +28,7 @@ def run_pytest_style_module(module_globals: Dict[str, Any]) -> int:
         print("no test_* functions found in module; refusing to pass", file=sys.stderr)
         return 2
     failures = 0
+    reasons = []
     for name, function in tests:
         try:
             signature = inspect.signature(function)
@@ -37,11 +38,17 @@ def run_pytest_style_module(module_globals: Dict[str, Any]) -> int:
             else:
                 function()
             print(f"PASS  {name}")
-        except Exception:
+        except Exception as error:
             failures += 1
+            reasons.append(f"{name}: {type(error).__name__}: {error}".strip())
             print(f"FAIL  {name}")
             traceback.print_exc()
     if failures:
+        # Repeat the reasons after the per-test lines: suite logs are often
+        # captured as a tail, which otherwise loses the traceback above.
+        print("failure summary:", file=sys.stderr)
+        for reason in reasons:
+            print(f"  {' '.join(reason.split())}", file=sys.stderr)
         print(f"{failures} of {len(tests)} native DSP tests failed", file=sys.stderr)
         return 1
     print(f"native DSP tests passed: {len(tests)}")

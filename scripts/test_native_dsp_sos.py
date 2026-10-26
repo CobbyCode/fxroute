@@ -43,6 +43,10 @@ def run_offline(tmp_path, name, cfg_text, freq_hz, rate=48000, frames=48000,
     assert completed.returncode == 0, completed.stderr
     output = array.array("f")
     output.fromfile(target.open("rb"), target.stat().st_size // 4)
+    expected = frames * n_outputs
+    assert len(output) == expected, (
+        f"{name}: engine wrote {len(output)} samples, expected {expected} "
+        f"({frames} frames x {n_outputs} outputs, {target.stat().st_size} bytes)")
     return [output[channel::n_outputs] for channel in range(n_outputs)]
 
 
@@ -160,10 +164,11 @@ def test_plan_render_end_to_end_matches_prediction(tmp_path):
         channels = run_offline(tmp_path, f"sos-e2e-{role}", text, freq_hz,
                                n_inputs=2, n_outputs=6)
         measured = 20.0 * math.log10(steady_rms(channels[out_index]) / (0.5 / math.sqrt(2.0)))
-        assert abs(measured) <= 0.5, f"{role}: {measured:.2f} dB"
+        assert abs(measured) <= 0.5, (
+            f"{role} @{freq_hz} Hz: {measured:.2f} dB (expected 0.00 dB, limit +-0.5)")
     channels = run_offline(tmp_path, "sos-e2e-stop", text, 5000, n_inputs=2, n_outputs=6)
     measured = 20.0 * math.log10(steady_rms(channels[0]) / (0.5 / math.sqrt(2.0)))
-    assert measured < -60.0, f"left_low stopband: {measured:.1f} dB"
+    assert measured < -60.0, f"left_low stopband @5000 Hz: {measured:.1f} dB (limit < -60)"
 
 
 from native_test_runner import run_pytest_style_module
