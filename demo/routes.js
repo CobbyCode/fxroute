@@ -2944,14 +2944,19 @@
         const url = demoBrowserHttpUrl(item.url);
         const urlResolved = demoBrowserHttpUrl(item.url_resolved);
         if (!stationuuid || !title || !url || !urlResolved) return null;
-        const favicon = demoBrowserHttpUrl(item.favicon);
+        // Live hits advertise third-party icon URLs. They are regularly dead
+        // (DNS failures, HTML error pages, hotlink blocks), and the browser
+        // then paints a broken card plus a console network error for each.
+        // The static demo has no image proxy, so it drops the remote icon and
+        // lets the UI draw its generated station tile instead; the rest of
+        // the metadata still comes from the live API.
         const payload = {
             stationuuid,
             title,
             url,
             url_resolved: urlResolved,
-            favicon,
-            image: favicon,
+            favicon: '',
+            image: '',
             country: String(item.country || '').trim(),
             countrycode: String(item.countrycode || '').trim(),
             language: String(item.language || '').trim(),
