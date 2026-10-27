@@ -2944,19 +2944,19 @@
         const url = demoBrowserHttpUrl(item.url);
         const urlResolved = demoBrowserHttpUrl(item.url_resolved);
         if (!stationuuid || !title || !url || !urlResolved) return null;
-        // Live hits advertise third-party icon URLs. They are regularly dead
-        // (DNS failures, HTML error pages, hotlink blocks), and the browser
-        // then paints a broken card plus a console network error for each.
-        // The static demo has no image proxy, so it drops the remote icon and
-        // lets the UI draw its generated station tile instead; the rest of
-        // the metadata still comes from the live API.
+        // Mirror radio.api._radio_browser_payload: pass the provider favicon
+        // through after the same http(s) check. Static radio.js keeps it as
+        // the first station-art candidate and swaps to its generated tile
+        // when the image fails, so one dead third-party icon costs a single
+        // request and never a broken card.
+        const favicon = demoBrowserHttpUrl(item.favicon);
         const payload = {
             stationuuid,
             title,
             url,
             url_resolved: urlResolved,
-            favicon: '',
-            image: '',
+            favicon,
+            image: favicon,
             country: String(item.country || '').trim(),
             countrycode: String(item.countrycode || '').trim(),
             language: String(item.language || '').trim(),
